@@ -80,7 +80,7 @@ export function startHttpApi(node: V0idNode, port: number) {
             if (!Number.isInteger(n) || n < 1) return json(400, { error: 'blocks 必须是正整数' });
             const mined: string[] = [];
             for (let i = 0; i < n; i++) {
-              const b = node.mineOnce();
+              const b = await node.mineOnce();
               if (b) mined.push(b.hash);
             }
             return json(200, { mined });

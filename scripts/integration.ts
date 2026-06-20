@@ -34,7 +34,7 @@ await waitFor(() => node1.p2p.peerCount() === 1 && node2.p2p.peerCount() === 1);
 check(`双向握手完成（${Date.now() - t0}ms）`, node1.p2p.peerCount() === 1 && node2.p2p.peerCount() === 1);
 
 console.log('\n— node1 挖矿（出币），node2 应同步 —');
-for (let i = 0; i < 6; i++) node1.mineOnce(); // node1 攒够余额用于转账
+for (let i = 0; i < 6; i++) await node1.mineOnce(); // node1 攒够余额用于转账
 await waitFor(() => node2.bc.height === node1.bc.height);
 check('node2 链高追平 node1', node2.bc.height === node1.bc.height && node1.bc.height === 6);
 check('两节点链顶 hash 一致', node2.bc.latest.hash === node1.bc.latest.hash);
@@ -43,7 +43,7 @@ console.log('\n— node1 用挖来的币转 250 给 alice，跨节点结算 —'
 node1.send(alice.address, 250);
 await waitFor(() => node2.bc.mempool.length === 1); // 交易广播到 node2 的池
 check('交易广播到 node2 的交易池', node2.bc.mempool.length === 1);
-node2.mineOnce(); // 由 node2 打包
+await node2.mineOnce(); // 由 node2 打包
 await waitFor(() => node1.bc.height === node2.bc.height);
 check('node1 同步了 node2 出的块', node1.bc.height === node2.bc.height);
 check('两节点都认 alice 余额 = 250', node1.bc.balanceOf(alice.address) === 250 && node2.bc.balanceOf(alice.address) === 250);
@@ -78,7 +78,7 @@ await new Promise<void>((resolve) => {
   };
   evil.onerror = () => resolve();
 });
-node1.mineOnce(); // 还能正常出块？
+await node1.mineOnce(); // 还能正常出块？
 check('节点在畸形消息轰炸后仍存活并能出块', node1.bc.height === heightBefore + 1);
 await waitFor(() => node2.bc.height === node1.bc.height);
 check('遭轰炸后全网仍能正常同步', node2.bc.latest.hash === node1.bc.latest.hash);

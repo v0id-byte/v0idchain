@@ -162,7 +162,7 @@ export class Blockchain {
 
   // ---- 挖矿 ----
   /** 打包 coinbase + mempool 交易，按自适应难度做 PoW，成功则上链。返回新块或 null（被打断）。 */
-  mine(minerAddress: string, shouldStop?: () => boolean): Block | null {
+  async mine(minerAddress: string, shouldStop?: () => boolean): Promise<Block | null> {
     const index = this.height + 1;
     const transactions = [createCoinbase(minerAddress, index), ...this.selectMempoolTxs()];
     // 时间戳不能早于链顶（校验要求单调不减）
@@ -176,7 +176,7 @@ export class Blockchain {
       difficulty: expectedDifficulty(this.chain, index),
       miner: minerAddress,
     };
-    const block = mineBlock(template, shouldStop);
+    const block = await mineBlock(template, shouldStop);
     if (!block) return null;
     return this.addBlock(block).ok ? block : null;
   }

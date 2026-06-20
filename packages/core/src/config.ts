@@ -10,7 +10,9 @@ export const CHAIN_NAME = 'v0idChain';
  */
 export const GENESIS_DIFFICULTY = 16; // 创世难度（bit）；16 bit ≈ 2^16 次哈希，瞬间完成
 export const MIN_DIFFICULTY = 8;
-export const MAX_DIFFICULTY = 20; // 上限，避免难度失控把笔记本卡死（2^20 ≈ 1M 次哈希）
+// 上限只是安全护栏：重定向会把难度自动收敛到“算一块 ≈ TARGET_BLOCK_TIME”那个值，
+// 通常落在 ~21~25，远不到 26。设高一点给快机器留余量，正常永远顶不到。
+export const MAX_DIFFICULTY = 26;
 
 /** 目标出块时间；每 RETARGET_INTERVAL 个区块按实际耗时重定向一次难度 */
 export const TARGET_BLOCK_TIME_MS = 8_000;

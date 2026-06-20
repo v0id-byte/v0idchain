@@ -34,20 +34,26 @@ export function meetsDifficulty(hash: string, difficulty: number): boolean {
   return leadingZeroBits(hash) >= difficulty;
 }
 
+const BATCH = 20_000; // 每批枚举多少个 nonce，之后让出事件循环
+
 /**
- * PoW：暴力枚举 nonce，直到 hash 满足该块的 difficulty。
- * shouldStop 让挖矿可被打断（例如收到了别人更新的链）。
+ * PoW：分片异步枚举 nonce，直到 hash 满足该块的 difficulty。
+ * 每挖 BATCH 个 nonce 就 `setImmediate` 让出一次事件循环 —— 这样即使难度高、单块要算几秒，
+ * 节点也能在批次间隙处理 P2P 消息（收到别人的新块时 shouldStop 触发，放弃这块陈旧的活）。
  */
-export function mineBlock(
+export async function mineBlock(
   template: Omit<Block, 'hash' | 'nonce'>,
   shouldStop?: () => boolean,
-): Block | null {
+): Promise<Block | null> {
   let nonce = 0;
   for (;;) {
-    if (nonce % 5000 === 0 && shouldStop?.()) return null;
-    const candidate = { ...template, nonce };
-    const hash = calcBlockHash(candidate);
-    if (meetsDifficulty(hash, template.difficulty)) return { ...candidate, hash };
-    nonce++;
+    const end = nonce + BATCH;
+    for (; nonce < end; nonce++) {
+      const candidate = { ...template, nonce };
+      const hash = calcBlockHash(candidate);
+      if (meetsDifficulty(hash, template.difficulty)) return { ...candidate, hash };
+    }
+    if (shouldStop?.()) return null; // 链变了（来了新块）→ 放弃，去挖新的链顶
+    await new Promise((r) => setImmediate(r)); // 让出事件循环，处理 P2P
   }
 }

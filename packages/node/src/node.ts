@@ -134,9 +134,9 @@ export class V0idNode {
 
   // ---- 挖矿 ----
   /** 挖一个块：成功则上链、持久化、广播 */
-  mineOnce(): Block | null {
+  async mineOnce(): Promise<Block | null> {
     const startEpoch = this.epoch;
-    const block = this.bc.mine(this.wallet.address, () => this.epoch !== startEpoch);
+    const block = await this.bc.mine(this.wallet.address, () => this.epoch !== startEpoch);
     if (block) {
       this.onChainChanged();
       this.p2p.broadcast({ type: 'BLOCKS', blocks: [block] });
@@ -146,10 +146,10 @@ export class V0idNode {
 
   startMining(intervalMs: number): void {
     this.mining = true;
-    const loop = () => {
+    const loop = async () => {
       if (!this.mining) return;
-      this.mineOnce();
-      setTimeout(loop, intervalMs);
+      await this.mineOnce(); // 等这块挖完（PoW 真用时间）再排下一块
+      if (this.mining) setTimeout(loop, intervalMs);
     };
     setTimeout(loop, intervalMs);
   }

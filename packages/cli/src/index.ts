@@ -50,7 +50,7 @@ program
   .option('--bootstrap <urls>', '同 --peers（种子节点）', '')
   .option('--advertise <url>', '对外广播的本节点 ws 地址（公网/局域网才需要）')
   .option('--mine', '启动后自动挖矿', false)
-  .option('--mine-interval <ms>', '自动挖矿出块间隔(ms)', '4000')
+  .option('--mine-interval <ms>', '出块间隔(ms)，0=连续挖、由 PoW 难度定节奏（默认）', '0')
   .action((o) => {
     const dataDir = o.dataDir || defaultDataDir(o.name);
     const peers = [o.peers, o.bootstrap]
@@ -76,8 +76,11 @@ program
     console.log(`  ${c.dim('链高  ')} ${node.bc.height}  ${c.dim('余额')} ${node.bc.balanceOf(node.wallet.address)} ${SYMBOL}`);
     if (peers.length) console.log(`  ${c.dim('对等  ')} ${peers.join(', ')}`);
     if (o.mine) {
-      node.startMining(Number(o.mineInterval));
-      console.log(c.yellow(`  ⛏  自动挖矿已开启（每 ${o.mineInterval}ms 出一块）`));
+      const iv = Number(o.mineInterval);
+      node.startMining(iv);
+      console.log(
+        c.yellow(iv > 0 ? `  ⛏  自动挖矿已开启（每块间歇 ${iv}ms）` : `  ⛏  自动挖矿已开启（连续挖，出块节奏由 PoW 难度决定）`),
+      );
     }
     console.log(c.dim('\n  Ctrl-C 退出。另开一个终端用 `v0id` 子命令操作这个节点。\n'));
 
