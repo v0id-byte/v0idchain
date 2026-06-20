@@ -40,14 +40,14 @@ console.log(`\n— 挖矿出币：bob 挖 2 块 —`);
 bc.mine(bob.address);
 bc.mine(bob.address);
 check(`链高 = 2`, bc.height === 2);
-check(`bob 余额 = 2×${BLOCK_REWARD} = 100`, bc.balanceOf(bob.address) === 2 * BLOCK_REWARD);
+check(`bob 余额 = 2×奖励 = ${2 * BLOCK_REWARD}`, bc.balanceOf(bob.address) === 2 * BLOCK_REWARD);
 
-console.log(`\n— bob → alice 30（用挖来的币转账，零手续费）—`);
-const t1 = createTransaction(bob, alice.address, 30, bc.nonceOf(bob.address));
+console.log(`\n— bob → alice 转 1（用挖来的币，零手续费）—`);
+const t1 = createTransaction(bob, alice.address, 1, bc.nonceOf(bob.address));
 check(`交易进池`, bc.addTransaction(t1).ok);
-bc.mine(bob.address); // bob 打包，再得 50
-check(`alice 余额 = 30`, bc.balanceOf(alice.address) === 30);
-check(`bob 余额 = 100 - 30 + 50 = 120`, bc.balanceOf(bob.address) === 120);
+bc.mine(bob.address); // bob 打包，再得一份奖励
+check(`alice 余额 = 1`, bc.balanceOf(alice.address) === 1);
+check(`bob 余额 = 2 - 1 + 奖励 = ${2 - 1 + BLOCK_REWARD}`, bc.balanceOf(bob.address) === 2 - 1 + BLOCK_REWARD);
 check(`交易池已清空`, bc.mempool.length === 0);
 
 console.log(`\n— 防重放：重复广播同一笔已花交易 —`);
@@ -102,8 +102,8 @@ check('打款到空地址(销毁)被拒', !freshBc.addTransaction(createTransact
 
 console.log(`\n— 进阶功能：交易备注 memo —`);
 const memoBc = new Blockchain();
-memoBc.mine(bob.address); // bob 拿到 50
-const tm = createTransaction(bob, alice.address, 10, memoBc.nonceOf(bob.address), '午饭钱 🍜');
+memoBc.mine(bob.address); // bob 拿到 1 个奖励
+const tm = createTransaction(bob, alice.address, 1, memoBc.nonceOf(bob.address), '午饭钱 🍜');
 check('带 memo 的交易进池', memoBc.addTransaction(tm).ok);
 memoBc.mine(bob.address);
 check('memo 正确上链且可查', memoBc.latest.transactions.find((t) => t.txid === tm.txid)?.memo === '午饭钱 🍜');
@@ -113,7 +113,7 @@ check('emoji memo 按码点计数（128 个 emoji 通过）', verifyTransaction(
 console.log(`\n— 进阶功能：Merkle 根 —`);
 const mkBc = new Blockchain();
 mkBc.mine(bob.address);
-mkBc.addTransaction(createTransaction(bob, alice.address, 5, mkBc.nonceOf(bob.address)));
+mkBc.addTransaction(createTransaction(bob, alice.address, 1, mkBc.nonceOf(bob.address)));
 mkBc.mine(bob.address);
 check('正常链 merkleRoot 校验通过', Blockchain.validateChain(mkBc.chain).ok);
 const tamperMk = JSON.parse(JSON.stringify(mkBc.chain));
@@ -137,17 +137,17 @@ check('出块过慢 → 难度下调', expectedDifficulty(slow as any, idx) < GE
 
 console.log(`\n— 集市：上架 → 购买 → 撤单 —`);
 const mk = new Blockchain();
-mk.mine(alice.address); // alice 50
-mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(20, '复习笔记')));
-mk.mine(bob.address); // bob 50，打包上架
+mk.mine(alice.address); // alice 挖到 1
+mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(1, '复习笔记')));
+mk.mine(bob.address); // bob 挖到 1，并打包上架
 let listings = parseMarket(mk.chain);
-check('集市解析出 1 件在售', listings.length === 1 && listings[0].price === 20 && listings[0].title === '复习笔记' && !listings[0].sold);
+check('集市解析出 1 件在售', listings.length === 1 && listings[0].price === 1 && listings[0].title === '复习笔记' && !listings[0].sold);
 const lid = listings[0].id;
-mk.addTransaction(createTransaction(bob, alice.address, 20, mk.nonceOf(bob.address), `${BUY_PREFIX}${lid}`));
+mk.addTransaction(createTransaction(bob, alice.address, 1, mk.nonceOf(bob.address), `${BUY_PREFIX}${lid}`));
 mk.mine(bob.address);
 listings = parseMarket(mk.chain);
 check('购买后标记已售 + 买家正确', listings[0].sold && listings[0].soldBy === bob.address);
-check('卖家 alice 收到货款（50挖矿 + 20售货 = 70）', mk.balanceOf(alice.address) === 70);
+check('卖家 alice 收到货款（1挖矿 + 1售货 = 2）', mk.balanceOf(alice.address) === 2);
 // 第二件：上架后撤单
 mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(5, '废品')));
 mk.mine(bob.address);

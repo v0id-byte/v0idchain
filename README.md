@@ -15,7 +15,7 @@
 | --- | --- |
 | 区块 & 链 | `{ index, timestamp, prevHash, transactions, merkleRoot, difficulty, nonce, miner, hash }`，SHA-256 链接 |
 | 共识 | PoW（**自适应难度**，按前导 0 **比特** + 比特币式重定向）+ **最长合法链**规则 |
-| 代币 | `$V0ID`；币靠**挖矿**产生（每出一块矿工奖励 **50**）；创世给“央行”地址预挖 **1000** 启动币 |
+| 代币 | `$V0ID`；币靠**挖矿**产生（每出一块矿工奖励 **1**）；创世给“央行”地址预挖 **1000** 启动币 |
 | 交易 | `{ from, to, amount, nonce, timestamp, memo, signature, txid }`，**零手续费**，可带**备注 memo** |
 | 区块头 | 交易 **Merkle 根** + 每块自适应 `difficulty`（前导 0 比特数） |
 | 签名 | **ed25519**（`@noble/ed25519`）；地址 = `0x` + 公钥 hex |
@@ -154,9 +154,10 @@ v0id market sell   <price> <title…> [--api]   上架（自转 1 币，memo 记
 v0id market buy    <id> [--api]               购买（付标价给卖家，id 可填前缀）
 v0id market delist <id> [--api]               撤下自己的商品
 
-v0id wallet show [--name|--data-dir] [--secret]   查看地址/公钥（--secret 显私钥）
-v0id wallet new  [--name|--data-dir]              新建钱包
-v0id wallet treasury-address                      显示“央行”预挖地址
+v0id wallet show   [--name|--data-dir] [--secret]   查看地址/公钥（--secret 显私钥 = 备份）
+v0id wallet new    [--name|--data-dir]              新建钱包
+v0id wallet import <私钥> [--name|--data-dir] [--force]   用备份私钥恢复钱包（找回币）
+v0id wallet treasury-address                        显示“央行”预挖地址
 ```
 
 ---
@@ -225,7 +226,7 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 
 ## 设计说明 & 已知边界（玩具链，别上真钱）
 
-- **币的来源 = 挖矿。** 每出一块矿工得 50 新币；想拿币就开 `--mine`。创世另给一个“央行”地址预挖 1000 启动币，`config.ts` 里只写它的**地址（公钥，公开安全）**，对应**私钥只存所有者本机**（`.data/treasury/wallet.json`，已 gitignore，不入仓库）。只有持私钥者能用普通 `send` 分发这 1000。仓库里**不含任何私钥**。
+- **币的来源 = 挖矿。** 每出一块矿工得 1 新币；想拿币就开 `--mine`。创世另给一个“央行”地址预挖 1000 启动币，`config.ts` 里只写它的**地址（公钥，公开安全）**，对应**私钥只存所有者本机**（`.data/treasury/wallet.json`，已 gitignore，不入仓库）。只有持私钥者能用普通 `send` 分发这 1000。仓库里**不含任何私钥**。
 - **自适应难度**（前导 0 *比特*，非 hex 位 → 每 ±1 bit = 难度 ×/÷2，可平滑调整）。每 `RETARGET_INTERVAL` 块按过去窗口实际耗时向 `TARGET_BLOCK_TIME_MS` 重定向，钳制在 `MIN/MAX_DIFFICULTY`。难度字段写进区块头、由各节点用链历史确定性重算并校验，矿工无法私自降难度。时间戳要求单调不减（为保持各节点确定性，**不设**未来时间上限）。
 - **最长链共识**：收到更长的合法链就整体替换。同高度分叉时保留当前链（先到先得）。极端情况下短暂分叉会随后被更长链收敛。
 - **整链校验是共识唯一权威**：每次接收都会从创世重放，校验 PoW、coinbase 规则、每笔签名、nonce 顺序、余额（防双花/超额）。区块 hash 承诺交易的 `txid`，而校验时对**每一笔交易（含 coinbase/创世）都断言 `txid === 内容哈希`**，于是交易内容经由 txid 被 PoW 真正锚定 —— 改金额/收款方都会被识破。

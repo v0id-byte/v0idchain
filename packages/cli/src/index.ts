@@ -213,8 +213,36 @@ wallet
     }
     console.log(c.bold('地址 '), c.green(w.address));
     console.log(c.bold('公钥 '), bytesToHex(w.publicKey));
-    if (o.secret) console.log(c.red('私钥 '), bytesToHex(w.privateKey));
+    if (o.secret) {
+      console.log(c.red('私钥 '), bytesToHex(w.privateKey));
+      console.log(c.dim('↑ 把这串私钥存好就是备份。换机/丢失后用 `v0id wallet import <私钥>` 恢复（连币一起回来）。'));
+    }
     console.log(c.dim(`(${dir})`));
+  });
+wallet
+  .command('import')
+  .argument('<privateKey>', '64 位 hex 私钥（来自 `wallet show --secret` 的备份）')
+  .description('用私钥恢复钱包到数据目录（找回备份的钱包及其链上余额）')
+  .option('--name <name>', '节点名', 'node')
+  .option('--data-dir <dir>', '数据目录')
+  .option('--force', '覆盖该目录已有钱包（危险：会丢掉现有钱包）', false)
+  .action((privateKey, o) => {
+    const key = String(privateKey).trim().replace(/^0x/, '');
+    if (!/^[0-9a-fA-F]{64}$/.test(key)) {
+      console.error(c.red('私钥格式无效：应为 64 位十六进制'));
+      process.exit(1);
+    }
+    const dir = o.dataDir || defaultDataDir(o.name);
+    mkdirSync(dir, { recursive: true });
+    const f = join(dir, 'wallet.json');
+    if (existsSync(f) && !o.force) {
+      console.error(c.red(`${f} 已有钱包；如确定要覆盖，加 --force（会丢掉现有钱包！）`));
+      process.exit(1);
+    }
+    const w = Wallet.fromPrivateKeyHex(key);
+    writeFileSync(f, JSON.stringify(w.toJSON(), null, 2));
+    console.log(c.green('🔑 钱包已恢复'), c.green(w.address));
+    console.log(c.dim(`(${dir})  连上网络后余额会自动同步回来`));
   });
 wallet
   .command('new')

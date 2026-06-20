@@ -15,7 +15,7 @@ Hand-written blocks / hashing / chain structure / PoW mining / ed25519 signature
 | --- | --- |
 | Block & chain | `{ index, timestamp, prevHash, transactions, merkleRoot, difficulty, nonce, miner, hash }`, SHA-256 linked |
 | Consensus | PoW (**adaptive difficulty** — leading-zero **bits** + Bitcoin-style retarget) + **longest valid chain** |
-| Token | `$V0ID`; minted by **mining** (50 per block); genesis pre-mines **1000** to a "treasury" address |
+| Token | `$V0ID`; minted by **mining** (1 per block); genesis pre-mines **1000** to a "treasury" address |
 | Transaction | `{ from, to, amount, nonce, timestamp, memo, signature, txid }`, **zero fee**, optional **memo** |
 | Block header | transaction **Merkle root** + per-block adaptive `difficulty` (leading-zero bits) |
 | Signatures | **ed25519** (`@noble/ed25519`); address = `0x` + pubkey hex |
@@ -155,9 +155,10 @@ v0id market sell   <price> <title…> [--api]   list an item (self-transfer of 1
 v0id market buy    <id> [--api]               buy (pay the seller the price; id prefix ok)
 v0id market delist <id> [--api]               take down your own listing
 
-v0id wallet show [--name|--data-dir] [--secret]   show address/pubkey (--secret reveals private key)
-v0id wallet new  [--name|--data-dir]              create a new wallet
-v0id wallet treasury-address                      show the genesis ("treasury") pre-mine address
+v0id wallet show   [--name|--data-dir] [--secret]   show address/pubkey (--secret reveals private key = backup)
+v0id wallet new    [--name|--data-dir]              create a new wallet
+v0id wallet import <privkey> [--name|--data-dir] [--force]   restore a wallet from a backed-up key
+v0id wallet treasury-address                        show the genesis ("treasury") pre-mine address
 ```
 
 ---
@@ -226,7 +227,7 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 
 ## Design notes & known limits (toy chain — not for real money)
 
-- **Coins come from mining.** 50 new coins per block; run `--mine` to earn. Genesis also pre-mines 1000 to a "treasury" address. `config.ts` only contains its **address (pubkey, safe to publish)**; the **private key lives only on the owner's machine** (`.data/treasury/wallet.json`, gitignored, never committed). Only the key holder can distribute that 1000 via `send`. **The repo contains no private keys.**
+- **Coins come from mining.** 1 new coin per block; run `--mine` to earn. Genesis also pre-mines 1000 to a "treasury" address. `config.ts` only contains its **address (pubkey, safe to publish)**; the **private key lives only on the owner's machine** (`.data/treasury/wallet.json`, gitignored, never committed). Only the key holder can distribute that 1000 via `send`. **The repo contains no private keys.**
 - **Adaptive difficulty** (leading-zero *bits*, not hex digits → each ±1 bit halves/doubles difficulty for smooth adjustment). Every `RETARGET_INTERVAL` blocks it retargets toward `TARGET_BLOCK_TIME_MS` based on the actual elapsed time of the past window, clamped to `MIN/MAX_DIFFICULTY`. The difficulty is written into each block header and independently recomputed+verified by every node from chain history, so a miner can't lower it. Timestamps must be non-decreasing (no future bound, deliberately, to keep validation deterministic across nodes).
 - **Longest-chain consensus**: replace with any longer valid chain; on equal-height forks keep the current one (first-seen). Transient forks converge to the longest chain.
 - **Full-chain validation is the sole authority**: every received chain is replayed from genesis, checking PoW, coinbase rules, every signature, nonce ordering, and balances (no double-spend/overspend). The block hash commits to each tx's `txid`, and validation asserts `txid === hash(content)` for **every** tx (including coinbase/genesis) — so tx contents are anchored by PoW; changing an amount or recipient is detected.

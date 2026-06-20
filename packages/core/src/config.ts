@@ -20,7 +20,7 @@ export const RETARGET_INTERVAL = 8;
 export const MAX_MEMO = 128;
 
 /** 每挖出一个区块，矿工获得的奖励（coinbase 新币）。零手续费，矿工只赚这个。 */
-export const BLOCK_REWARD = 50;
+export const BLOCK_REWARD = 1;
 
 /** 创世预挖额：给下面的“央行”地址发一笔启动币（其余的币全靠挖矿产生）。 */
 export const GENESIS_PREMINE = 1_000;
