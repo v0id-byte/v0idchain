@@ -6,6 +6,10 @@ import {
   verifyTransaction,
   merkleRoot,
   expectedDifficulty,
+  parseMarket,
+  buildListMemo,
+  BUY_PREFIX,
+  DEL_PREFIX,
   TARGET_BLOCK_TIME_MS,
   RETARGET_INTERVAL,
   GENESIS_PREMINE,
@@ -130,6 +134,34 @@ const fast = Array.from({ length: idx + 1 }, (_, i) => ({ timestamp: i * 100, di
 const slow = Array.from({ length: idx + 1 }, (_, i) => ({ timestamp: i * TARGET_BLOCK_TIME_MS * 4, difficulty: GENESIS_DIFFICULTY }));
 check('出块过快 → 难度上调', expectedDifficulty(fast as any, idx) > GENESIS_DIFFICULTY);
 check('出块过慢 → 难度下调', expectedDifficulty(slow as any, idx) < GENESIS_DIFFICULTY);
+
+console.log(`\n— 集市：上架 → 购买 → 撤单 —`);
+const mk = new Blockchain();
+mk.mine(alice.address); // alice 50
+mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(20, '复习笔记')));
+mk.mine(bob.address); // bob 50，打包上架
+let listings = parseMarket(mk.chain);
+check('集市解析出 1 件在售', listings.length === 1 && listings[0].price === 20 && listings[0].title === '复习笔记' && !listings[0].sold);
+const lid = listings[0].id;
+mk.addTransaction(createTransaction(bob, alice.address, 20, mk.nonceOf(bob.address), `${BUY_PREFIX}${lid}`));
+mk.mine(bob.address);
+listings = parseMarket(mk.chain);
+check('购买后标记已售 + 买家正确', listings[0].sold && listings[0].soldBy === bob.address);
+check('卖家 alice 收到货款（50挖矿 + 20售货 = 70）', mk.balanceOf(alice.address) === 70);
+// 第二件：上架后撤单
+mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(5, '废品')));
+mk.mine(bob.address);
+const l2 = parseMarket(mk.chain).find((l) => l.title === '废品')!;
+mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), `${DEL_PREFIX}${l2.id}`));
+mk.mine(bob.address);
+check('撤单后标记下架', parseMarket(mk.chain).find((l) => l.id === l2.id)?.delisted === true);
+// 第三件：bob 冒充卖家撤单（非本人）→ 应无效
+mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(8, '橡皮')));
+mk.mine(bob.address);
+const l3 = parseMarket(mk.chain).find((l) => l.title === '橡皮')!;
+mk.addTransaction(createTransaction(bob, bob.address, 1, mk.nonceOf(bob.address), `${DEL_PREFIX}${l3.id}`));
+mk.mine(bob.address);
+check('非卖家撤单无效（商品仍在售）', parseMarket(mk.chain).find((l) => l.id === l3.id)?.delisted === false);
 
 console.log(`\n余额总览：`);
 console.log(`  央行预挖 ${bc.balanceOf(GENESIS_PREMINE_ADDRESS)} ${SYMBOL}`);

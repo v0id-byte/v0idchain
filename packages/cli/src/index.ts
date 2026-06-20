@@ -157,6 +157,45 @@ apiOpt(program.command('connect'))
     console.log(c.green('已发起连接'), url);
   });
 
+// ---- market 集市（用 $V0ID 买卖商品/服务） ----
+const market = program.command('market').description('集市：用 $V0ID 买卖商品/服务');
+apiOpt(market.command('list'))
+  .description('看在售商品')
+  .option('--all', '连已售/已下架一起显示', false)
+  .action(async (o) => {
+    const all = (await api(o.api, 'GET', '/market')) as any[];
+    const items = o.all ? all : all.filter((l) => !l.sold && !l.delisted);
+    if (!items.length) return console.log(c.dim('（暂无商品）'));
+    for (const l of items) {
+      const tag = l.sold ? c.dim('[已售]') : l.delisted ? c.dim('[下架]') : c.green('[在售]');
+      const mine = l.mine ? c.yellow(' (我的)') : '';
+      console.log(`${tag} ${c.bold(`${l.price} ${SYMBOL}`)}  ${l.title}${mine}`);
+      console.log(`      ${c.dim('卖家 ' + short(l.seller) + '  id ' + l.id.slice(0, 12) + '…')}`);
+    }
+  });
+apiOpt(market.command('sell'))
+  .argument('<price>', '价格（正整数 $V0ID）')
+  .argument('<title...>', '商品/服务标题')
+  .description('上架一件商品（需 ≥1 余额；上架交易被挖进区块后才出现）')
+  .action(async (price, title, o) => {
+    const r = await api(o.api, 'POST', '/market/sell', { price: Number(price), title: title.join(' ') });
+    console.log(c.green('🏷  已上架'), c.dim('txid='), r.txid, c.dim('（等一个区块确认后可见）'));
+  });
+apiOpt(market.command('buy'))
+  .argument('<id>', '商品 id（上架 txid，可只填前若干位则用 list 查全）')
+  .description('购买商品（付标价给卖家）')
+  .action(async (id, o) => {
+    const r = await api(o.api, 'POST', '/market/buy', { id });
+    console.log(c.green('🛒 已下单付款'), c.dim('txid='), r.txid);
+  });
+apiOpt(market.command('delist'))
+  .argument('<id>', '商品 id')
+  .description('撤下自己的商品')
+  .action(async (id, o) => {
+    const r = await api(o.api, 'POST', '/market/delist', { id });
+    console.log(c.green('已撤单'), c.dim('txid='), r.txid);
+  });
+
 // ---- wallet（直接读数据目录，不需要节点在跑） ----
 const wallet = program.command('wallet').description('钱包管理');
 wallet

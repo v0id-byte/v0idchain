@@ -150,10 +150,37 @@ v0id mine     [blocks]      [--api]   mine N blocks right now
 v0id peers    [--api]             connected peers
 v0id connect  <ws-url> [--api]    connect to a peer
 
+v0id market list   [--all] [--api]            browse listings (--all includes sold/delisted)
+v0id market sell   <price> <title…> [--api]   list an item (self-transfer of 1, memo records the item)
+v0id market buy    <id> [--api]               buy (pay the seller the price; id prefix ok)
+v0id market delist <id> [--api]               take down your own listing
+
 v0id wallet show [--name|--data-dir] [--secret]   show address/pubkey (--secret reveals private key)
 v0id wallet new  [--name|--data-dir]              create a new wallet
 v0id wallet treasury-address                      show the genesis ("treasury") pre-mine address
 ```
+
+---
+
+## Marketplace (buy/sell goods & services with `$V0ID`)
+
+Making the coin useful = giving it value. The marketplace is built entirely on **transfers + memo** —
+**no consensus changes, no central server** — so listings sync across the network via the chain and are permanent:
+
+- **List** = transfer 1 coin to yourself with memo `MKT|price|title` (net-zero; just records the item on-chain)
+- **Buy** = transfer the price to the seller with memo `BUY|<listing-txid>`
+- **Delist** = memo `DEL|<listing-txid>` (only valid from the seller)
+
+Any node scans the chain to reconstruct the listing list (sold/delisted auto-marked). There's a "Marketplace" panel
+in the dashboard, or use the CLI:
+
+```bash
+$v market sell 30 ch3-revision-notes --api http://127.0.0.1:7001   # list (wait one block to confirm)
+$v market list --api http://127.0.0.1:7002                         # other nodes see it too (synced)
+$v market buy 9f59c01a --api http://127.0.0.1:7002                 # buy by id prefix
+```
+
+> On-chain settlement (payment + sale record), off-chain delivery (the notes / the favor / the drink). Listing needs ≥1 balance (the self-transfer of 1).
 
 ---
 
@@ -219,3 +246,4 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - [x] Phase 4 — mining broadcast + longest-chain consensus
 - [x] Phase 5 — web dashboard (React/Vite live view + transfers)
 - [x] Phase 6 — advanced: **adaptive difficulty** · transaction **memo** · **Merkle root** · **block explorer** (search address/txid/block)
+- [x] Phase 7 — **marketplace**: buy/sell goods & services with `$V0ID` (built on memos, no consensus change)

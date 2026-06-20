@@ -6,3 +6,4 @@ export * from './transaction.js';
 export * from './block.js';
 export * from './blockchain.js';
 export * from './storage.js';
+export * from './market.js';

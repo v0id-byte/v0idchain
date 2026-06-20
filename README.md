@@ -149,10 +149,37 @@ v0id mine     [blocks]      [--api]    立即挖 N 个块
 v0id peers    [--api]            已连接的对等节点
 v0id connect  <ws-url> [--api]   主动连一个对等节点
 
+v0id market list   [--all] [--api]            看在售商品（--all 含已售/下架）
+v0id market sell   <price> <title…> [--api]   上架（自转 1 币，memo 记商品）
+v0id market buy    <id> [--api]               购买（付标价给卖家，id 可填前缀）
+v0id market delist <id> [--api]               撤下自己的商品
+
 v0id wallet show [--name|--data-dir] [--secret]   查看地址/公钥（--secret 显私钥）
 v0id wallet new  [--name|--data-dir]              新建钱包
 v0id wallet treasury-address                      显示“央行”预挖地址
 ```
+
+---
+
+## 集市（用 `$V0ID` 买卖商品/服务）
+
+让币有用处 = 让币有价值。集市完全建在**转账 + memo**之上，**不改共识、零中心化服务器** ——
+商品信息随链全网同步、永久可查：
+
+- **上架** = 给自己转 1 币，memo 写 `MKT|价格|标题`（净额不变，只是把商品记上链）
+- **购买** = 把标价转给卖家，memo 写 `BUY|<上架txid>`
+- **撤单** = memo `DEL|<上架txid>`（仅卖家本人有效）
+
+任何节点扫一遍链就能把这些 memo 还原成商品列表（已售/下架自动标注）。仪表盘里有「集市」面板，
+也能用 CLI：
+
+```bash
+$v market sell 30 复习笔记第3章 --api http://127.0.0.1:7001   # 上架（等一个区块确认）
+$v market list --api http://127.0.0.1:7002                    # 别的节点也能看到（已同步）
+$v market buy 9f59c01a --api http://127.0.0.1:7002            # 用 id 前缀购买
+```
+
+> 链上结算（付款 + 成交记录），线下交付（笔记/帮忙/请客）。上架需先有 ≥1 余额（自转那 1 币）。
 
 ---
 
@@ -218,3 +245,4 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - [x] Phase 4 — 挖矿广播 + 最长链共识
 - [x] Phase 5 — Web 仪表盘（React/Vite 实时看链 + 转账）
 - [x] Phase 6 — 进阶：**自适应难度** · 交易 **备注 memo** · **Merkle 根** · **区块浏览器**（搜地址/txid/区块）
+- [x] Phase 7 — **集市**：用 `$V0ID` 买卖商品/服务（建在 memo 之上，不改共识）

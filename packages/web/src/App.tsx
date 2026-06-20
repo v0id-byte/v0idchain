@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Tx, type TxRef } from './api';
+import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef } from './api';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
 const ago = (ts: number) => {
@@ -16,6 +16,7 @@ export default function App() {
   const [info, setInfo] = useState<Info | null>(null);
   const [chain, setChain] = useState<Block[]>([]);
   const [mempool, setMempool] = useState<Tx[]>([]);
+  const [market, setMarket] = useState<Listing[]>([]);
   const [up, setUp] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const apiRef = useRef(api);
@@ -24,14 +25,16 @@ export default function App() {
   const poll = useCallback(async () => {
     const base = apiRef.current;
     try {
-      const [i, c, m] = await Promise.all([
+      const [i, c, m, mk] = await Promise.all([
         getJSON<Info>(base, '/info'),
         getJSON<Block[]>(base, '/chain'),
         getJSON<Tx[]>(base, '/mempool'),
+        getJSON<Listing[]>(base, '/market'),
       ]);
       setInfo(i);
       setChain(c);
       setMempool(m);
+      setMarket(mk);
       setUp(true);
     } catch {
       setUp(false);
@@ -86,6 +89,8 @@ export default function App() {
       </div>
 
       <Explorer chain={chain} me={me} />
+
+      <Marketplace market={market} api={api} onDone={poll} />
 
       <div className="cols">
         <Actions api={api} me={me} onDone={poll} />
@@ -289,6 +294,93 @@ function Mempool({ mempool, me }: { mempool: Tx[]; me: string }) {
       {mempool.map((tx) => (
         <TxRow key={tx.txid} tx={tx} me={me} />
       ))}
+    </div>
+  );
+}
+
+function Marketplace({ market, api, onDone }: { market: Listing[]; api: string; onDone: () => void }) {
+  const [title, setTitle] = useState('');
+  const [price, setPrice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState<Banner>(null);
+
+  const act = async (path: string, body: unknown, okMsg: string) => {
+    setBusy(true);
+    setBanner(null);
+    try {
+      await postJSON(api, path, body);
+      setBanner({ kind: 'ok', text: okMsg });
+      onDone();
+      return true;
+    } catch (e) {
+      setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sell = async () => {
+    if (await act('/market/sell', { price: Number(price), title: title.trim() }, '已上架（等一个区块确认后显示）')) {
+      setTitle('');
+      setPrice('');
+    }
+  };
+
+  const active = market.filter((l) => !l.sold && !l.delisted);
+  const done = market.filter((l) => l.sold || l.delisted);
+
+  return (
+    <div className="panel" style={{ marginBottom: 24 }}>
+      <h2>集市 · {active.length} 件在售</h2>
+      <div className="row2">
+        <div className="field" style={{ flex: 2 }}>
+          <label>商品 / 服务</label>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：复习笔记 / 帮做PPT / 请喝奶茶" maxLength={100} />
+        </div>
+        <div className="field">
+          <label>价格 $V0ID</label>
+          <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="20" inputMode="numeric" />
+        </div>
+      </div>
+      <div className="btns">
+        <button disabled={busy || !title || !price} onClick={sell}>
+          上架
+        </button>
+      </div>
+      {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+
+      <div className="mkt-grid">
+        {active.length === 0 && <div className="empty">还没有人上架，来当第一个卖家吧</div>}
+        {active.map((l) => (
+          <div className="mkt-item" key={l.id}>
+            <div className="mkt-top">
+              <span className="mkt-price">{l.price} $V0ID</span>
+              {l.mine && <span className="tag me">我的</span>}
+            </div>
+            <div className="mkt-title">{l.title}</div>
+            <div className="mkt-seller">卖家 {short(l.seller)}</div>
+            {l.mine ? (
+              <button className="ghost mini" disabled={busy} onClick={() => act('/market/delist', { id: l.id }, '已撤单')}>
+                撤下
+              </button>
+            ) : (
+              <button className="mini" disabled={busy} onClick={() => act('/market/buy', { id: l.id }, '已下单付款')}>
+                购买
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      {done.length > 0 && (
+        <div className="mkt-done">
+          {done.slice(0, 10).map((l) => (
+            <span key={l.id} className="mkt-doneitem">
+              {l.sold ? '✓ 已售' : '✕ 下架'} {l.title} · {l.price} $V0ID
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

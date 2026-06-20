@@ -58,6 +58,8 @@ export function startHttpApi(node: V0idNode, port: number) {
             return json(200, node.bc.mempool);
           case '/peers':
             return json(200, node.p2p.peerList());
+          case '/market':
+            return json(200, node.market());
           case '/balance': {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
@@ -86,6 +88,18 @@ export function startHttpApi(node: V0idNode, port: number) {
           case '/connect': {
             node.p2p.connect(String(body.url));
             return json(200, { ok: true });
+          }
+          case '/market/sell': {
+            const r = node.marketSell(Number(body.price), String(body.title ?? ''));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/market/buy': {
+            const r = node.marketBuy(String(body.id));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/market/delist': {
+            const r = node.marketDelist(String(body.id));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
         }
       }

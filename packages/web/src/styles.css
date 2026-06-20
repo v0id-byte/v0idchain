@@ -121,6 +121,17 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   background: var(--bg-soft); border: 1px solid var(--border); border-radius: 9px; padding: 11px 13px; outline: none;
 }
 .search:focus { border-color: var(--cyan); }
+/* marketplace */
+.mkt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 16px; }
+.mkt-item { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+.mkt-top { display: flex; align-items: center; justify-content: space-between; }
+.mkt-price { font-size: 18px; font-weight: 680; color: var(--accent); letter-spacing: -0.02em; }
+.mkt-title { font-size: 14px; color: var(--text); line-height: 1.35; min-height: 19px; word-break: break-word; }
+.mkt-seller { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.mkt-item button { margin-top: 6px; }
+.mkt-done { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); display: flex; flex-wrap: wrap; gap: 8px; }
+.mkt-doneitem { font-size: 11.5px; color: var(--text-faint); background: var(--bg-soft); border: 1px solid var(--border-soft); padding: 3px 8px; border-radius: 6px; }
+
 .exresult { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
 .exresult .bigbal { font-size: 30px; font-weight: 680; letter-spacing: -0.02em; margin: 8px 0; }
 .exresult .bigbal small { font-size: 14px; color: var(--text-dim); font-weight: 500; }

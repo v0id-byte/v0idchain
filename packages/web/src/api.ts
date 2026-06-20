@@ -24,6 +24,18 @@ export interface Block {
   hash: string;
 }
 
+export interface Listing {
+  id: string;
+  title: string;
+  price: number;
+  seller: string;
+  timestamp: number;
+  delisted: boolean;
+  sold: boolean;
+  soldBy?: string;
+  mine: boolean;
+}
+
 export interface Info {
   address: string;
   symbol: string;
