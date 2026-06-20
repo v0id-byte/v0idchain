@@ -70,7 +70,8 @@ export class V0idNode {
 
   start(): void {
     this.p2p.start(this.opts.p2pPort);
-    for (const url of this.opts.peers ?? []) this.p2p.connect(url);
+    // 运营者显式种子：trusted（置顶、允许私网/环回，不被 gossip 过滤或淘汰）
+    for (const url of this.opts.peers ?? []) this.p2p.connect(url, true);
   }
 
   // ---- 钱包动作 ----

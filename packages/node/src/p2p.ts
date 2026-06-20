@@ -43,10 +43,19 @@ export class P2P {
   /** knownUrls 上限，封顶以防 gossip 灌爆内存 / 重连风暴 */
   private static readonly MAX_KNOWN = 512;
 
+  /**
+   * 单条 WS 消息大小上限。ws 默认 100MB，攻击者可发巨型 JSON 触发 OOM。
+   * 这里收到 64MB：足够 QUERY_ALL 整链同步（≈1KB/块 → 约 6 万块的余量），又挡住更大的 OOM。
+   * 注意：整链作为单条消息发送，链极长时仍会触顶 —— 彻底的做法是分片同步（教学链暂留此上限）。
+   */
+  private static readonly MAX_WS_PAYLOAD = 64 * 1024 * 1024;
+
   /** 当前已连接的 socket → 元信息 */
   private peers = new Map<WebSocket, PeerMeta>();
   /** 听说过的对外地址（用于发现 + 重连） */
   private knownUrls = new Set<string>();
+  /** 运营者显式提供的种子（--peers / 本地 /connect）：永不被 gossip 淘汰，且允许私网/环回地址 */
+  private pinnedUrls = new Set<string>();
   /** 正在/已经拨号的地址，避免重复连接 */
   private dialedUrls = new Set<string>();
 
@@ -62,7 +71,7 @@ export class P2P {
 
   start(port: number): void {
     this.port = port;
-    this.wss = new WebSocketServer({ port });
+    this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD });
     this.wss.on('connection', (ws) => this.setupSocket(ws));
     // 每 5s 尝试补连已知但未连上的节点（自愈 + 种子节点重连，掉线后快速回网）
     setInterval(() => this.reconnect(), 5_000).unref?.();
@@ -84,22 +93,74 @@ export class P2P {
     }
   }
 
-  /** 受控地记入已知地址：先校验，再封顶（防止 gossip 把 knownUrls 撑爆 → 重连风暴） */
-  private addKnown(url: string): void {
-    if (!this.isValidWsUrl(url)) return;
-    if (this.knownUrls.size >= P2P.MAX_KNOWN && !this.knownUrls.has(url)) return;
-    this.knownUrls.add(url);
+  /**
+   * 是否“公网可路由”地址：拒绝环回 / RFC1918 私网 / 链路本地 / ULA / 未指定地址。
+   * 仅用于过滤 **gossip 学来的** 地址（HELLO listen / PEERS），防止恶意节点诱导本节点去拨内网服务（SSRF 类）。
+   * 运营者显式 --peers / 本地 /connect 不走此过滤（见 connect 的 trusted 参数），本机多节点开发照常可用。
+   * 仅过滤 IP 字面量；域名无法在此同步解析（DNS rebinding 超出本教学链范围）。
+   */
+  private isPublicWsUrl(url: string): boolean {
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    if (host === '' || host === 'localhost') return false;
+    if (host.includes(':')) {
+      // IPv6 字面量
+      if (host === '::1' || host === '::') return false; // 环回 / 未指定
+      if (host.startsWith('fe80:')) return false; // 链路本地
+      if (host.startsWith('fc') || host.startsWith('fd')) return false; // ULA fc00::/7
+      return true;
+    }
+    if (host === '0.0.0.0') return false; // 未指定
+    if (/^127\./.test(host)) return false; // 环回
+    if (/^10\./.test(host)) return false; // RFC1918
+    if (/^192\.168\./.test(host)) return false; // RFC1918
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false; // RFC1918
+    if (/^169\.254\./.test(host)) return false; // 链路本地
+    return true;
   }
 
-  /** 主动连接一个对等节点 */
-  connect(url: string): void {
+  /**
+   * 受控地记入已知地址：先校验，再封顶。容量满时**淘汰最早的非置顶地址**（FIFO，Set 保持插入序），
+   * 让新学到的诚实种子能挤掉攻击者灌入的垃圾；运营者种子（pinned）永不被淘汰。
+   */
+  private addKnown(url: string, pinned = false): void {
+    if (!this.isValidWsUrl(url)) return;
+    if (this.knownUrls.has(url)) {
+      if (pinned) this.pinnedUrls.add(url);
+      return;
+    }
+    if (this.knownUrls.size >= P2P.MAX_KNOWN) {
+      let victim: string | undefined;
+      for (const u of this.knownUrls) {
+        if (!this.pinnedUrls.has(u)) {
+          victim = u;
+          break;
+        }
+      }
+      if (victim === undefined) return; // 全是置顶种子 → 拒绝新增
+      this.knownUrls.delete(victim);
+    }
+    this.knownUrls.add(url);
+    if (pinned) this.pinnedUrls.add(url);
+  }
+
+  /**
+   * 主动连接一个对等节点。trusted=true = 运营者显式提供（--peers / 本地 /connect）：地址被置顶
+   * （不被 gossip 淘汰）且允许私网/环回。gossip 学来的地址（trusted=false）必须公网可路由，否则拒绝。
+   */
+  connect(url: string, trusted = false): void {
     url = url.trim();
     if (!url || url === this.selfUrl || this.dialedUrls.has(url) || this.isConnectedTo(url)) return;
     if (!this.isValidWsUrl(url)) return;
+    if (!trusted && !this.isPublicWsUrl(url)) return; // gossip 来的私网/环回地址一律拒绝
     // 把“在途拨号”也计入上限，避免重连定时器一次性发起成百上千个连接
     if (this.peers.size + this.dialedUrls.size >= this.maxPeers) return;
     this.dialedUrls.add(url);
-    this.addKnown(url);
+    this.addKnown(url, trusted);
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -115,7 +176,8 @@ export class P2P {
 
   private reconnect(): void {
     for (const url of this.knownUrls) {
-      if (!this.dialedUrls.has(url)) this.connect(url);
+      // 置顶（运营者）种子按 trusted 重连，允许其私网/环回地址继续回拨
+      if (!this.dialedUrls.has(url)) this.connect(url, this.pinnedUrls.has(url));
     }
   }
 
@@ -173,7 +235,7 @@ export class P2P {
           meta.address = msg.address;
           meta.listen = msg.listen;
           this.peers.set(ws, meta);
-          this.addKnown(msg.listen);
+          if (this.isPublicWsUrl(msg.listen)) this.addKnown(msg.listen); // gossip 学来的 listen：仅记公网地址
           if (msg.height > this.handlers.getHeight()) this.send(ws, { type: 'QUERY_ALL' });
           break;
         }

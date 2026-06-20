@@ -86,7 +86,7 @@ export function startHttpApi(node: V0idNode, port: number) {
             return json(200, { mined });
           }
           case '/connect': {
-            node.p2p.connect(String(body.url));
+            node.p2p.connect(String(body.url), true); // 本地运营者显式连接：trusted
             return json(200, { ok: true });
           }
           case '/market/sell': {
