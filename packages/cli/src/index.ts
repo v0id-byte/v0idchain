@@ -2,9 +2,9 @@
 // v0idChain CLI —— start / mine / send / balance / peers / info / wallet
 import { Command } from 'commander';
 import { join } from 'node:path';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { V0idNode, startHttpApi } from '@v0idchain/node';
-import { Wallet, loadWallet, bytesToHex, SYMBOL, GENESIS_PREMINE_ADDRESS } from '@v0idchain/core';
+import { Wallet, loadWallet, writeWalletFile, bytesToHex, SYMBOL, GENESIS_PREMINE_ADDRESS } from '@v0idchain/core';
 
 // --- 小工具：极简 ANSI 颜色 ---
 const c = {
@@ -250,7 +250,7 @@ wallet
       process.exit(1);
     }
     const w = Wallet.fromPrivateKeyHex(key);
-    writeFileSync(f, JSON.stringify(w.toJSON(), null, 2));
+    writeWalletFile(f, w);
     console.log(c.green('🔑 钱包已恢复'), c.green(w.address));
     console.log(c.dim(`(${dir})  连上网络后余额会自动同步回来`));
   });
@@ -268,7 +268,7 @@ wallet
       console.error(c.red(`${f} 已存在，拒绝覆盖`));
       process.exit(1);
     }
-    writeFileSync(f, JSON.stringify(w.toJSON(), null, 2));
+    writeWalletFile(f, w);
     console.log(c.green('🔑 新钱包已生成'), c.green(w.address));
   });
 wallet

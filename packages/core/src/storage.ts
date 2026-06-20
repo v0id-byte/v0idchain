@@ -1,5 +1,5 @@
 // 持久化：把链和钱包落盘成 JSON，重启不丢。
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { Blockchain } from './blockchain.js';
 import { Wallet } from './wallet.js';
@@ -9,6 +9,15 @@ function walletPath(dataDir: string): string {
 }
 function chainPath(dataDir: string): string {
   return join(dataDir, 'chain.json');
+}
+
+/**
+ * 把钱包落盘，并把权限收紧到 0600（仅属主可读写）——里面是**明文私钥**，绝不能让同机其他用户读到。
+ * 两道保险：`mode` 关掉新建文件那一刻的窗口；`chmod` 再兜底（mode 受 umask 影响，且覆盖已存在文件时不生效）。
+ */
+export function writeWalletFile(path: string, w: Wallet): void {
+  writeFileSync(path, JSON.stringify(w.toJSON(), null, 2), { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
 
 /** 只读取钱包，不存在返回 null（绝不偷偷新建）。用于“查看”类命令。 */
@@ -25,7 +34,7 @@ export function loadOrCreateWallet(dataDir: string): Wallet {
   const existing = loadWallet(dataDir);
   if (existing) return existing;
   const w = Wallet.generate();
-  writeFileSync(walletPath(dataDir), JSON.stringify(w.toJSON(), null, 2));
+  writeWalletFile(walletPath(dataDir), w);
   return w;
 }
 
