@@ -163,7 +163,7 @@ export class P2P {
     this.addKnown(url, trusted);
     let ws: WebSocket;
     try {
-      ws = new WebSocket(url);
+      ws = new WebSocket(url, { maxPayload: P2P.MAX_WS_PAYLOAD }); // 拨出方同样限大小：整链同步走这条 socket 收
     } catch {
       this.dialedUrls.delete(url);
       return;
