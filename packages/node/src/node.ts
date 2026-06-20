@@ -35,6 +35,11 @@ export class V0idNode {
   private seenTx = new Set<string>(); // 已见过的交易，避免广播回声
   private static readonly MAX_SEEN = 5000; // seenTx 上限，FIFO 淘汰，防止长跑内存无界增长
   private mining = false;
+  // ---- 同步门控：连上网络且追平后才开挖，避免一启动就从创世单独挖出一条平行链 ----
+  private firstPeerAt = 0; // 首次连上对等节点的时刻（断网清零）
+  private lastSyncAt = 0; // 最近收到 BLOCKS（同步）消息的时刻
+  private initialSyncDone = false; // 初始同步是否完成
+  private syncing = false; // 当前是否在“等同步”而暂不挖矿（给状态行/仪表盘看）
 
   /** 记下一个已见 txid，超上限就淘汰最早的（Set 保持插入序） */
   private markSeen(txid: string): void {
@@ -144,10 +149,43 @@ export class V0idNode {
     return block;
   }
 
+  /**
+   * 能否安全开挖？没配 --peers 的独立/创世节点恒可挖；联网节点必须先“连上 + 追平”，
+   * 否则会从创世自己挖出一条平行链造成分叉。断网期间也暂停（不挖陈旧分叉）。
+   */
+  private canMine(): boolean {
+    const networked = (this.opts.peers ?? []).length > 0;
+    if (!networked) return true;
+    if (this.p2p.peerCount() === 0) {
+      this.firstPeerAt = 0;
+      this.initialSyncDone = false; // 断网 → 重连后重新走一遍同步判定
+      return false;
+    }
+    if (this.initialSyncDone) return true; // 已追平 → 连着就能挖
+    if (this.firstPeerAt === 0) this.firstPeerAt = Date.now();
+    const now = Date.now();
+    // 连上 ≥3s、收到过同步消息、且最近 2.5s 没再涌入新块（说明历史补完了）→ 判定追平
+    if (now - this.firstPeerAt > 3000 && this.lastSyncAt > 0 && now - this.lastSyncAt > 2500) {
+      this.initialSyncDone = true;
+      return true;
+    }
+    if (now - this.firstPeerAt > 30000) {
+      this.initialSyncDone = true; // 兜底：连上 30s 还没判完也放行，避免永远不挖
+      return true;
+    }
+    return false;
+  }
+
   startMining(intervalMs: number): void {
     this.mining = true;
     const loop = async () => {
       if (!this.mining) return;
+      if (!this.canMine()) {
+        this.syncing = true; // 没连上/没追平 → 等，不挖（避免分叉）
+        setTimeout(loop, 1000);
+        return;
+      }
+      this.syncing = false;
       await this.mineOnce(); // 等这块挖完（PoW 真用时间）再排下一块
       if (this.mining) setTimeout(loop, intervalMs);
     };
@@ -161,6 +199,7 @@ export class V0idNode {
   // ---- 接收 P2P 消息 ----
   private onBlocks(blocks: Block[], from: WebSocket): void {
     if (!blocks?.length) return;
+    this.lastSyncAt = Date.now(); // 收到任何 BLOCKS（哪怕不比我新）都算“对方在跟我同步”
     const newLatest = blocks[blocks.length - 1];
     if (newLatest.index <= this.bc.height) return; // 对方不比我新
 
@@ -212,6 +251,7 @@ export class V0idNode {
       difficulty: this.bc.tipDifficulty(),
       peers: this.p2p.peerCount(),
       peerList: this.p2p.peerList(),
+      syncing: this.syncing, // true = 正在等连接/同步，暂未挖矿
     };
   }
 }

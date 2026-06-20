@@ -46,6 +46,7 @@ export interface Info {
   difficulty: number;
   peers: number;
   peerList: { url?: string; address?: string }[];
+  syncing?: boolean;
 }
 
 export async function getJSON<T>(base: string, path: string): Promise<T> {

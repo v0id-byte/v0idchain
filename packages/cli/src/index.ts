@@ -88,11 +88,18 @@ program
     let lastHeight = node.bc.height;
     setInterval(() => {
       const i = node.info();
+      const time = c.dim(new Date().toLocaleTimeString());
+      if (i.syncing) {
+        // 还没连上/没追平 —— 明确显示“同步中”，不再打迷惑性的“挖矿”数字
+        console.log(`  🔄 ${time}  ${c.yellow('正在连接 / 同步区块…')}  链高 ${c.cyan(String(i.height))}  对等 ${i.peers}`);
+        lastHeight = i.height;
+        return;
+      }
       const grew = i.height > lastHeight ? c.green(`+${i.height - lastHeight}`) : c.dim('·');
       lastHeight = i.height;
       const flag = o.mine ? c.yellow('⛏') : '🔗';
       console.log(
-        `  ${flag} ${c.dim(new Date().toLocaleTimeString())}  链高 ${c.cyan(String(i.height))} ${grew}` +
+        `  ${flag} ${time}  链高 ${c.cyan(String(i.height))} ${grew}` +
           `  余额 ${c.green(`${i.balance} ${SYMBOL}`)}  难度 ${i.difficulty}bit  对等 ${i.peers}  池 ${i.mempool}`,
       );
     }, 5000).unref?.();

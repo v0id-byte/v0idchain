@@ -64,6 +64,7 @@ export default function App() {
           <span className="sym">$V0ID</span>
         </div>
         <div className="conn">
+          {info?.syncing && <span className="tag diff">同步中…</span>}
           <span className={`dot ${up ? 'up' : 'down'}`} title={up ? '已连接' : '未连接'} />
           <input value={api} onChange={(e) => setApi(e.target.value.trim())} spellCheck={false} aria-label="节点 API 地址" />
         </div>

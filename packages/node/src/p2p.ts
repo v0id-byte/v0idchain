@@ -64,8 +64,8 @@ export class P2P {
     this.port = port;
     this.wss = new WebSocketServer({ port });
     this.wss.on('connection', (ws) => this.setupSocket(ws));
-    // 每 15s 尝试补连已知但未连上的节点（自愈 + 种子节点重连）
-    setInterval(() => this.reconnect(), 15_000).unref?.();
+    // 每 5s 尝试补连已知但未连上的节点（自愈 + 种子节点重连，掉线后快速回网）
+    setInterval(() => this.reconnect(), 5_000).unref?.();
   }
 
   /** 是否已经连到某个对外地址（按对方广播的 listen 判断） */
