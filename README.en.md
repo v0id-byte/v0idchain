@@ -3,7 +3,7 @@
 **English | [中文](README.md)**
 
 A zero-cost, zero-gas, zero-fee educational blockchain. TypeScript + Node.js, pnpm monorepo.
-Hand-written blocks / hashing / chain structure / PoW mining / ed25519 signatures / WebSocket P2P / longest-chain consensus.
+Hand-written blocks / hashing / chain structure / PoW mining / ed25519 signatures / WebSocket P2P / most-work-chain consensus.
 
 > Our own chain, our own validation rules — transfers are free, coins are minted by mining (block rewards).
 
@@ -14,7 +14,7 @@ Hand-written blocks / hashing / chain structure / PoW mining / ed25519 signature
 | Capability | How |
 | --- | --- |
 | Block & chain | `{ index, timestamp, prevHash, transactions, merkleRoot, difficulty, nonce, miner, hash }`, SHA-256 linked |
-| Consensus | PoW (**adaptive difficulty** — leading-zero **bits** + Bitcoin-style retarget) + **longest valid chain** |
+| Consensus | PoW (**adaptive difficulty** — leading-zero **bits** + Bitcoin-style retarget) + **most-work valid chain** (by cumulative PoW, not length) |
 | Token | `$V0ID`; minted by **mining** (1 per block); genesis pre-mines **1000** to a "treasury" address |
 | Transaction | `{ from, to, amount, nonce, timestamp, memo, signature, txid }`, **zero fee**, optional **memo** |
 | Block header | transaction **Merkle root** + per-block adaptive `difficulty` (leading-zero bits) |
@@ -75,7 +75,7 @@ Mined coins are held by your own wallet (data in `.data/miner/`); send them to f
 ### 2. Self-checks (optional but recommended)
 
 ```bash
-corepack pnpm smoke          # core logic: mining / transfers / balances / replay / tamper-detection / longest-chain
+corepack pnpm smoke          # core logic: mining / transfers / balances / replay / tamper-detection / most-work consensus
 corepack pnpm exec tsx scripts/integration.ts   # multi-node: broadcast / sync / late-joiner catch-up / persistence
 ```
 
@@ -110,7 +110,7 @@ $v send 0x<node2-address> 300 --api http://127.0.0.1:7001
 $v balance 0x<address> --api http://127.0.0.1:7001   # both nodes should agree on the balance
 ```
 
-> The pre-mine (1000 at genesis) sits in the "treasury" address. Only the holder of its private key (the project author — key stays local, never committed) can distribute it via `send`. Everyone else earns coins by **mining**.
+> The pre-mine (1000 at genesis) sits in the "treasury" address. Only the holder of its private key (the project author — key stays local, never committed) can distribute it via `send`. Everyone else earns coins by **mining**. The treasury is a plain single-sig address with **no minting privilege** (new coins only ever come from coinbase, fixed at `BLOCK_REWARD` by consensus) — so losing its key just loses those 1000 coins, like any wallet; keep it safe (`wallet.json` is now `0600`).
 
 > Chain data is persisted under `./.data/<node-name>/` (survives restart). To start fresh from genesis, delete it: `rm -rf .data`.
 
@@ -228,14 +228,16 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 ## Design notes & known limits (toy chain — not for real money)
 
 - **Coins come from mining.** 1 new coin per block; run `--mine` to earn. Genesis also pre-mines 1000 to a "treasury" address. `config.ts` only contains its **address (pubkey, safe to publish)**; the **private key lives only on the owner's machine** (`.data/treasury/wallet.json`, gitignored, never committed). Only the key holder can distribute that 1000 via `send`. **The repo contains no private keys.**
-- **Adaptive difficulty** (leading-zero *bits*, not hex digits → each ±1 bit halves/doubles difficulty for smooth adjustment). Every `RETARGET_INTERVAL` blocks it retargets toward `TARGET_BLOCK_TIME_MS` based on the actual elapsed time of the past window — **just like Bitcoin: difficulty rises as hashrate grows and falls as it drops, with no artificial cap** (bounded only by the 256-bit hash width), and a `MIN_DIFFICULTY` floor so it can always drop back to mineable. ⚠️ Same caveat as Bitcoin: if hashrate spikes then suddenly drops, slow machines get temporarily stuck at high difficulty (until the next retarget lowers it). The difficulty is written into each block header and independently recomputed+verified by every node from chain history, so a miner can't set it. **Block cadence is genuinely set by PoW difficulty** (mining is continuous by default, no artificial throttle). Mining is **chunked & async**: it yields the event loop after each batch of nonces, so even at high difficulty (seconds per block) the node never freezes and keeps relaying blocks (it abandons stale work the moment a peer's new block arrives). Timestamps must be non-decreasing (no future bound, deliberately, to keep validation deterministic across nodes).
-- **Longest-chain consensus**: replace with any longer valid chain; on equal-height forks keep the current one (first-seen). Transient forks converge to the longest chain.
+- **Adaptive difficulty** (leading-zero *bits*, not hex digits → each ±1 bit halves/doubles difficulty for smooth adjustment). Every `RETARGET_INTERVAL` blocks it retargets toward `TARGET_BLOCK_TIME_MS` based on the actual elapsed time of the past window — **just like Bitcoin: difficulty rises as hashrate grows and falls as it drops, with no artificial cap** (bounded only by the 256-bit hash width), and a `MIN_DIFFICULTY` floor so it can always drop back to mineable. ⚠️ Same caveat as Bitcoin: if hashrate spikes then suddenly drops, slow machines get temporarily stuck at high difficulty (until the next retarget lowers it). The difficulty is written into each block header and independently recomputed+verified by every node from chain history, so a miner can't set it. **Block cadence is genuinely set by PoW difficulty** (mining is continuous by default, no artificial throttle). Mining is **chunked & async**: it yields the event loop after each batch of nonces, so even at high difficulty (seconds per block) the node never freezes and keeps relaying blocks (it abandons stale work the moment a peer's new block arrives). Timestamps must be **non-decreasing** and **no more than `MAX_FUTURE_DRIFT_MS` (2 min) ahead of local time** — this kills the "set your clock an hour ahead to stretch the retarget window and crush difficulty to the floor" manipulation (the one and only clock-dependent contextual check).
+- **Most-work-chain consensus**: replace only with a valid chain of **greater cumulative PoW** (`chainWork = Σ 2^difficulty`), **not** merely a longer one — otherwise an attacker who suppresses difficulty and spams low-difficulty blocks to out-*length* the honest chain could force a double-spend reorg. Equal-or-less work is not adopted (first-seen wins). Transient forks converge to the most-work chain.
 - **Full-chain validation is the sole authority**: every received chain is replayed from genesis, checking PoW, coinbase rules, every signature, nonce ordering, and balances (no double-spend/overspend). The block hash commits to each tx's `txid`, and validation asserts `txid === hash(content)` for **every** tx (including coinbase/genesis) — so tx contents are anchored by PoW; changing an amount or recipient is detected.
 - **Genesis is fully pinned**: the genesis block is checked both by its `.hash` field and by recomputing the hash from content, plus the per-tx txid binding above → an attacker can neither steal the pre-mine nor inject a mint-from-thin-air tx. (An earlier version had this bug; fixed with a regression test.)
 - **Amounts must be positive integers**: floats would let nodes accumulate rounding differences and disagree on "is the balance enough", splitting consensus — so non-integer/out-of-range amounts are rejected at signature-verification time.
 - **All untrusted input is guarded**: P2P messages are field-validated and malformed packets dropped (a bad packet can't crash a node); recipient addresses must be valid `0x`+64hex; `knownUrls`/`seenTx` are capped against unbounded memory growth and reconnect storms.
-- **Local API is CSRF-hardened**: the HTTP API binds `127.0.0.1` only, and CORS allows only localhost (`localhost`/`127.0.0.1`) pages — so a malicious website you visit can't quietly `fetch` your running node and `POST /send` to drain it (especially a coin-holding treasury node).
-- **No Sybil/DoS protection, no TLS, no fee market.** This is a teaching chain, not a production system.
+- **Local API has two layers**: the HTTP API binds `127.0.0.1` only and CORS allows only localhost pages (browser-CSRF defense); on top of that, **mutating endpoints (send/mine/connect/market) require a Bearer token** — `.data/<node>/api.token` (random 32 bytes, `0600`, auto-generated on start; the CLI reads it automatically, the dashboard takes it pasted once). This stops other local processes / other local users from `POST /send`-ing to drain your wallet. Read-only GETs and `/health` stay open.
+- **P2P hardening**: gossip-learned peer URLs are filtered for private/loopback/link-local addresses (anti-SSRF; operator-supplied `--peers`/`--advertise` go through a trusted path and are exempt); `knownUrls` FIFO-evicts the oldest non-pinned entry when full while operator seeds are pinned forever (so junk floods can't crowd out real peers); single WS message ≤ 64MB (anti-OOM); `mempool` ≤ `MAX_MEMPOOL`.
+- **Private-key / token files are `0600`**: both `wallet.json` (plaintext key) and `api.token` are owner-only.
+- **Still missing**: Sybil resistance, TLS, inter-node auth/encryption, a fee market. This is a teaching chain — **don't put real money on it**; to expose it publicly, at least add TLS (e.g. behind a reverse proxy), guard `api.token` and the treasury key, and understand the inherent 51% risk of a low-hashrate PoW chain.
 
 ---
 
@@ -244,7 +246,8 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - [x] Phase 1 — core: block / chain / PoW / genesis tx
 - [x] Phase 2 — CLI: wallet / transfer / balance / mining
 - [x] Phase 3 — P2P: two-node sync / peer discovery / persistence
-- [x] Phase 4 — mining broadcast + longest-chain consensus
+- [x] Phase 4 — mining broadcast + most-work-chain consensus
 - [x] Phase 5 — web dashboard (React/Vite live view + transfers)
 - [x] Phase 6 — advanced: **adaptive difficulty** · transaction **memo** · **Merkle root** · **block explorer** (search address/txid/block)
 - [x] Phase 7 — **marketplace**: buy/sell goods & services with `$V0ID` (built on memos, no consensus change)
+- [x] Phase 8 — **security hardening**: most-work consensus + future-timestamp bound (anti difficulty-suppression double-spend) · API token auth · P2P private-address filter / pinned-FIFO `knownUrls` · WS size cap · mempool cap · `0600` key/token files
