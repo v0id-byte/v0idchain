@@ -17,6 +17,7 @@ import {
   MAX_DIFFICULTY,
   TARGET_BLOCK_TIME_MS,
   RETARGET_INTERVAL,
+  MAX_MEMPOOL,
   MAX_FUTURE_DRIFT_MS,
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
@@ -121,6 +122,7 @@ export class Blockchain {
   /** 收一笔交易进池。会校验签名、nonce 顺序、（含池内待发）余额。 */
   addTransaction(tx: Transaction): { ok: boolean; error?: string } {
     if (isCoinbase(tx)) return { ok: false, error: 'coinbase 不能进入交易池' };
+    if (this.mempool.length >= MAX_MEMPOOL) return { ok: false, error: '交易池已满' };
     // 先单独判金额，给出明确报错（否则非整数会被 verifyTransaction 当成“签名无效”，误导用户）
     if (!Number.isInteger(tx.amount) || tx.amount <= 0) return { ok: false, error: '金额必须是正整数' };
     if (!verifyTransaction(tx)) return { ok: false, error: '签名无效或备注超长' };

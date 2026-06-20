@@ -28,6 +28,12 @@ export const MAX_FUTURE_DRIFT_MS = 120_000;
 /** 交易备注最大长度（字符） */
 export const MAX_MEMO = 128;
 
+/**
+ * mempool 容量上限：待打包交易池最多缓存多少笔。零手续费链没有 fee 市场来给 spam 定价，
+ * 故用一个硬上限兜底内存（spam 仍受“nonce 顺序 + 余额充足”约束，本就要花真币）。
+ */
+export const MAX_MEMPOOL = 5_000;
+
 /** 每挖出一个区块，矿工获得的奖励（coinbase 新币）。零手续费，矿工只赚这个。 */
 export const BLOCK_REWARD = 1;
 
