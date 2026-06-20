@@ -1,0 +1,13 @@
+{
+  "name": "@v0idchain/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@v0idchain/core": "workspace:*",
+    "@v0idchain/node": "workspace:*",
+    "commander": "^12.1.0"
+  }
+}

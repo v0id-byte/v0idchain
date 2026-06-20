@@ -1,0 +1,25 @@
+{
+  "name": "v0idchain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "v0idChain —— 手搓区块链，原生代币 $V0ID。零成本、零 gas、零手续费。",
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "v0id": "tsx packages/cli/src/index.ts",
+    "dev:node1": "tsx packages/cli/src/index.ts start --name node1 --p2p-port 6001 --api-port 7001 --mine",
+    "dev:node2": "tsx packages/cli/src/index.ts start --name node2 --p2p-port 6002 --api-port 7002 --peers ws://127.0.0.1:6001",
+    "dev:web": "corepack pnpm --filter @v0idchain/web dev",
+    "typecheck": "corepack pnpm -r run typecheck",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
