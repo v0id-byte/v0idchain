@@ -9,10 +9,10 @@ export const CHAIN_NAME = 'v0idChain';
  * 比特粒度让难度能平滑调整（每 ±1 bit = 难度 ×/÷2），而不是 hex 粒度的 16 倍跳变。
  */
 export const GENESIS_DIFFICULTY = 16; // 创世难度（bit）；16 bit ≈ 2^16 次哈希，瞬间完成
-export const MIN_DIFFICULTY = 8;
-// 上限只是安全护栏：重定向会把难度自动收敛到“算一块 ≈ TARGET_BLOCK_TIME”那个值，
-// 通常落在 ~21~25，远不到 26。设高一点给快机器留余量，正常永远顶不到。
-export const MAX_DIFFICULTY = 26;
+export const MIN_DIFFICULTY = 8; // 下限（地板）：算力骤降时难度能一路降回这里，避免链被永久卡死
+// 无实际上限：像 BTC 一样随全网算力一直往上加。255 只是物理天花板（哈希共 256 bit）。
+// ⚠️ 代价：若算力先暴涨、后骤降，少数慢机器会被高难度卡住（难度要等下次重定向才降）。
+export const MAX_DIFFICULTY = 255;
 
 /** 目标出块时间；每 RETARGET_INTERVAL 个区块按实际耗时重定向一次难度 */
 export const TARGET_BLOCK_TIME_MS = 8_000;
