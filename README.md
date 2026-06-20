@@ -56,6 +56,19 @@ corepack pnpm -v      # 任何 pnpm 命令都可写成 corepack pnpm …
 corepack pnpm install
 ```
 
+### 🚀 加入公网一起挖矿（最快上手）
+
+装好 Node + 依赖后，**一条命令**连上公共种子节点并开始挖矿：
+
+```bash
+corepack pnpm mine        # 连 ws://mc.void1211.com:6001，自动挖矿，每 5s 打一行状态
+```
+
+> 嫌命令麻烦？**双击** `mine.command`（macOS）或 `mine.bat`（Windows）—— 自动装依赖、开仪表盘、开挖。
+
+想边挖边看链：另开一个终端 `corepack pnpm dev:web` → 浏览器 http://localhost:5173 。
+挖到的币靠你自己的钱包（数据在 `.data/miner/`）持有，可以用 `send` 转给同学。
+
 ### 2. 自检（可选但推荐）
 
 ```bash
@@ -190,6 +203,7 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - **创世块内容被完全锁定**：既比对 `.hash` 字段，又用内容重算 hash，再叠加上面的 txid 绑定 → 攻击者既偷不走预挖、也无法往创世里塞交易凭空增发。（早期版本曾有此漏洞，已修复并加了回归测试。）
 - **金额必须是正整数**：浮点会让不同节点按不同交易顺序累积舍入误差、对“余额够不够”得出不同结论，从而撕裂共识 —— 故在验签层拒绝小数/越界金额。
 - **不可信输入一律设防**：P2P 消息逐字段校验、畸形包直接丢弃（不会打挂节点）；转账收款地址必须是合法 `0x`+64hex；`knownUrls`/`seenTx` 均有上限，防内存无界增长与重连风暴。
+- **本机 API 防 CSRF**：HTTP API 只绑 `127.0.0.1`，且 CORS 只放行本机（`localhost`/`127.0.0.1`）页面 —— 防止你浏览的恶意网站偷偷 `fetch` 你正在跑的节点去 `POST /send` 盗币（尤其是持币的“央行”节点）。
 - **没有 Sybil / DoS 防护、没有 TLS、没有交易费市场**。这是教学链，不是生产系统。
 
 ---

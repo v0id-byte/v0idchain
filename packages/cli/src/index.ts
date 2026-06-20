@@ -80,6 +80,19 @@ program
       console.log(c.yellow(`  ⛏  自动挖矿已开启（每 ${o.mineInterval}ms 出一块）`));
     }
     console.log(c.dim('\n  Ctrl-C 退出。另开一个终端用 `v0id` 子命令操作这个节点。\n'));
+
+    // 每 5s 打一行状态，挖矿时能直观看到链在前进、余额在涨
+    let lastHeight = node.bc.height;
+    setInterval(() => {
+      const i = node.info();
+      const grew = i.height > lastHeight ? c.green(`+${i.height - lastHeight}`) : c.dim('·');
+      lastHeight = i.height;
+      const flag = o.mine ? c.yellow('⛏') : '🔗';
+      console.log(
+        `  ${flag} ${c.dim(new Date().toLocaleTimeString())}  链高 ${c.cyan(String(i.height))} ${grew}` +
+          `  余额 ${c.green(`${i.balance} ${SYMBOL}`)}  难度 ${i.difficulty}bit  对等 ${i.peers}  池 ${i.mempool}`,
+      );
+    }, 5000).unref?.();
   });
 
 // ---- 客户端命令（通过 --api 和运行中的节点对话） ----

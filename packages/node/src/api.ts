@@ -21,11 +21,17 @@ function readBody(req: IncomingMessage): Promise<any> {
 export function startHttpApi(node: V0idNode, port: number) {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const cors = {
-      'access-control-allow-origin': '*',
+    // CORS 只放行本机（localhost/127.0.0.1）页面，绝不用 '*'：
+    // 否则你浏览的任意恶意网站都能 fetch 本机正在运行的节点 POST /send 盗币（本地 CSRF）。
+    const origin = req.headers.origin;
+    const cors: Record<string, string> = {
       'access-control-allow-methods': 'GET, POST, OPTIONS',
       'access-control-allow-headers': 'content-type',
+      vary: 'Origin',
     };
+    if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      cors['access-control-allow-origin'] = origin;
+    }
     const json = (code: number, obj: unknown) => {
       res.writeHead(code, { 'content-type': 'application/json', ...cors });
       res.end(JSON.stringify(obj));
