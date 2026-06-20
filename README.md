@@ -1,5 +1,7 @@
 # v0idChain ⛓ — 手搓区块链，原生代币 `$V0ID`
 
+**[English](README.en.md) | 中文**
+
 零成本、零 gas、零手续费的教学型区块链。TypeScript + Node.js，pnpm monorepo。
 手写区块 / 哈希 / 链式结构 / PoW 挖矿 / ed25519 签名 / WebSocket P2P / 最长链共识。
 
