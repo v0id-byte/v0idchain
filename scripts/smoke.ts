@@ -155,6 +155,28 @@ const futureChain = JSON.parse(JSON.stringify(honestW.chain));
 futureChain[futureChain.length - 1].timestamp = Date.now() + MAX_FUTURE_DRIFT_MS + 60_000;
 const futRes = Blockchain.validateChain(futureChain);
 check('未来时间戳的块被拒（防时间戳操纵压难度）', !futRes.ok && (futRes.error ?? '').includes('未来'));
+// 真实攻击形态：一条**更长且累计工作量更大**、但含未来时间戳的 fork（压难度双花的实际链形）
+// 必须被 replaceChain 拒。这里时间戳上限才是关键防线——工作量门会被这条更高工作量的链越过，
+// 全靠 validateChain 的未来时间戳校验挡下（时间戳校验先于 PoW，故无需伪造合法 PoW）。
+const attackFork: any[] = JSON.parse(JSON.stringify(honestW.chain));
+attackFork.push({
+  index: attackFork.length,
+  timestamp: Date.now() + MAX_FUTURE_DRIFT_MS + 3_600_000, // 远未来（攻击者拉长窗口压难度的代价）
+  prevHash: attackFork[attackFork.length - 1].hash,
+  transactions: [],
+  merkleRoot: '0',
+  difficulty: 30, // 抬高累计工作量，确保越过“最大工作量”门、真正走到 validateChain
+  nonce: 0,
+  miner: NULL_ADDRESS,
+  hash: '0',
+});
+const attackVictim = new Blockchain();
+attackVictim.chain = JSON.parse(JSON.stringify(honestW.chain));
+const attackRes = attackVictim.replaceChain(attackFork as any);
+check(
+  '更长+更高工作量但含未来时间戳的 fork 被 replaceChain 拒（时间戳上限挡住压难度双花）',
+  attackRes.replaced === false && (attackRes.error ?? '').includes('未来'),
+);
 
 console.log(`\n— 集市：上架 → 购买 → 撤单 —`);
 const mk = new Blockchain();
