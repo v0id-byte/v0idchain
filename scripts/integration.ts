@@ -34,19 +34,21 @@ await waitFor(() => node1.p2p.peerCount() === 1 && node2.p2p.peerCount() === 1);
 check(`双向握手完成（${Date.now() - t0}ms）`, node1.p2p.peerCount() === 1 && node2.p2p.peerCount() === 1);
 
 console.log('\n— node1 挖矿（出币），node2 应同步 —');
-for (let i = 0; i < 6; i++) await node1.mineOnce(); // node1 攒够余额用于转账
+// 出块奖励为 1（见 BLOCK_REWARD），挖 10 块让 node1 攒够余额：先转 3 给 alice，
+// 后面 HTTP API 测试还会再 send 5，需保证 node1 始终有余额，否则 /send 会 400。
+for (let i = 0; i < 10; i++) await node1.mineOnce();
 await waitFor(() => node2.bc.height === node1.bc.height);
-check('node2 链高追平 node1', node2.bc.height === node1.bc.height && node1.bc.height === 6);
+check('node2 链高追平 node1', node2.bc.height === node1.bc.height && node1.bc.height === 10);
 check('两节点链顶 hash 一致', node2.bc.latest.hash === node1.bc.latest.hash);
 
-console.log('\n— node1 用挖来的币转 250 给 alice，跨节点结算 —');
-node1.send(alice.address, 250);
+console.log('\n— node1 用挖来的币转 3 给 alice，跨节点结算 —');
+node1.send(alice.address, 3);
 await waitFor(() => node2.bc.mempool.length === 1); // 交易广播到 node2 的池
 check('交易广播到 node2 的交易池', node2.bc.mempool.length === 1);
 await node2.mineOnce(); // 由 node2 打包
 await waitFor(() => node1.bc.height === node2.bc.height);
 check('node1 同步了 node2 出的块', node1.bc.height === node2.bc.height);
-check('两节点都认 alice 余额 = 250', node1.bc.balanceOf(alice.address) === 250 && node2.bc.balanceOf(alice.address) === 250);
+check('两节点都认 alice 余额 = 3', node1.bc.balanceOf(alice.address) === 3 && node2.bc.balanceOf(alice.address) === 3);
 check('两节点链顶一致', node1.bc.latest.hash === node2.bc.latest.hash);
 
 console.log('\n— 迟到节点 node3 接入，应自动追上整条链 —');
@@ -55,7 +57,7 @@ node3.start();
 await waitFor(() => node3.bc.height === node1.bc.height, 5000);
 check('node3 追上链高', node3.bc.height === node1.bc.height);
 check('node3 链顶与全网一致', node3.bc.latest.hash === node1.bc.latest.hash);
-check('node3 也算出 alice 余额 = 250', node3.bc.balanceOf(alice.address) === 250);
+check('node3 也算出 alice 余额 = 3', node3.bc.balanceOf(alice.address) === 3);
 
 console.log('\n— 健壮性：畸形/恶意消息不能打挂节点 —');
 const heightBefore = node1.bc.height;
@@ -110,7 +112,7 @@ console.log('\n— 持久化：重启 node1 应从磁盘恢复 —');
 const h = node1.bc.height;
 const reloaded = new V0idNode({ dataDir: `${DIR}/n1`, p2pPort: 6111 });
 check('从磁盘恢复链高', reloaded.bc.height === h);
-check('从磁盘恢复 alice 余额', reloaded.bc.balanceOf(alice.address) === 250);
+check('从磁盘恢复 alice 余额', reloaded.bc.balanceOf(alice.address) === 3);
 
 console.log(failed === 0 ? '\n🎉 集成测试全部通过\n' : `\n💥 ${failed} 项失败\n`);
 process.exit(failed === 0 ? 0 : 1);
