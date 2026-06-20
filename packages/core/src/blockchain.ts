@@ -17,6 +17,7 @@ import {
   MAX_DIFFICULTY,
   TARGET_BLOCK_TIME_MS,
   RETARGET_INTERVAL,
+  MAX_FUTURE_DRIFT_MS,
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
 
@@ -193,9 +194,25 @@ export class Blockchain {
     return { ok: true };
   }
 
-  /** 最长链规则：收到更长的合法链则替换，并重新校验 mempool。 */
+  /**
+   * 一条链的累计 PoW 工作量 = Σ 2^difficulty（难度可达数百 bit，用 BigInt）。
+   * 各链共享同一创世，创世项在比较中抵消，故是否计入不影响结果。
+   */
+  static chainWork(chain: Block[]): bigint {
+    let work = 0n;
+    for (const b of chain) work += 1n << BigInt(b.difficulty);
+    return work;
+  }
+
+  /**
+   * 最大工作量规则（非“最长链”）：只接受**累计 PoW 工作量严格更大**的合法链。
+   * 这堵死了“压低难度→多挖几块凑长度”的廉价 fork —— 长度不值钱，工作量才值钱：
+   * 一条靠时间戳操纵把难度压到地板、再狂出低难块凑长度的链，总工作量低于诚实链，会被拒。
+   */
   replaceChain(incoming: Block[]): { ok: boolean; replaced: boolean; error?: string } {
-    if (incoming.length <= this.chain.length) return { ok: true, replaced: false };
+    if (Blockchain.chainWork(incoming) <= Blockchain.chainWork(this.chain)) {
+      return { ok: true, replaced: false };
+    }
     const v = Blockchain.validateChain(incoming);
     if (!v.ok) return { ok: false, replaced: false, error: v.error };
     this.chain = incoming;
@@ -238,6 +255,11 @@ export class Blockchain {
         if (b.index !== prev.index + 1) return { ok: false, error: `#${i} 高度不连续` };
         if (b.prevHash !== prev.hash) return { ok: false, error: `#${i} prevHash 不匹配` };
         if (b.timestamp < prev.timestamp) return { ok: false, error: `#${i} 时间戳倒退` };
+        // 唯一一处“与本地时钟相关”的上下文校验：拒绝远超本地时间的未来时间戳。
+        // 否则矿工可把时间戳调到 1 小时后拉长重定向窗口、把难度压到地板（时间戳操纵）。
+        if (b.timestamp > Date.now() + MAX_FUTURE_DRIFT_MS) {
+          return { ok: false, error: `#${i} 时间戳来自未来` };
+        }
         // merkleRoot 必须等于交易集重算结果（区块头据此承诺整组交易）
         if (b.merkleRoot !== merkleRoot(b.transactions.map((t) => t.txid))) {
           return { ok: false, error: `#${i} merkleRoot 不匹配` };

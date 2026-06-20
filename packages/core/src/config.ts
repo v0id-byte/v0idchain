@@ -18,6 +18,13 @@ export const MAX_DIFFICULTY = 255;
 export const TARGET_BLOCK_TIME_MS = 8_000;
 export const RETARGET_INTERVAL = 8;
 
+/**
+ * 区块时间戳允许领先本地时钟的上限（毫秒）。校验时拒绝 timestamp > now + 该值的区块。
+ * 防“把时钟往前调 1 小时 → 拉长重定向窗口 → 把难度压到地板”的时间戳操纵。
+ * 取 2 分钟：远松于真实 NTP 偏差（杜绝误杀诚实块），又远紧于攻击所需的小时级伪造。
+ */
+export const MAX_FUTURE_DRIFT_MS = 120_000;
+
 /** 交易备注最大长度（字符） */
 export const MAX_MEMO = 128;
 

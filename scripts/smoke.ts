@@ -16,6 +16,7 @@ import {
   GENESIS_PREMINE_ADDRESS,
   BLOCK_REWARD,
   GENESIS_DIFFICULTY,
+  MAX_FUTURE_DRIFT_MS,
   MAX_MEMO,
   NULL_ADDRESS,
   SYMBOL,
@@ -134,6 +135,26 @@ const fast = Array.from({ length: idx + 1 }, (_, i) => ({ timestamp: i * 100, di
 const slow = Array.from({ length: idx + 1 }, (_, i) => ({ timestamp: i * TARGET_BLOCK_TIME_MS * 4, difficulty: GENESIS_DIFFICULTY }));
 check('出块过快 → 难度上调', expectedDifficulty(fast as any, idx) > GENESIS_DIFFICULTY);
 check('出块过慢 → 难度下调', expectedDifficulty(slow as any, idx) < GENESIS_DIFFICULTY);
+
+console.log(`\n— 共识：最大工作量规则（防低难度长 fork）+ 未来时间戳上限 —`);
+const honestW = new Blockchain();
+for (let i = 0; i < 3; i++) await honestW.mine(bob.address); // 4 块 × 难度16
+check('chainWork 随链增长而增大', Blockchain.chainWork(honestW.chain) > Blockchain.chainWork(new Blockchain().chain));
+// 工作量按 2^difficulty 计：一条“短但高难度”的链工作量应大于“长但低难度”的链 —— 长度不值钱，工作量才值钱
+const wHiShort = Blockchain.chainWork([{ difficulty: 20 }, { difficulty: 20 }] as any); // 2×2^20
+const wLoLong = Blockchain.chainWork(Array.from({ length: 20 }, () => ({ difficulty: 8 })) as any); // 20×2^8
+check('chainWork：短高难链 > 长低难链', wHiShort > wLoLong);
+// replaceChain 用工作量门控：更长但总工作量更小的低难度 fork 不被接受（旧“最长链”规则会误判其更优）
+const cheapLong: any[] = JSON.parse(JSON.stringify(new Blockchain().chain));
+for (let i = 1; i < 12; i++) {
+  cheapLong.push({ index: i, timestamp: Date.now(), prevHash: '0'.repeat(64), transactions: [], merkleRoot: '0', difficulty: 1, nonce: 0, miner: NULL_ADDRESS, hash: '0' });
+}
+check('最大工作量规则：低难度长 fork 不替换诚实短链', honestW.replaceChain(cheapLong as any).replaced === false);
+// 未来时间戳上限：把链顶时间戳调到远超本地时钟 → 必须被拒（封死“调时钟拉长窗口压难度”）
+const futureChain = JSON.parse(JSON.stringify(honestW.chain));
+futureChain[futureChain.length - 1].timestamp = Date.now() + MAX_FUTURE_DRIFT_MS + 60_000;
+const futRes = Blockchain.validateChain(futureChain);
+check('未来时间戳的块被拒（防时间戳操纵压难度）', !futRes.ok && (futRes.error ?? '').includes('未来'));
 
 console.log(`\n— 集市：上架 → 购买 → 撤单 —`);
 const mk = new Blockchain();
