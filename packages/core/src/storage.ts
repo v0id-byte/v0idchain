@@ -1,5 +1,6 @@
 // 持久化：把链和钱包落盘成 JSON，重启不丢。
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, chmodSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { Blockchain } from './blockchain.js';
 import { Wallet } from './wallet.js';
@@ -9,6 +10,30 @@ function walletPath(dataDir: string): string {
 }
 function chainPath(dataDir: string): string {
   return join(dataDir, 'chain.json');
+}
+function tokenPath(dataDir: string): string {
+  return join(dataDir, 'api.token');
+}
+
+/** 只读 API 令牌；不存在返回 null（用于 CLI 子命令自动取本机节点的令牌）。 */
+export function loadApiToken(dataDir: string): string | null {
+  const f = tokenPath(dataDir);
+  if (!existsSync(f)) return null;
+  return readFileSync(f, 'utf8').trim() || null;
+}
+
+/**
+ * 读取本机节点的 API 令牌；没有则随机生成一个并以 0600 落盘。
+ * 同机其他用户/进程读不到此文件（0600），就拿不到令牌 → 调不动转账/挖矿等写接口。
+ */
+export function loadOrCreateApiToken(dataDir: string): string {
+  mkdirSync(dataDir, { recursive: true });
+  const existing = loadApiToken(dataDir);
+  if (existing) return existing;
+  const tok = randomBytes(32).toString('hex');
+  writeFileSync(tokenPath(dataDir), tok, { mode: 0o600 });
+  chmodSync(tokenPath(dataDir), 0o600);
+  return tok;
 }
 
 /**

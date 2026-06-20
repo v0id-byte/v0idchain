@@ -18,7 +18,7 @@ function readBody(req: IncomingMessage): Promise<any> {
   });
 }
 
-export function startHttpApi(node: V0idNode, port: number) {
+export function startHttpApi(node: V0idNode, port: number, token: string) {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     // CORS 只放行本机（localhost/127.0.0.1）页面，绝不用 '*'：
@@ -26,7 +26,8 @@ export function startHttpApi(node: V0idNode, port: number) {
     const origin = req.headers.origin;
     const cors: Record<string, string> = {
       'access-control-allow-methods': 'GET, POST, OPTIONS',
-      'access-control-allow-headers': 'content-type',
+      // 含 authorization：否则浏览器对带 Bearer 的 POST 预检会失败（仪表盘转账/挖矿全 Failed to fetch）
+      'access-control-allow-headers': 'content-type, authorization',
       vary: 'Origin',
     };
     if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
@@ -68,6 +69,11 @@ export function startHttpApi(node: V0idNode, port: number) {
       }
 
       if (req.method === 'POST') {
+        // 写接口（转账/挖矿/连接/集市）需 Bearer 令牌：挡住同机其他进程/用户直接调本地 API 盗币。
+        // 读接口（GET）与 /health 不设防，方便仪表盘只读展示。
+        if (req.headers.authorization !== `Bearer ${token}`) {
+          return json(401, { error: 'unauthorized：缺少或错误的 API token' });
+        }
         const body = await readBody(req);
         switch (url.pathname) {
           case '/send': {

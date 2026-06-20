@@ -13,6 +13,7 @@ type Banner = { kind: 'ok' | 'err'; text: string } | null;
 
 export default function App() {
   const [api, setApi] = useState(() => localStorage.getItem('v0id-api') || 'http://127.0.0.1:7001');
+  const [token, setToken] = useState(() => localStorage.getItem('v0id-token') || '');
   const [info, setInfo] = useState<Info | null>(null);
   const [chain, setChain] = useState<Block[]>([]);
   const [mempool, setMempool] = useState<Tx[]>([]);
@@ -51,6 +52,10 @@ export default function App() {
     localStorage.setItem('v0id-api', api);
   }, [api]);
 
+  useEffect(() => {
+    localStorage.setItem('v0id-token', token);
+  }, [token]);
+
   const me = info?.address ?? '';
   const recent = [...chain].reverse().slice(0, 25);
 
@@ -67,6 +72,14 @@ export default function App() {
           {info?.syncing && <span className="tag diff">同步中…</span>}
           <span className={`dot ${up ? 'up' : 'down'}`} title={up ? '已连接' : '未连接'} />
           <input value={api} onChange={(e) => setApi(e.target.value.trim())} spellCheck={false} aria-label="节点 API 地址" />
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value.trim())}
+            spellCheck={false}
+            placeholder="API 令牌"
+            aria-label="API 令牌（见节点数据目录 api.token）"
+          />
         </div>
       </div>
 
@@ -91,10 +104,10 @@ export default function App() {
 
       <Explorer chain={chain} me={me} />
 
-      <Marketplace market={market} api={api} onDone={poll} />
+      <Marketplace market={market} api={api} token={token} onDone={poll} />
 
       <div className="cols">
-        <Actions api={api} me={me} onDone={poll} />
+        <Actions api={api} token={token} me={me} onDone={poll} />
         <Mempool mempool={mempool} me={me} />
       </div>
 
@@ -229,7 +242,7 @@ function Explorer({ chain, me }: { chain: Block[]; me: string }) {
   );
 }
 
-function Actions({ api, me, onDone }: { api: string; me: string; onDone: () => void }) {
+function Actions({ api, token, me, onDone }: { api: string; token: string; me: string; onDone: () => void }) {
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [memo, setMemo] = useState('');
@@ -240,7 +253,7 @@ function Actions({ api, me, onDone }: { api: string; me: string; onDone: () => v
     setBusy(true);
     setBanner(null);
     try {
-      const r = await postJSON<{ txid: string }>(api, '/send', { to: to.trim(), amount: Number(amount), memo });
+      const r = await postJSON<{ txid: string }>(api, '/send', { to: to.trim(), amount: Number(amount), memo }, token);
       setBanner({ kind: 'ok', text: `已广播 · txid ${r.txid.slice(0, 24)}…` });
       setTo('');
       setAmount('');
@@ -299,7 +312,7 @@ function Mempool({ mempool, me }: { mempool: Tx[]; me: string }) {
   );
 }
 
-function Marketplace({ market, api, onDone }: { market: Listing[]; api: string; onDone: () => void }) {
+function Marketplace({ market, api, token, onDone }: { market: Listing[]; api: string; token: string; onDone: () => void }) {
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -309,7 +322,7 @@ function Marketplace({ market, api, onDone }: { market: Listing[]; api: string; 
     setBusy(true);
     setBanner(null);
     try {
-      await postJSON(api, path, body);
+      await postJSON(api, path, body, token);
       setBanner({ kind: 'ok', text: okMsg });
       onDone();
       return true;

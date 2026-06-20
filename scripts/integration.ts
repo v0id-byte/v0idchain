@@ -85,25 +85,35 @@ check('节点在畸形消息轰炸后仍存活并能出块', node1.bc.height ===
 await waitFor(() => node2.bc.height === node1.bc.height);
 check('遭轰炸后全网仍能正常同步', node2.bc.latest.hash === node1.bc.latest.hash);
 
-console.log('\n— HTTP API + 浏览器 CORS 预检 —');
-startHttpApi(node1, 7301);
+console.log('\n— HTTP API + 浏览器 CORS 预检 + token 鉴权 —');
+const API_TOKEN = 'it-token-' + Math.random().toString(16).slice(2);
+const authHeaders = { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` };
+startHttpApi(node1, 7301, API_TOKEN);
 await sleep(150); // 等 listen
 // 浏览器对 POST+JSON 会先发 OPTIONS 预检；必须 204 且带 CORS 头，否则仪表盘“Failed to fetch”
 const pre = await fetch('http://127.0.0.1:7301/send', {
   method: 'OPTIONS',
-  headers: { 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' },
+  headers: { 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,authorization' },
 });
 check('OPTIONS 预检返回 204', pre.status === 204);
 check('预检带 allow-methods=POST', (pre.headers.get('access-control-allow-methods') ?? '').includes('POST'));
-const okPost = await fetch('http://127.0.0.1:7301/send', {
+check('预检放行 authorization 头', (pre.headers.get('access-control-allow-headers') ?? '').toLowerCase().includes('authorization'));
+// 无 token 的写请求必须被拒（防同机他进程/他用户盗币）
+const noAuth = await fetch('http://127.0.0.1:7301/send', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ to: alice.address, amount: 5 }),
 });
-check('POST /send 合法请求成功', okPost.status === 200);
+check('POST /send 无 token 被拒(401)', noAuth.status === 401);
+const okPost = await fetch('http://127.0.0.1:7301/send', {
+  method: 'POST',
+  headers: authHeaders,
+  body: JSON.stringify({ to: alice.address, amount: 5 }),
+});
+check('POST /send 带 token 合法请求成功', okPost.status === 200);
 const badPost = await fetch('http://127.0.0.1:7301/send', {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: authHeaders,
   body: JSON.stringify({ to: 'not-an-address', amount: 5 }),
 });
 check('POST /send 畸形地址被拒(400)', badPost.status === 400);

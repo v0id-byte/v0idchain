@@ -58,10 +58,10 @@ export async function getJSON<T>(base: string, path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function postJSON<T>(base: string, path: string, body: unknown): Promise<T> {
+export async function postJSON<T>(base: string, path: string, body: unknown, token?: string): Promise<T> {
   const res = await fetch(base + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}) as any);

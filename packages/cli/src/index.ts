@@ -4,7 +4,16 @@ import { Command } from 'commander';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 import { V0idNode, startHttpApi } from '@v0idchain/node';
-import { Wallet, loadWallet, writeWalletFile, bytesToHex, SYMBOL, GENESIS_PREMINE_ADDRESS } from '@v0idchain/core';
+import {
+  Wallet,
+  loadWallet,
+  writeWalletFile,
+  loadOrCreateApiToken,
+  loadApiToken,
+  bytesToHex,
+  SYMBOL,
+  GENESIS_PREMINE_ADDRESS,
+} from '@v0idchain/core';
 
 // --- 小工具：极简 ANSI 颜色 ---
 const c = {
@@ -18,13 +27,21 @@ const c = {
 const short = (addr: string) => (addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr);
 const defaultDataDir = (name: string) => join(process.cwd(), '.data', name);
 
-/** 调用运行中节点的 HTTP API */
-async function api(base: string, method: string, path: string, body?: unknown): Promise<any> {
+/**
+ * 调用运行中节点的 HTTP API。token 优先用 --token，否则从数据目录的 api.token 自动读取
+ * （默认 --name node → ./.data/node/api.token），故同机同用户跑客户端子命令零额外参数即可。
+ */
+async function api(o: any, method: string, path: string, body?: unknown): Promise<any> {
+  const base: string = o.api;
+  const token: string | undefined = o.token || loadApiToken(o.dataDir || defaultDataDir(o.name)) || undefined;
   let res: Response;
   try {
     res = await fetch(base + path, {
       method,
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -65,7 +82,8 @@ program
       peers,
     });
     node.start();
-    startHttpApi(node, Number(o.apiPort));
+    const apiToken = loadOrCreateApiToken(dataDir);
+    startHttpApi(node, Number(o.apiPort), apiToken);
 
     console.log(c.bold(c.cyan('\n  v0idChain ⛓  节点已启动')));
     console.log(`  ${c.dim('名称  ')} ${o.name}`);
@@ -73,6 +91,7 @@ program
     console.log(`  ${c.dim('P2P   ')} ${o.advertise ?? `ws://127.0.0.1:${o.p2pPort}`}`);
     console.log(`  ${c.dim('API   ')} http://127.0.0.1:${o.apiPort}`);
     console.log(`  ${c.dim('数据  ')} ${dataDir}`);
+    console.log(`  ${c.dim('令牌  ')} ${join(dataDir, 'api.token')}  ${c.dim('(CLI 自动读取；仪表盘需手动粘贴)')}`);
     console.log(`  ${c.dim('链高  ')} ${node.bc.height}  ${c.dim('余额')} ${node.bc.balanceOf(node.wallet.address)} ${SYMBOL}`);
     if (peers.length) console.log(`  ${c.dim('对等  ')} ${peers.join(', ')}`);
     if (o.mine) {
@@ -107,12 +126,16 @@ program
 
 // ---- 客户端命令（通过 --api 和运行中的节点对话） ----
 const apiOpt = (cmd: Command) =>
-  cmd.option('--api <url>', '节点 API 地址', 'http://127.0.0.1:7001');
+  cmd
+    .option('--api <url>', '节点 API 地址', 'http://127.0.0.1:7001')
+    .option('--token <token>', 'API 令牌（默认从数据目录的 api.token 自动读取）')
+    .option('--name <name>', '节点名（用于定位 api.token）', 'node')
+    .option('--data-dir <dir>', '数据目录（默认 ./.data/<name>）');
 
 apiOpt(program.command('info'))
   .description('查看节点状态')
   .action(async (o) => {
-    const r = await api(o.api, 'GET', '/info');
+    const r = await api(o,'GET', '/info');
     console.log(c.bold('地址 '), c.green(r.address));
     console.log(c.bold('余额 '), `${r.balance} ${r.symbol}`);
     console.log(c.bold('链高 '), `${r.height}（${r.blocks} 个区块）`);
@@ -127,7 +150,7 @@ apiOpt(program.command('balance'))
   .description('查余额')
   .action(async (address, o) => {
     const path = address ? `/balance?address=${encodeURIComponent(address)}` : '/balance';
-    const r = await api(o.api, 'GET', path);
+    const r = await api(o,'GET', path);
     console.log(c.dim(r.address));
     console.log(c.bold(`${r.balance} ${SYMBOL}`));
   });
@@ -138,7 +161,7 @@ apiOpt(program.command('send'))
   .option('--memo <text>', '附带一段备注（上链可查）', '')
   .description('转账（零手续费）')
   .action(async (to, amount, o) => {
-    const r = await api(o.api, 'POST', '/send', { to, amount: Number(amount), memo: o.memo });
+    const r = await api(o,'POST', '/send', { to, amount: Number(amount), memo: o.memo });
     console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid);
   });
 
@@ -146,7 +169,7 @@ apiOpt(program.command('mine'))
   .argument('[blocks]', '挖几个块', '1')
   .description('立即挖矿（让运行中的节点挖 N 个块）')
   .action(async (blocks, o) => {
-    const r = await api(o.api, 'POST', '/mine', { blocks: Number(blocks) });
+    const r = await api(o,'POST', '/mine', { blocks: Number(blocks) });
     console.log(c.yellow(`⛏  挖出 ${r.mined.length} 个区块`));
     for (const h of r.mined) console.log('   ', c.dim(h));
   });
@@ -154,7 +177,7 @@ apiOpt(program.command('mine'))
 apiOpt(program.command('peers'))
   .description('查看已连接的对等节点')
   .action(async (o) => {
-    const r = await api(o.api, 'GET', '/peers');
+    const r = await api(o,'GET', '/peers');
     console.log(`${r.length} 个对等节点`);
     for (const p of r) console.log('   ', p.url ?? '?', p.address ? c.dim(`(${short(p.address)})`) : '');
   });
@@ -163,7 +186,7 @@ apiOpt(program.command('connect'))
   .argument('<url>', '对方 ws 地址，如 ws://127.0.0.1:6002')
   .description('让本节点连接一个对等节点')
   .action(async (url, o) => {
-    await api(o.api, 'POST', '/connect', { url });
+    await api(o,'POST', '/connect', { url });
     console.log(c.green('已发起连接'), url);
   });
 
@@ -173,7 +196,7 @@ apiOpt(market.command('list'))
   .description('看在售商品')
   .option('--all', '连已售/已下架一起显示', false)
   .action(async (o) => {
-    const all = (await api(o.api, 'GET', '/market')) as any[];
+    const all = (await api(o,'GET', '/market')) as any[];
     const items = o.all ? all : all.filter((l) => !l.sold && !l.delisted);
     if (!items.length) return console.log(c.dim('（暂无商品）'));
     for (const l of items) {
@@ -188,21 +211,21 @@ apiOpt(market.command('sell'))
   .argument('<title...>', '商品/服务标题')
   .description('上架一件商品（需 ≥1 余额；上架交易被挖进区块后才出现）')
   .action(async (price, title, o) => {
-    const r = await api(o.api, 'POST', '/market/sell', { price: Number(price), title: title.join(' ') });
+    const r = await api(o,'POST', '/market/sell', { price: Number(price), title: title.join(' ') });
     console.log(c.green('🏷  已上架'), c.dim('txid='), r.txid, c.dim('（等一个区块确认后可见）'));
   });
 apiOpt(market.command('buy'))
   .argument('<id>', '商品 id（上架 txid，可只填前若干位则用 list 查全）')
   .description('购买商品（付标价给卖家）')
   .action(async (id, o) => {
-    const r = await api(o.api, 'POST', '/market/buy', { id });
+    const r = await api(o,'POST', '/market/buy', { id });
     console.log(c.green('🛒 已下单付款'), c.dim('txid='), r.txid);
   });
 apiOpt(market.command('delist'))
   .argument('<id>', '商品 id')
   .description('撤下自己的商品')
   .action(async (id, o) => {
-    const r = await api(o.api, 'POST', '/market/delist', { id });
+    const r = await api(o,'POST', '/market/delist', { id });
     console.log(c.green('已撤单'), c.dim('txid='), r.txid);
   });
 
