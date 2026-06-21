@@ -68,5 +68,5 @@ from the public specification. Cited for academic correctness.
 
 ---
 
-*v0idChain's own code is © v0id-byte. This file covers third-party software only; see the repository
-root for the project's own license, if any.*
+*v0idChain's own code is © 2026 v0id-byte and released under the **MIT License** (see
+[`LICENSE`](LICENSE)). This file covers third-party software only.*

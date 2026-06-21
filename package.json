@@ -1,9 +1,11 @@
 {
   "name": "v0idchain",
   "version": "0.1.0",
+  "license": "MIT",
+  "author": "v0id-byte",
   "private": true,
   "type": "module",
-  "description": "v0idChain —— 手搓区块链，原生代币 $V0ID。零成本、零 gas、零手续费。",
+  "description": "v0idChain —— 手搓区块链，原生代币 $V0ID。PoW 挖矿出币，转账带手续费（gas）给矿工。",
   "engines": {
     "node": ">=18"
   },
