@@ -129,7 +129,7 @@ final class AppModel: ObservableObject {
     }
 
     /// 公共动作样板：取钱包 → 跑闭包 → 成功弹 toast、失败弹错误。
-    private func run(_ action: (Wallet) throws -> Transaction, ok: (Transaction) -> String) -> Bool {
+    private func run(_ action: (Wallet) throws -> V0idKit.Transaction, ok: (V0idKit.Transaction) -> String) -> Bool {
         guard let wallet else { show("请先创建钱包", kind: .error); return false }
         do {
             let tx = try action(wallet)
