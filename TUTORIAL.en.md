@@ -67,7 +67,7 @@ $v balance --name miner               # this node's balance
 
 > ⚠️ **Token**: `pnpm mine` uses node name **miner**. Read-only commands (info/balance/peers) need no token; but **writes (transfer/mine/market)** need `--name miner` so the CLI can auto-read `.data/miner/api.token` (else `unauthorized`). Or pass `--token <token>` explicitly.
 
-**👉 First thing after mining a coin: back up your wallet** (see [§7](#7-wallet-backup--recovery-must-read)).
+**👉 First thing after mining a coin: back up your wallet** (see [§8](#8-wallet-backup--recovery-must-read)).
 
 ---
 
@@ -194,6 +194,20 @@ $v market buy  <listing-id-prefix> --name me
 $v market delist <listing-id> --name me
 ```
 
+### `msg` / `inbox` — on-chain messages (burn-to-speak, see [§7](#7-on-chain-messages--newcomer-discovery-))
+
+```bash
+$v msg 0x<recipient> hello there --name me      # send: default burns 5 + 1 fee
+$v inbox --name me2                              # recipient reads the inbox (wait one block)
+$v inbox --sent --name me                        # see what you've sent
+```
+
+### `newcomers` — newcomers found this session
+
+```bash
+$v newcomers --name me     # lists "new node online" / "new address first seen" (a running node also prints 🆕 live)
+```
+
 ### `wallet` — wallet management (**no running node needed**, reads the data dir)
 
 ```bash
@@ -241,7 +255,38 @@ Delist: `$v market delist <listing-id> --name me` (only the seller). **Settle on
 
 ---
 
-## 7. Wallet backup & recovery (must-read ‼️)
+## 7. On-chain messages & newcomer discovery ✉️
+
+**Messaging = burn-to-speak.** Send a line to any address: instead of transferring coins, you **burn** a little `$V0ID`
+into the void (forever unspendable = destroyed). The body is plaintext on-chain, syncs network-wide, and is permanent.
+Technically it's a new kind of transaction (`amount=0 + burn>0 + memo=body`), plus the min fee to the including miner.
+
+```bash
+# node1 messages node2 (default burns 5 + 1 fee)
+$v msg 0x<node2-addr> "leaving you a note on-chain 👋" --name node1
+#  ✉️ message broadcast txid=…  🔥burn=5 fee=1
+
+# after a block packs it, node2 reads its inbox
+$v inbox --name node2
+#  ← 0x…(node1)  leaving you a note on-chain 👋   🔥5 #25   2026/6/21 …
+
+$v inbox --sent --name node1     # node1 sees what it sent
+```
+
+Burn more to flex / deflate harder: `--burn 50`. Total burned across the network: "Burned 🔥" in `v0id info` or atop the dashboard.
+
+**Newcomer discovery.** A running node prints a live `🆕` line for two kinds of "newcomer"; also via `v0id newcomers` / the dashboard "Newcomers" panel:
+
+- **New node online** (P2P layer): when a new machine connects and announces its address in the handshake.
+- **New address first seen** (economic identity): the first time an address appears as a sender/recipient in a block.
+
+> ⚠️ **Messaging is a soft fork**: nodes that haven't upgraded will reject blocks containing message transactions. Before
+> messaging over the network, make sure **every node (including the public seed) is upgraded**. But the genesis hash and existing
+> checkpoints are **unchanged** (the burn enters the txid only when >0), so the old chain and treasury pre-mine stay valid — **no reset needed**.
+
+---
+
+## 8. Wallet backup & recovery (must-read ‼️)
 
 Your private key lives only in `.data/<node-name>/wallet.json` (mode `0600`, owner-only). **Deleting the data dir / switching machines = coins gone**, unless you backed up the key.
 
@@ -256,7 +301,7 @@ $v wallet import <your-64-hex-key> --name miner
 
 ---
 
-## 8. Play with friends 🌐
+## 9. Play with friends 🌐
 
 ### A. Same LAN (same WiFi)
 
@@ -278,7 +323,7 @@ Easiest: everyone runs `corepack pnpm mine` (it already has `--peers ws://mc.voi
 
 ---
 
-## 9. Troubleshooting 🛠️
+## 10. Troubleshooting 🛠️
 
 | Symptom | Cause / fix |
 | --- | --- |
@@ -292,7 +337,7 @@ Easiest: everyone runs `corepack pnpm mine` (it already has `--peers ws://mc.voi
 
 ---
 
-## 10. Security & limits (don't use real money)
+## 11. Security & limits (don't use real money)
 
 This is a **teaching chain**. It's been hardened (most-work consensus + future-timestamp bound vs double-spend, checkpoints freezing history, API token auth, `0600` wallet/token files, P2P private-address filtering vs SSRF, corrupt-chain fail-safe — see [README "Design notes & known limits"](README.en.md#design-notes--known-limits-toy-chain--not-for-real-money)).
 
@@ -300,7 +345,7 @@ But still: **no TLS, no inter-node encryption, and the inherent 51% risk of a lo
 
 ---
 
-## 11. Going deeper
+## 12. Going deeper
 
 ```bash
 corepack pnpm smoke                              # core self-test (mining/transfer/consensus/security regressions)

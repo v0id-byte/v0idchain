@@ -158,6 +158,10 @@ v0id market sell   <price> <title…> [--api]   list an item (self-transfer of 1
 v0id market buy    <id> [--api]               buy (pay the seller the price; id prefix ok)
 v0id market delist <id> [--api]               take down your own listing
 
+v0id msg     <to> <text…> [--burn <n>] [--fee <n>] [--api]   send an on-chain message to an address (no transfer; burns $V0ID into the void; --burn default 5)
+v0id inbox   [address] [--sent] [--api]       view your inbox (messages sent to you; --sent shows your outbox)
+v0id newcomers [--api]                        newcomers found this session (new node online / new address first seen on-chain)
+
 v0id wallet show   [--name|--data-dir] [--secret]   show address/pubkey (--secret reveals private key = backup)
 v0id wallet new    [--name|--data-dir]              create a new wallet
 v0id wallet import <privkey> [--name|--data-dir] [--force]   restore a wallet from a backed-up key
@@ -185,6 +189,35 @@ $v market buy 9f59c01a --api http://127.0.0.1:7002                 # buy by id p
 ```
 
 > On-chain settlement (payment + sale record), off-chain delivery (the notes / the favor / the drink). Listing needs ≥2 balance (the self-transfer of 1 + the min fee of 1, which goes to the miner).
+
+---
+
+## On-chain messages & newcomer discovery
+
+**Messaging = burn-to-speak.** Send a message to any address: instead of transferring coins, you **burn** a little `$V0ID`
+into the void address (`NULL_ADDRESS`, forever unspendable = destroyed). The body is plaintext on-chain, syncs network-wide,
+and is permanent. Technically it's a new kind of transaction: `amount=0 + burn>0 + memo=body`, plus the min fee to the including miner.
+
+```bash
+$v msg 0x720c…b1ce "leaving you a note on-chain 👋" --api http://127.0.0.1:7001   # default burns 5 + 1 gas
+$v inbox --api http://127.0.0.1:7002        # the recipient node reads its inbox (wait one block)
+$v inbox --sent --api http://127.0.0.1:7001 # see what you've sent
+```
+
+Total burned across the network = the void address's balance, shown as "Burned 🔥" in `v0id info` and atop the dashboard
+(the ledger stays conserved: the burn just moves into a forever-unspendable address).
+
+**Newcomer discovery.** A running node prints a live `🆕` line when either kind of "newcomer" appears; also queryable via
+`v0id newcomers` / the dashboard "Newcomers" panel:
+
+- **New node online** (P2P layer): when a new machine connects and announces its address in the handshake.
+- **New address first seen** (economic identity): the first time an address shows up as a sender/recipient in a block.
+
+> ⚠️ **Messaging is a soft fork.** Plain-transfer blocks validate on old & new nodes alike; but once a miner packs a message
+> transaction into a block, **nodes that haven't upgraded to this version will reject that block**. So before messaging over the
+> network, make sure **every node (including the public seed) is upgraded**. The good news: the genesis hash and existing
+> checkpoints are **unchanged** (the burn field only enters the txid when >0), so the old chain and treasury pre-mine remain
+> valid — **no chain reset needed**.
 
 ---
 
@@ -258,6 +291,7 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - [x] Phase 7 — **marketplace**: buy/sell goods & services with `$V0ID` (built on memos, no consensus change)
 - [x] Phase 8 — **security hardening**: most-work consensus + future-timestamp bound (anti difficulty-suppression double-spend) · **checkpoints** (freeze history vs deep reorg) · API token auth · P2P private-address filter / pinned-FIFO `knownUrls` · WS size cap · mempool cap · `0600` key/token files
 - [x] Phase 9 — **fees (gas)**: transfers pay a fee, paid to the including miner (folded into coinbase, consensus-pinned `reward + fees`) · min-fee + **highest-fee-first** packing (fee-market seed) · treasury address rotation
+- [x] Phase 10 — **on-chain messages**: message an address by burning `$V0ID` into the void (`amount=0 + burn>0 + memo`; burn enters the txid backward-compatibly → genesis/checkpoints unchanged) · inbox/outbox · **newcomer discovery** (new node online + new address first-seen; live CLI `🆕` + `newcomers` + dashboard panel)
 
 ---
 
