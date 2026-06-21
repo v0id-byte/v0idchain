@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  单一 Info.plist，供两处共用：
+   • SwiftPM 可执行 target（经 Package.swift 的 -sectcreate 注入到 __TEXT,__info_plist）；
+   • xcodegen 生成的 .app（经 INFOPLIST_FILE）。
+  ATS：v0idChain 是明文 ws:// 的教学链（节点地址可在 App 内改成本地 / 种子 / 同学节点），
+  故放行明文加载。生产化方向是种子前置 wss://，届时可收紧为按域名例外。
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>V0idChain</string>
+    <key>CFBundleDisplayName</key>
+    <string>v0idChain</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.v0idchain.macos</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>mc.void1211.com</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
+</dict>
+</plist>

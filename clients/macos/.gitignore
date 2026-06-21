@@ -1,0 +1,25 @@
+# ---- Xcode / Swift 构建产物（V0idChain.xcodeproj 本体已提交，可直接打开）----
+## 用户级状态（每人不同，不入库）
+*.xcuserstate
+xcuserdata/
+**/xcuserdata/
+
+## 构建输出
+DerivedData/
+build/
+.build/
+*.o
+*.swiftmodule
+
+## SwiftPM 解析缓存 / 状态
+.swiftpm/
+**/.swiftpm/
+Package.resolved
+**/xcshareddata/swiftpm/Package.resolved
+
+## 其它
+.DS_Store
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM

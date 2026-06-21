@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 一个被斜杠划过的圆（虚空 ∅），呼应 v0idChain。 -->
+    <path
+        android:strokeColor="#7C5CFF"
+        android:strokeWidth="5"
+        android:fillColor="#00000000"
+        android:pathData="M54,32 A22,22 0 1,1 53.9,32 Z" />
+    <path
+        android:strokeColor="#7C5CFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M40,68 L68,40" />
+</vector>

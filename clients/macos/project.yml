@@ -1,0 +1,48 @@
+# xcodegen 配置 → 生成 V0idChain.xcodeproj（正式 macOS .app）。
+# 用法：cd clients/macos && xcodegen generate && open V0idChain.xcodeproj
+#
+# App target 直接编译 Sources/V0idChainApp，并以本地 SwiftPM 包形式依赖 V0idKit 库
+# （同一份 Sources/V0idKit，与 `swift test` 共用，单一事实来源）。
+name: V0idChain
+options:
+  bundleIdPrefix: com.v0idchain
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  V0idKit:
+    path: V0idKit   # 子目录里的 SwiftPM 包（V0idKit 库 + 测试），与 `swift test` 共用
+
+targets:
+  V0idChain:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/V0idChainApp
+    dependencies:
+      - package: V0idKit
+        product: V0idKit
+    settings:
+      base:
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_BUNDLE_IDENTIFIER: com.v0idchain.macos
+        PRODUCT_NAME: V0idChain
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        # 教学 App：本地运行用自动签名 / “Sign to Run Locally” 即可；不强制团队。
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+schemes:
+  V0idChain:
+    build:
+      targets:
+        V0idChain: all
+    run:
+      config: Debug

@@ -1,0 +1,19 @@
+# Gradle / Android 构建产物与本机配置 —— 不入库
+.gradle/
+build/
+/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# OS
+.DS_Store
+
+# 注意：gradle/wrapper/gradle-wrapper.jar 是 wrapper 的一部分，**应当**提交（勿忽略）。

@@ -1,0 +1,23 @@
+# Xcode 构建产物
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode 用户级状态（共享 scheme 保留在 xcshareddata/，不忽略）
+xcuserdata/
+**/xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# 杂项
+.DS_Store

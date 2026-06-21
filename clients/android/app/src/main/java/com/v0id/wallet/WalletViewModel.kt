@@ -72,16 +72,23 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
     private var wantConnected = false
     private var reconnectScheduled = false
 
+    // ---- 种子失效 fallback：gossip 学到的备用地址 + 连续失败计数 ----
+    private val backupPeers = mutableListOf<String>()
+    private var failCount = 0
+
     private val ws = WsClient(
         onBlocks = { blocks -> viewModelScope.launch { onBlocks(blocks) } },
         onStatus = { st -> onStatus(st) },
         onLog = { msg -> appendLog(msg) },
+        onPeers = { urls -> viewModelScope.launch { onPeers(urls) } },
     )
 
     init {
         viewModelScope.launch {
             val hex = withContext(Dispatchers.IO) { vault.loadPrivateKeyHex() }
             val savedNode = withContext(Dispatchers.IO) { vault.nodeUrl }
+            val savedPeers = withContext(Dispatchers.IO) { vault.knownPeers }
+            if (savedPeers.isNotBlank()) backupPeers.addAll(savedPeers.split(",").filter { it.isNotBlank() })
             val node = savedNode.ifBlank { DEFAULT_SEED_WS }
             if (hex != null) {
                 wallet = Wallet.fromPrivateKeyHex(hex)
@@ -168,9 +175,23 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun onStatus(st: WsClient.Status) {
         _ui.update { it.copy(connection = st) }
+        if (st == WsClient.Status.CONNECTED) failCount = 0   // 连上后重置 fallback 计数
         if (st == WsClient.Status.DISCONNECTED && wantConnected && !ws.isUserClosed) {
             scheduleReconnect()
         }
+    }
+
+    private fun onPeers(urls: List<String>) {
+        var added = false
+        val currentNode = _ui.value.nodeUrl
+        for (url in urls) {
+            val clean = url.trim()
+            if (clean.isBlank() || clean.contains("127.") || clean.contains("localhost")) continue
+            if (clean == currentNode || backupPeers.contains(clean)) continue
+            backupPeers.add(clean)
+            added = true
+        }
+        if (added) viewModelScope.launch(Dispatchers.IO) { vault.knownPeers = backupPeers.joinToString(",") }
     }
 
     private fun scheduleReconnect() {
@@ -179,10 +200,16 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             delay(3000)
             reconnectScheduled = false
-            if (wantConnected && ws.status == WsClient.Status.DISCONNECTED) {
-                appendLog("正在重连…")
-                connect()
+            if (!wantConnected || ws.status != WsClient.Status.DISCONNECTED) return@launch
+            val w = wallet ?: return@launch
+            failCount++
+            val targetUrl = if (failCount > 3 && backupPeers.isNotEmpty()) {
+                backupPeers[(failCount - 4) % backupPeers.size]
+            } else {
+                _ui.value.nodeUrl
             }
+            appendLog(if (targetUrl == _ui.value.nodeUrl) "正在重连…" else "种子不可达，尝试备用节点…")
+            ws.connect(targetUrl, w.address)
         }
     }
 
