@@ -1,6 +1,6 @@
 // 多节点集成测试：真实 WebSocket 连接，验证区块广播、转账同步、迟到节点追链、双向出块。
 import { rmSync } from 'node:fs';
-import { V0idNode, startHttpApi } from '../packages/node/src/index.js'; // 用 Node 25 内置的全局 WebSocket 客户端
+import { V0idNode, startHttpApi, isPublicWsUrl } from '../packages/node/src/index.js'; // 用 Node 25 内置的全局 WebSocket 客户端
 import { Wallet } from '../packages/core/src/index.js';
 
 const DIR = '.data/it';
@@ -125,6 +125,13 @@ const h = node1.bc.height;
 const reloaded = new V0idNode({ dataDir: `${DIR}/n1`, p2pPort: 6111 });
 check('从磁盘恢复链高', reloaded.bc.height === h);
 check('从磁盘恢复 alice 余额', reloaded.bc.balanceOf(alice.address) === 3);
+
+console.log('\n— 安全：gossip 私网/环回地址过滤（含 IPv4-mapped IPv6 SSRF）—');
+check('拒 IPv4-mapped IPv6 环回 [::ffff:127.0.0.1]', isPublicWsUrl('ws://[::ffff:127.0.0.1]:6802') === false);
+check('拒 IPv6 环回 [::1]', isPublicWsUrl('ws://[::1]:6802') === false);
+check('拒 NAT64 [64:ff9b::127.0.0.1]', isPublicWsUrl('ws://[64:ff9b::127.0.0.1]:6802') === false);
+check('拒 RFC1918 10.x 与 169.254 元数据地址', !isPublicWsUrl('ws://10.0.0.5:6001') && !isPublicWsUrl('ws://169.254.169.254:80'));
+check('放行公网 IPv4 / 域名 / 全局单播 IPv6', isPublicWsUrl('ws://8.8.8.8:6001') && isPublicWsUrl('ws://mc.void1211.com:6001') && isPublicWsUrl('ws://[2606:4700::1]:1'));
 
 console.log(failed === 0 ? '\n🎉 集成测试全部通过\n' : `\n💥 ${failed} 项失败\n`);
 process.exit(failed === 0 ? 0 : 1);

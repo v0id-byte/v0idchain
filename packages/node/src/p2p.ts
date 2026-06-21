@@ -33,6 +33,39 @@ interface PeerMeta {
   listen?: string; // 对方对外可连的 ws 地址
 }
 
+/**
+ * 是否“公网可路由”地址：仅放行全局单播；拒绝环回 / RFC1918 私网 / 链路本地 / ULA / IPv4-mapped / NAT64 / 未指定。
+ * 只用于过滤 **gossip 学来的** 地址（HELLO listen / PEERS），防被诱导去拨内网服务（SSRF 类）；
+ * 运营者显式 --peers / 本地 /connect 走 trusted 通道、不过滤。仅过滤 IP 字面量，域名无法在此同步解析（DNS rebinding 超范围）。
+ */
+export function isPublicWsUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // 去掉 IPv6 字面量的方括号与 zone-id（Node 的 URL.hostname 对 ws:// 会**保留方括号**，
+  // 不剥的话 [::1] / [::ffff:127.0.0.1] 都绕过下面的判断）
+  host = host.replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  if (host === '' || host === 'localhost') return false;
+  if (host.includes(':')) {
+    // IPv6：只放行全局单播 2000::/3（首个 hextet 落在 0x2000–0x3fff）。其余一律拒——含 ::1/:: 环回、
+    // fe80 链路本地、fc/fd ULA、::ffff: IPv4-mapped、64:ff9b:: NAT64、多播等——杜绝用 IPv4-mapped
+    // 等写法绕过私网过滤去拨内网（SSRF）。Node 把 ::ffff:127.0.0.1 规整成 ::ffff:7f00:1（十六进制），
+    // 故按前缀文本逐一黑名单并不可靠，这里用“只放行全局单播”的白名单。
+    const first = host.startsWith('::') ? 0 : parseInt(host.split(':')[0] || '', 16);
+    return first >= 0x2000 && first <= 0x3fff;
+  }
+  if (host === '0.0.0.0') return false; // 未指定
+  if (/^127\./.test(host)) return false; // 环回
+  if (/^10\./.test(host)) return false; // RFC1918
+  if (/^192\.168\./.test(host)) return false; // RFC1918
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false; // RFC1918
+  if (/^169\.254\./.test(host)) return false; // 链路本地
+  return true;
+}
+
 export class P2P {
   private wss?: WebSocketServer;
   private port = 0;
@@ -94,36 +127,6 @@ export class P2P {
   }
 
   /**
-   * 是否“公网可路由”地址：拒绝环回 / RFC1918 私网 / 链路本地 / ULA / 未指定地址。
-   * 仅用于过滤 **gossip 学来的** 地址（HELLO listen / PEERS），防止恶意节点诱导本节点去拨内网服务（SSRF 类）。
-   * 运营者显式 --peers / 本地 /connect 不走此过滤（见 connect 的 trusted 参数），本机多节点开发照常可用。
-   * 仅过滤 IP 字面量；域名无法在此同步解析（DNS rebinding 超出本教学链范围）。
-   */
-  private isPublicWsUrl(url: string): boolean {
-    let host: string;
-    try {
-      host = new URL(url).hostname.toLowerCase();
-    } catch {
-      return false;
-    }
-    if (host === '' || host === 'localhost') return false;
-    if (host.includes(':')) {
-      // IPv6 字面量
-      if (host === '::1' || host === '::') return false; // 环回 / 未指定
-      if (host.startsWith('fe80:')) return false; // 链路本地
-      if (host.startsWith('fc') || host.startsWith('fd')) return false; // ULA fc00::/7
-      return true;
-    }
-    if (host === '0.0.0.0') return false; // 未指定
-    if (/^127\./.test(host)) return false; // 环回
-    if (/^10\./.test(host)) return false; // RFC1918
-    if (/^192\.168\./.test(host)) return false; // RFC1918
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false; // RFC1918
-    if (/^169\.254\./.test(host)) return false; // 链路本地
-    return true;
-  }
-
-  /**
    * 受控地记入已知地址：先校验，再封顶。容量满时**淘汰最早的非置顶地址**（FIFO，Set 保持插入序），
    * 让新学到的诚实种子能挤掉攻击者灌入的垃圾；运营者种子（pinned）永不被淘汰。
    */
@@ -156,7 +159,7 @@ export class P2P {
     url = url.trim();
     if (!url || url === this.selfUrl || this.dialedUrls.has(url) || this.isConnectedTo(url)) return;
     if (!this.isValidWsUrl(url)) return;
-    if (!trusted && !this.isPublicWsUrl(url)) return; // gossip 来的私网/环回地址一律拒绝
+    if (!trusted && !isPublicWsUrl(url)) return; // gossip 来的私网/环回地址一律拒绝
     // 把“在途拨号”也计入上限，避免重连定时器一次性发起成百上千个连接
     if (this.peers.size + this.dialedUrls.size >= this.maxPeers) return;
     this.dialedUrls.add(url);
@@ -235,7 +238,7 @@ export class P2P {
           meta.address = msg.address;
           meta.listen = msg.listen;
           this.peers.set(ws, meta);
-          if (this.isPublicWsUrl(msg.listen)) this.addKnown(msg.listen); // gossip 学来的 listen：仅记公网地址
+          if (isPublicWsUrl(msg.listen)) this.addKnown(msg.listen); // gossip 学来的 listen：仅记公网地址
           if (msg.height > this.handlers.getHeight()) this.send(ws, { type: 'QUERY_ALL' });
           break;
         }
