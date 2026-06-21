@@ -72,6 +72,13 @@ export default function App() {
     localStorage.setItem('v0id-token', token);
   }, [token]);
 
+  // 切换节点时自动拉取令牌（/my-token 无需鉴权，只绑 127.0.0.1）
+  useEffect(() => {
+    getJSON<{ token: string }>(api, '/my-token')
+      .then(({ token: t }) => setToken(t))
+      .catch(() => {});
+  }, [api]);
+
   const me = info?.address ?? '';
   const recent = [...chain].reverse().slice(0, 25);
 

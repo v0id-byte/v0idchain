@@ -51,6 +51,9 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
         switch (url.pathname) {
           case '/health':
             return json(200, { ok: true });
+          case '/my-token':
+            // 无需鉴权：API 只绑 127.0.0.1，CORS 也只放行本机源；本地用户本来就能直接读文件。
+            return json(200, { token });
           case '/info':
             return json(200, node.info());
           case '/chain':
