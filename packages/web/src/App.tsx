@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer } from './api';
+import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry } from './api';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
+// 模块级显示名缓存（每次轮询更新）；disp(地址) → 有昵称显示 @名字，否则缩写地址
+let NAMES: Record<string, string> = {};
+const disp = (a: string) => (a && NAMES[a] ? `@${NAMES[a]}` : short(a));
 const ago = (ts: number) => {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (s < 60) return `${s}s 前`;
@@ -20,6 +23,7 @@ export default function App() {
   const [market, setMarket] = useState<Listing[]>([]);
   const [messages, setMessages] = useState<Messages | null>(null);
   const [newcomers, setNewcomers] = useState<Newcomer[]>([]);
+  const [names, setNames] = useState<NameRegistry>({ nameToOwner: {}, addressToName: {} });
   const [up, setUp] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const apiRef = useRef(api);
@@ -28,13 +32,14 @@ export default function App() {
   const poll = useCallback(async () => {
     const base = apiRef.current;
     try {
-      const [i, c, m, mk, msg, nc] = await Promise.all([
+      const [i, c, m, mk, msg, nc, nm] = await Promise.all([
         getJSON<Info>(base, '/info'),
         getJSON<Block[]>(base, '/chain'),
         getJSON<Tx[]>(base, '/mempool'),
         getJSON<Listing[]>(base, '/market'),
         getJSON<Messages>(base, '/messages'),
         getJSON<Newcomer[]>(base, '/newcomers'),
+        getJSON<NameRegistry>(base, '/names'),
       ]);
       setInfo(i);
       setChain(c);
@@ -42,6 +47,8 @@ export default function App() {
       setMarket(mk);
       setMessages(msg);
       setNewcomers(nc);
+      NAMES = nm.addressToName || {}; // 刷新模块级显示名缓存（disp 读它）
+      setNames(nm);
       setUp(true);
     } catch {
       setUp(false);
@@ -99,7 +106,7 @@ export default function App() {
         </div>
       )}
 
-      <Wallet info={info} />
+      <Wallet info={info} names={names} api={api} token={token} onDone={poll} />
 
       <div className="chips">
         <Chip k="链高" v={info ? String(info.height) : '—'} accent />
@@ -146,18 +153,36 @@ export default function App() {
   );
 }
 
-function Wallet({ info }: { info: Info | null }) {
+function Wallet({ info, names, api, token, onDone }: { info: Info | null; names: NameRegistry; api: string; token: string; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [claim, setClaim] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState<Banner>(null);
   const copy = () => {
     if (!info) return;
     navigator.clipboard?.writeText(info.address);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
+  const myName = info ? names.addressToName[info.address] : undefined;
+  const claimName = async () => {
+    setBusy(true);
+    setBanner(null);
+    try {
+      await postJSON(api, '/name/claim', { name: claim.trim() }, token);
+      setBanner({ kind: 'ok', text: `已提交抢注 @${claim.trim().toLowerCase()}（等一个区块；先到先得）` });
+      setClaim('');
+      onDone();
+    } catch (e) {
+      setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className="wallet">
       <div>
-        <div className="label">本节点余额</div>
+        <div className="label">本节点余额{myName && <span className="tag me" style={{ marginLeft: 8 }}>@{myName}</span>}</div>
         <div className="balance">
           {info ? info.balance.toLocaleString() : '—'}
           <small>$V0ID</small>
@@ -170,6 +195,20 @@ function Wallet({ info }: { info: Info | null }) {
             </button>
           )}
         </div>
+        <div className="addr-row" style={{ marginTop: 8 }}>
+          <input
+            value={claim}
+            onChange={(e) => setClaim(e.target.value)}
+            placeholder={myName ? `改名（当前 @${myName}）` : '抢个昵称（小写字母/数字/_/-）'}
+            maxLength={20}
+            spellCheck={false}
+            style={{ maxWidth: 240 }}
+          />
+          <button className="ghost mini" disabled={busy || !claim.trim()} onClick={claimName}>
+            🪪 抢注
+          </button>
+        </div>
+        {banner && <div className={`msg ${banner.kind}`} style={{ marginTop: 6 }}>{banner.text}</div>}
       </div>
       <div style={{ textAlign: 'right' }}>
         <div className="label">交易池</div>
@@ -195,9 +234,9 @@ function TxRow({ tx, me, block }: { tx: Tx; me: string; block?: number }) {
   return (
     <div className="txrow">
       <span className="who">
-        {isCoinbase(tx) ? <span className="tag coinbase">coinbase</span> : short(tx.from)}
+        {isCoinbase(tx) ? <span className="tag coinbase">coinbase</span> : disp(tx.from)}
         {' → '}
-        {short(tx.to)}
+        {disp(tx.to)}
         {tx.to === me && <span className="tag me">给我</span>}
         {block !== undefined && <span className="tag blk">#{block}</span>}
         {(tx.burn ?? 0) > 0 && <span className="tag me">✉️ 消息</span>}
@@ -422,7 +461,7 @@ function Messaging({
       {list.map((m) => (
         <div className="txrow" key={m.txid}>
           <span className="who">
-            {tab === 'in' ? `← ${short(m.from)}` : `→ ${short(m.to)}`}
+            {tab === 'in' ? `← ${disp(m.from)}` : `→ ${disp(m.to)}`}
             <span className="tag blk">#{m.height}</span>
             <span className="memo">“{m.text}”</span>
           </span>
@@ -442,7 +481,7 @@ function Newcomers({ newcomers }: { newcomers: Newcomer[] }) {
         <div className="txrow" key={n.address + n.at + i}>
           <span className="who">
             <span className={`tag ${n.kind === 'peer' ? 'diff' : 'me'}`}>{n.kind === 'peer' ? '新节点' : '新地址'}</span>
-            {short(n.address)}
+            {disp(n.address)}
             {n.kind === 'peer' && n.listen && <span className="memo">{n.listen}</span>}
             {n.kind === 'address' && n.height !== undefined && <span className="tag blk">#{n.height}</span>}
           </span>
@@ -514,7 +553,7 @@ function Marketplace({ market, api, token, onDone }: { market: Listing[]; api: s
               {l.mine && <span className="tag me">我的</span>}
             </div>
             <div className="mkt-title">{l.title}</div>
-            <div className="mkt-seller">卖家 {short(l.seller)}</div>
+            <div className="mkt-seller">卖家 {disp(l.seller)}</div>
             {l.mine ? (
               <button className="ghost mini" disabled={busy} onClick={() => act('/market/delist', { id: l.id }, '已撤单')}>
                 撤下
@@ -552,7 +591,7 @@ function BlockCard({ b, me, open, onToggle }: { b: Block; me: string; open: bool
         <span className="meta">
           <span>{b.transactions.length} 笔</span>
           <span className="tag diff">{b.difficulty} bit</span>
-          <span>矿工 {b.index === 0 ? '创世' : short(b.miner)}</span>
+          <span>矿工 {b.index === 0 ? '创世' : disp(b.miner)}</span>
           <span>{ago(b.timestamp)}</span>
         </span>
       </div>

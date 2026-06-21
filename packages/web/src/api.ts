@@ -31,6 +31,12 @@ export interface Messages {
   sent: ChainMessage[];
 }
 
+/** 昵称注册表（名字↔地址） */
+export interface NameRegistry {
+  nameToOwner: Record<string, string>;
+  addressToName: Record<string, string>;
+}
+
 /** 新成员事件：本次会话首见的对等节点 / 首次上链的地址 */
 export interface Newcomer {
   kind: 'peer' | 'address';
