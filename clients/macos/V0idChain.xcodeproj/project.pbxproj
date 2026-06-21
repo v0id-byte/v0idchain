@@ -16,6 +16,8 @@
 		AED0CAB32E526CE8A6AC7934 /* V0idChainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */; };
 		B1E4E70282F45B79F6901468 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 773FCD25CE78262B15335250 /* Components.swift */; };
 		CC37F5614DEC587C8999AC6B /* WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75BE38B04FB09F0CD84C6A17 /* WalletView.swift */; };
+		A1B2C3D4E5F600000000A001 /* MarketplaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000A002 /* MarketplaceView.swift */; };
+		A1B2C3D4E5F600000000A003 /* RedPacketsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000A004 /* RedPacketsView.swift */; };
 		E59C3E044F115250B7990CFB /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */; };
 		EDD6617D138B9209A5159472 /* ExplorerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A923C49BD5A8D723534070F5 /* ExplorerView.swift */; };
 /* End PBXBuildFile section */
@@ -25,6 +27,8 @@
 		284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V0idChainApp.swift; sourceTree = "<group>"; };
 		40C9F7F8EB0B5D2F557EBA42 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		75BE38B04FB09F0CD84C6A17 /* WalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000A002 /* MarketplaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarketplaceView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000A004 /* RedPacketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedPacketsView.swift; sourceTree = "<group>"; };
 		773FCD25CE78262B15335250 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		799B6F4C035111BD6A0AA7C6 /* V0idChain.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = V0idChain.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9751B02A5201766AC2FC36EC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -91,6 +95,8 @@
 				FE82343164D2A3070F7684B8 /* MessagesView.swift */,
 				E575DAC7C44F4BBA0EBD9CA2 /* SendView.swift */,
 				9751B02A5201766AC2FC36EC /* SettingsView.swift */,
+				A1B2C3D4E5F600000000A002 /* MarketplaceView.swift */,
+				A1B2C3D4E5F600000000A004 /* RedPacketsView.swift */,
 				284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */,
 				75BE38B04FB09F0CD84C6A17 /* WalletView.swift */,
 			);
@@ -168,6 +174,8 @@
 				7DA00DF492E9C26097F2D9D5 /* MessagesView.swift in Sources */,
 				1E9AA160F610D3B346F2A347 /* SendView.swift in Sources */,
 				0E4D2D682457C73571412E93 /* SettingsView.swift in Sources */,
+				A1B2C3D4E5F600000000A001 /* MarketplaceView.swift in Sources */,
+				A1B2C3D4E5F600000000A003 /* RedPacketsView.swift in Sources */,
 				AED0CAB32E526CE8A6AC7934 /* V0idChainApp.swift in Sources */,
 				CC37F5614DEC587C8999AC6B /* WalletView.swift in Sources */,
 			);

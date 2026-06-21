@@ -8,6 +8,7 @@ struct MessagesView: View {
     @State private var text = ""
     @State private var burn = "\(Config.messageBurn)"
     @State private var fee = "\(Config.minFee)"
+    @State private var encrypt = false
     @State private var box: Box = .inbox
     enum Box: String, CaseIterable, Identifiable { case inbox = "收件箱", outbox = "发件箱"; var id: String { rawValue } }
 
@@ -38,7 +39,7 @@ struct MessagesView: View {
                 .font(.caption).foregroundStyle(.secondary)
             TextField("收件地址 0x + 64 hex", text: $to, axis: .vertical)
                 .textFieldStyle(.roundedBorder).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled()
-            TextField("消息正文（≤\(Config.maxMemo) 字）", text: $text, axis: .vertical)
+            TextField("消息正文（≤\(Config.plainTextLimit) 字）", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder).lineLimit(2...5)
             HStack(spacing: 12) {
                 labeledField("🔥 销毁额") {
@@ -49,14 +50,19 @@ struct MessagesView: View {
                 }
                 Spacer()
                 Button {
-                    model.sendMessage(to: to, text: text, burn: Int(burn) ?? Config.messageBurn, fee: Int(fee) ?? Config.minFee)
+                    model.sendMessage(to: to, text: text, burn: Int(burn) ?? Config.messageBurn,
+                                      fee: Int(fee) ?? Config.minFee, encrypt: encrypt)
                     if model.lastError == nil { text = "" }
                 } label: {
-                    Label("发送", systemImage: "paperplane.fill")
+                    Label(encrypt ? "加密发送" : "发送", systemImage: encrypt ? "lock.fill" : "paperplane.fill")
                 }
                 .controlSize(.large).buttonStyle(.borderedProminent)
                 .disabled(!canSend)
             }
+            Toggle(isOn: $encrypt) {
+                Text("🔒 端到端加密（用 TA 的公钥加密，只有收发双方能解；密文上链）").font(.caption)
+            }
+            .toggleStyle(.checkbox)
         }
         .card()
     }
@@ -81,7 +87,7 @@ struct MessagesView: View {
             }
             .pickerStyle(.segmented).labelsHidden()
 
-            let items = box == .inbox ? model.inbox : model.outbox
+            let items = box == .inbox ? model.inboxMsgs : model.outboxMsgs
             if items.isEmpty {
                 Text(box == .inbox ? "还没有人给你发消息。" : "你还没发过消息。")
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 12)
@@ -93,16 +99,22 @@ struct MessagesView: View {
         }
     }
 
-    private func messageRow(_ m: ChainMessage) -> some View {
+    private func messageRow(_ m: DisplayMessage) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(box == .inbox ? "来自 \(short(m.from))" : "发给 \(short(m.to))")
+                Text(box == .inbox ? "来自 \(model.displayName(m.from))" : "发给 \(model.displayName(m.to))")
                     .font(.caption).foregroundStyle(.secondary)
+                if m.encrypted {
+                    Text(m.locked ? "🔒 加密（无法解密）" : "🔒 加密").font(.caption2).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text("🔥\(m.burn) · #\(m.height) · \(formatTime(m.timestamp))")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            Text(m.text).font(.body).textSelection(.enabled)
+            Text(m.locked ? "（加密内容，仅收发双方可见）" : m.text)
+                .font(.body)
+                .foregroundStyle(m.locked ? .secondary : .primary)
+                .textSelection(.enabled)
         }
         .card(radius: 12, padding: 12)
     }

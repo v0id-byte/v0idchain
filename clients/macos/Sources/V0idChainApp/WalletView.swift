@@ -36,6 +36,9 @@ struct WalletView: View {
                     .contentTransition(.numericText())
                 Text(Config.symbol).font(.headline).foregroundStyle(.secondary)
             }
+            if let name = model.myName {
+                Text("@\(name)").font(.subheadline.weight(.medium)).foregroundStyle(.tint)
+            }
             if model.pendingOut > 0 {
                 Text("可用 \(model.available) · 待发占用 \(model.pendingOut)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -75,7 +78,7 @@ struct WalletView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("🪪 链上昵称").font(.headline)
             HStack(spacing: 8) {
-                TextField("小写字母/数字/_/-（1~20 位）", text: $claimInput)
+                TextField(model.myName.map { "改名（当前 @\($0)）" } ?? "小写字母/数字/_/-（1~20 位）", text: $claimInput)
                     .textFieldStyle(.roundedBorder)
                 Button("抢注") {
                     let name = claimInput

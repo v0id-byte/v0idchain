@@ -40,8 +40,21 @@ final class AppModel: ObservableObject {
     var burned: Int { state.burned }
     var isConnected: Bool { peerCount > 0 }
 
-    var inbox: [ChainMessage] { address.map { Chain.inbox(chain, address: $0) } ?? [] }
-    var outbox: [ChainMessage] { address.map { Chain.outbox(chain, address: $0) } ?? [] }
+    // ---- 派生展示状态（链/钱包变化时 recomputeDerived 刷新，避免每帧重扫整链）----
+    @Published private(set) var names = NameRegistry()
+    @Published private(set) var market: [Listing] = []
+    @Published private(set) var redPackets: [RedPacketView] = []
+    @Published private(set) var newcomers: [Newcomer] = []
+    @Published private(set) var inboxMsgs: [DisplayMessage] = []
+    @Published private(set) var outboxMsgs: [DisplayMessage] = []
+
+    /// 地址 → 显示名：有昵称显示 @名字，否则缩写地址（完整地址仍随处可复制，便于识破仿冒）。
+    func displayName(_ address: String) -> String {
+        if let n = names.name(for: address) { return "@\(n)" }
+        return short(address)
+    }
+    /// 我的当前显示名（没抢注过则 nil）。
+    var myName: String? { address.flatMap { names.name(for: $0) } }
 
     // ---- 启动 ----
     func bootstrap() {
@@ -102,6 +115,7 @@ final class AppModel: ObservableObject {
         let old = client
         Task { await old?.stop() }
         peerCount = 0
+        recomputeDerived()   // 钱包变了 → 立即用新地址刷新解密 / 显示名 / 收发件箱
         startClient()
     }
 
@@ -115,7 +129,30 @@ final class AppModel: ObservableObject {
             // 已上链的待发交易移出 pending
             let onChain = Set(blocks.flatMap { $0.transactions.map { $0.txid } })
             pending.removeAll { onChain.contains($0.txid) }
+            recomputeDerived()
         }
+    }
+
+    /// 重算派生展示状态：昵称表 / 集市 / 红包 / 新成员 / 收发件箱（含加密私信本地解密）。
+    private func recomputeDerived() {
+        names = Names.parseNames(chain)
+        market = Market.parseMarket(chain)
+        redPackets = RedPacket.parseRedPackets(chain)
+        newcomers = Chain.newcomers(chain)
+        guard let me = address else { inboxMsgs = []; outboxMsgs = []; return }
+        let seed = wallet?.privateKey
+        func decode(_ m: ChainMessage) -> DisplayMessage {
+            guard m.encrypted, let seed else {
+                return DisplayMessage(msg: m, text: m.text, encrypted: m.encrypted, locked: false)
+            }
+            let other = m.to == me ? m.from : m.to   // 我是收件人→对方=发件人，否则→收件人
+            if let plain = Encryption.decryptMemo(m.text, otherPartyAddress: other, mySeed: seed) {
+                return DisplayMessage(msg: m, text: plain, encrypted: true, locked: false)
+            }
+            return DisplayMessage(msg: m, text: m.text, encrypted: true, locked: true)
+        }
+        inboxMsgs = Chain.inbox(chain, address: me).map(decode)
+        outboxMsgs = Chain.outbox(chain, address: me).map(decode)
     }
 
     // ---- 发送 ----
@@ -138,8 +175,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 链上消息：amount 0 + burn + memo 正文，另付 fee。
-    func sendMessage(to: String, text: String, burn: Int, fee: Int) {
+    /// 链上消息：amount 0 + burn + memo 正文，另付 fee。encrypt=true → 用收件人公钥端到端加密正文（`ENC|` 密文上链）。
+    func sendMessage(to: String, text: String, burn: Int, fee: Int, encrypt: Bool = false) {
         guard let w = wallet else { lastError = "请先创建或登录钱包"; return }
         let to = to.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard Crypto.isValidAddress(to) else { lastError = "收件地址格式无效（应为 0x + 64 hex）"; return }
@@ -150,13 +187,64 @@ final class AppModel: ObservableObject {
         guard burn > 0 else { lastError = "销毁额必须 > 0"; return }
         guard fee >= Config.minFee else { lastError = "手续费至少 \(Config.minFee)"; return }
         guard burn + fee <= available else { lastError = "余额不足：可用 \(available)，需要 \(burn + fee)（销毁 \(burn) + 手续费 \(fee)）"; return }
+        var body = trimmed
+        if encrypt {
+            guard let enc = Encryption.encryptMemo(trimmed, recipientAddress: to, senderSeed: w.privateKey) else {
+                lastError = "加密失败（收件地址无效？）"; return
+            }
+            guard enc.unicodeScalars.count <= Config.maxMemo else {
+                lastError = "加密后超长（>\(Config.maxMemo) 字），消息太长"; return
+            }
+            body = enc
+        }
         do {
-            let tx = try TxBuilder.message(wallet: w, to: to, text: trimmed, nonce: nextNonce, burn: burn, fee: fee)
+            let tx = try TxBuilder.message(wallet: w, to: to, text: body, nonce: nextNonce, burn: burn, fee: fee)
             pending.append(tx)
-            broadcast(tx, notice: "已广播消息 → \(short(to))（🔥 烧 \(burn)，等矿工打包）")
+            broadcast(tx, notice: "已广播\(encrypt ? " 🔒加密" : "")消息 → \(displayName(to))（🔥 烧 \(burn)，等矿工打包）")
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    // ---- 集市 / 红包：都建在“转账 + memo”之上（余额由 computeState 复刻共识保证一致）----
+    private func submit(to: String, amount: Int, memo: String, fee: Int = Config.minFee, notice: String) {
+        guard let w = wallet else { lastError = "请先创建或登录钱包"; return }
+        guard amount + fee <= available else { lastError = "余额不足：可用 \(available)，需要 \(amount + fee)"; return }
+        do {
+            let tx = try TxBuilder.transfer(wallet: w, to: to, amount: amount, nonce: nextNonce, memo: memo, fee: fee)
+            pending.append(tx)
+            broadcast(tx, notice: notice)
+        } catch { lastError = error.localizedDescription }
+    }
+
+    func marketSell(price: Int, title: String) {
+        guard let me = address else { lastError = "请先创建或登录钱包"; return }
+        let (memo, err) = Market.makeListing(price: price, title: title)
+        guard let memo else { lastError = err; return }
+        submit(to: me, amount: 1, memo: memo, notice: "已上架「\(title)」\(price) \(Config.symbol)（等矿工打包）")
+    }
+    func marketBuy(_ l: Listing) {
+        submit(to: l.seller, amount: l.price, memo: Config.buyPrefix + l.id,
+               notice: "已下单付款 \(l.price) \(Config.symbol) → \(displayName(l.seller))")
+    }
+    func marketDelist(_ l: Listing) {
+        guard let me = address else { return }
+        submit(to: me, amount: 1, memo: Config.delPrefix + l.id, notice: "已撤下「\(l.title)」")
+    }
+
+    func redSend(total: Int, count: Int, mode: RedMode) {
+        let (memo, err) = RedPacket.makeRedPacket(total: total, count: count, mode: mode)
+        guard let memo else { lastError = err; return }
+        submit(to: Config.redEscrowAddress, amount: total, memo: memo,
+               notice: "🧧 已发出 \(total) \(Config.symbol)/\(count) 份（等一个区块确认后可抢）")
+    }
+    func redGrab(_ p: RedPacketView) {
+        guard let me = address else { lastError = "请先创建或登录钱包"; return }
+        submit(to: me, amount: 0, memo: Config.claimPrefix + p.id, notice: "🧧 已出手抢！")
+    }
+    func redRefund(_ p: RedPacketView) {
+        guard let me = address else { return }
+        submit(to: me, amount: 0, memo: Config.refundPrefix + p.id, notice: "↩️ 已申请退款（需过期）")
     }
 
     /// 异步广播到连接池；失败则回滚乐观 pending 并报错。
@@ -203,4 +291,18 @@ final class AppModel: ObservableObject {
 func short(_ s: String) -> String {
     guard s.count > 14 else { return s }
     return String(s.prefix(8)) + "…" + String(s.suffix(6))
+}
+
+/// 展示用消息：在 ChainMessage 之上附加“本端解密结果 + 加密/锁定标识”。
+struct DisplayMessage: Identifiable {
+    let msg: ChainMessage
+    let text: String       // 解密后的明文；非加密则为原文；加密但解不开则为密文
+    let encrypted: Bool
+    let locked: Bool       // 加密但本端无法解密（查的是别人的私信）
+    var id: String { msg.txid }
+    var from: String { msg.from }
+    var to: String { msg.to }
+    var burn: Int { msg.burn }
+    var height: Int { msg.height }
+    var timestamp: Int { msg.timestamp }
 }

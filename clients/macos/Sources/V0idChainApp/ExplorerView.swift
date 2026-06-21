@@ -17,6 +17,7 @@ struct ExplorerView: View {
                     if !query.isEmpty {
                         Text("没找到「\(query)」对应的地址 / 交易 / 区块。").foregroundStyle(.secondary)
                     }
+                    newcomersPanel
                     recentBlocks
                 } else {
                     resultView
@@ -75,6 +76,25 @@ struct ExplorerView: View {
         }
     }
 
+    // ---- 新成员（最近首次上链的地址，最新在前）----
+    @ViewBuilder private var newcomersPanel: some View {
+        if !model.newcomers.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("新成员 🆕 · \(model.newcomers.count)").font(.headline)
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(model.newcomers.prefix(12)) { n in
+                        HStack {
+                            CopyableMono(text: n.address, display: model.displayName(n.address))
+                            Spacer()
+                            Text("#\(n.height)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .card()
+        }
+    }
+
     // ---- 最近区块 ----
     private var recentBlocks: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -123,7 +143,7 @@ struct ExplorerView: View {
                 Text(formatTime(b.timestamp)).font(.caption)
             }.foregroundStyle(.secondary)
             Text("矿工").font(.caption).foregroundStyle(.secondary)
-            CopyableMono(text: b.miner, display: short(b.miner))
+            CopyableMono(text: b.miner, display: model.displayName(b.miner))
             Divider()
             Text("交易（\(b.transactions.count)）").font(.subheadline).bold()
             LazyVStack(alignment: .leading, spacing: 8) {
@@ -148,11 +168,12 @@ struct ExplorerView: View {
                 }
             }
             HStack {
-                Text(tx.isCoinbase ? "虚空" : short(tx.from)).font(.caption2).foregroundStyle(.secondary)
+                Text(tx.isCoinbase ? "虚空" : model.displayName(tx.from)).font(.caption2).foregroundStyle(.secondary)
                 Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
-                Text(short(tx.to)).font(.caption2).foregroundStyle(.secondary)
+                Text(model.displayName(tx.to)).font(.caption2).foregroundStyle(.secondary)
                 if tx.isMessage && !tx.memo.isEmpty {
-                    Text("· \(tx.memo)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(tx.memo.hasPrefix(Config.encPrefix) ? "· 🔒 加密私信" : "· \(tx.memo)")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

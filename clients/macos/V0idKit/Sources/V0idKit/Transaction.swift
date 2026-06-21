@@ -85,7 +85,9 @@ public extension Transaction {
     func selfValid() -> Bool {
         let b = burn ?? 0
         guard amount >= 0, b >= 0, fee >= 0 else { return false }
-        if amount == 0 && b == 0 { return false }                       // 空操作
+        // 空操作（amount0 且 burn0）一律拒；例外：红包 CLAIM/REFUND 的入账由共识从托管池支付。
+        let zeroOk = memo.hasPrefix(Config.claimPrefix) || memo.hasPrefix(Config.refundPrefix)
+        if amount == 0 && b == 0 && !zeroOk { return false }
         if memo.unicodeScalars.count > Config.maxMemo { return false }   // 按码点计数
         let recomputed = TxBuilder.txid(from: from, to: to, amount: amount, fee: fee,
                                         nonce: nonce, timestamp: timestamp, memo: memo, burn: burn)
