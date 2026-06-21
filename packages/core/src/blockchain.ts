@@ -22,8 +22,14 @@ import {
   MAX_MEMPOOL,
   MAX_FUTURE_DRIFT_MS,
   CHECKPOINTS,
+  RED_ESCROW_ADDRESS,
+  RED_PREFIX,
+  CLAIM_PREFIX,
+  REFUND_PREFIX,
+  RED_EXPIRY,
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
+import { parseRedCreate, parseClaimId, parseRefundId, computeShare, redSeed, type RedMode } from './redpacket.js';
 
 /** 创世区块：不做 PoW，参数全固定 → 所有节点算出同一个 hash。 */
 export function genesisBlock(): Block {
@@ -75,14 +81,186 @@ export function violatesCheckpoint(
   return null;
 }
 
+/** 一个开着的红包池（共识状态的一部分）。claimants 用 Set 做 O(1) 去重。 */
+export interface RedPool {
+  creator: string;
+  total: number;
+  count: number;
+  mode: RedMode;
+  remaining: number; // 剩余金额
+  remainingCount: number; // 剩余份数（= 校验“还能不能抢/退”的权威字段；选包阶段也能精确跟踪）
+  createHeight: number;
+  claimants: Set<string>; // 已抢地址（防重复领）
+  refunded: boolean;
+}
+
 export interface ChainState {
   balances: Map<string, number>;
   nonces: Map<string, number>;
+  pools: Map<string, RedPool>; // 红包池：id（创建交易 txid）→ 池
 }
 
 export interface ChainJSON {
   chain: Block[];
   mempool: Transaction[];
+}
+
+/**
+ * 把一笔非 coinbase 交易分类，并校验“红包操作”的合法性（结合当前 pools）。
+ * 返回 null = 合法（红包操作）或非红包（NORMAL，余额/nonce 由调用方另判）；返回字符串 = 非法原因。
+ * atHeight = 该交易所在区块高度（REFUND 过期判定用）。**只看 remainingCount/refunded（选包阶段也能精确跟踪），
+ * 不看 remaining 金额** —— 保证选包与整链校验对“能否抢/退”得出完全一致的结论。
+ */
+function redOpError(tx: Transaction, pools: Map<string, RedPool>, atHeight: number): string | null {
+  const m = tx.memo;
+  if (m.startsWith(CLAIM_PREFIX)) {
+    if ((tx.burn ?? 0) > 0) return '红包交易不能附带销毁';
+    if (tx.amount !== 0) return '领取金额须为 0';
+    const id = parseClaimId(m);
+    if (!id) return '领取格式无效';
+    const p = pools.get(id);
+    if (!p) return '红包不存在';
+    if (p.refunded || p.remainingCount <= 0) return '红包已抢完或已退款';
+    if (tx.from === p.creator) return '不能抢自己发的红包';
+    if (p.claimants.has(tx.from)) return '你已经抢过这个红包了';
+    return null;
+  }
+  if (m.startsWith(REFUND_PREFIX)) {
+    if ((tx.burn ?? 0) > 0) return '红包交易不能附带销毁';
+    if (tx.amount !== 0) return '退款金额须为 0';
+    const id = parseRefundId(m);
+    if (!id) return '退款格式无效';
+    const p = pools.get(id);
+    if (!p) return '红包不存在';
+    if (tx.from !== p.creator) return '只有发起人能退款';
+    if (p.refunded || p.remainingCount <= 0) return '红包无剩余可退';
+    if (atHeight - p.createHeight <= RED_EXPIRY) return `红包未过期（需创建后满 ${RED_EXPIRY} 块）`;
+    return null;
+  }
+  // 发红包 = 转给托管地址（旧节点也当普通转账锁进托管 → 不静默分叉）。发往托管地址的交易**必须**是合法红包。
+  if (tx.to === RED_ESCROW_ADDRESS) {
+    if ((tx.burn ?? 0) > 0) return '红包交易不能附带销毁';
+    const meta = parseRedCreate(m);
+    if (!meta) return '发往红包托管地址的交易必须是合法红包（RED|份数|r或e）';
+    if (tx.amount < meta.count) return '红包总额须 ≥ 份数（每份至少 1）';
+    return null;
+  }
+  return null; // NORMAL
+}
+
+/**
+ * 把一笔**已校验合法**的非 coinbase 交易应用到状态（余额/nonce/红包池）。
+ * computeState 与 validateChain **共用此函数** → 矿工与校验方算出完全一致的派发额（杜绝分叉）。
+ * blockHash 用于拼手气随机源（CLAIM）；atHeight 用于记录红包创建高度。
+ */
+function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: number): void {
+  const credit = (a: string, amt: number) => st.balances.set(a, (st.balances.get(a) ?? 0) + amt);
+  const bump = () => st.nonces.set(tx.from, (st.nonces.get(tx.from) ?? 0) + 1);
+  const m = tx.memo;
+  // 发红包：转给托管地址 → 锁总额、开池。余额效果 = 普通转账到托管（旧节点也如此），额外开池。
+  if (tx.to === RED_ESCROW_ADDRESS && m.startsWith(RED_PREFIX)) {
+    const meta = parseRedCreate(m);
+    if (meta && tx.amount >= meta.count) {
+      credit(tx.from, -(tx.amount + tx.fee));
+      credit(RED_ESCROW_ADDRESS, tx.amount);
+      st.pools.set(tx.txid, {
+        creator: tx.from, total: tx.amount, count: meta.count, mode: meta.mode,
+        remaining: tx.amount, remainingCount: meta.count, createHeight: atHeight, claimants: new Set(), refunded: false,
+      });
+      bump();
+      return;
+    }
+    // 发往托管的非法 RED → 合法链上不会发生（validateChain/redOpError 已拦）；稳妥起见落到 NORMAL
+  }
+  // 抢红包：从托管派一份给抢的人（拼手气随机额由 blockHash 决定）
+  if (m.startsWith(CLAIM_PREFIX) && tx.amount === 0) {
+    const id = parseClaimId(m);
+    const p = id ? st.pools.get(id) : undefined;
+    if (p) {
+      const share = computeShare(p.remaining, p.remainingCount, p.mode, redSeed(blockHash, tx.txid));
+      credit(tx.from, share - tx.fee); // 收到 share、付出 fee
+      credit(RED_ESCROW_ADDRESS, -share);
+      p.remaining -= share;
+      p.remainingCount -= 1;
+      p.claimants.add(tx.from);
+      bump();
+      return;
+    }
+  }
+  // 退款：发起人取回剩余
+  if (m.startsWith(REFUND_PREFIX) && tx.amount === 0) {
+    const id = parseRefundId(m);
+    const p = id ? st.pools.get(id) : undefined;
+    if (p) {
+      const amt = p.remaining;
+      credit(tx.from, amt - tx.fee);
+      credit(RED_ESCROW_ADDRESS, -amt);
+      p.remaining = 0;
+      p.remainingCount = 0;
+      p.refunded = true;
+      bump();
+      return;
+    }
+  }
+  // 普通交易（转账/消息/昵称/集市）
+  const burn = tx.burn ?? 0;
+  credit(tx.from, -(tx.amount + tx.fee + burn));
+  credit(tx.to, tx.amount);
+  if (burn > 0) credit(NULL_ADDRESS, burn);
+  bump();
+}
+
+/**
+ * 选包阶段的“应用”：与 applyTx 一致地推进 nonce/红包池的**校验字段**（remainingCount/claimants/refunded），
+ * 但 CLAIM 的派发额依赖尚不存在的区块 hash，故只“占位扣 fee、占一份”，不结算 share。
+ * 这不影响所选块能否通过 validateChain（合法性只看 remainingCount/claimants/refunded，派发额永远在范围内）。
+ */
+function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
+  const credit = (a: string, amt: number) => st.balances.set(a, (st.balances.get(a) ?? 0) + amt);
+  const bump = () => st.nonces.set(tx.from, (st.nonces.get(tx.from) ?? 0) + 1);
+  const m = tx.memo;
+  if (tx.to === RED_ESCROW_ADDRESS && m.startsWith(RED_PREFIX)) {
+    const meta = parseRedCreate(m);
+    if (meta && tx.amount >= meta.count) {
+      credit(tx.from, -(tx.amount + tx.fee));
+      credit(RED_ESCROW_ADDRESS, tx.amount);
+      st.pools.set(tx.txid, {
+        creator: tx.from, total: tx.amount, count: meta.count, mode: meta.mode,
+        remaining: tx.amount, remainingCount: meta.count, createHeight: atHeight, claimants: new Set(), refunded: false,
+      });
+      bump();
+      return;
+    }
+  }
+  if (m.startsWith(CLAIM_PREFIX) && tx.amount === 0) {
+    const id = parseClaimId(m);
+    const p = id ? st.pools.get(id) : undefined;
+    if (p) {
+      credit(tx.from, -tx.fee); // share 未知，仅扣 fee；占一份
+      p.remainingCount -= 1;
+      p.claimants.add(tx.from);
+      bump();
+      return;
+    }
+  }
+  if (m.startsWith(REFUND_PREFIX) && tx.amount === 0) {
+    const id = parseRefundId(m);
+    const p = id ? st.pools.get(id) : undefined;
+    if (p) {
+      credit(tx.from, p.remaining - tx.fee);
+      credit(RED_ESCROW_ADDRESS, -p.remaining);
+      p.remaining = 0;
+      p.remainingCount = 0;
+      p.refunded = true;
+      bump();
+      return;
+    }
+  }
+  const burn = tx.burn ?? 0;
+  credit(tx.from, -(tx.amount + tx.fee + burn));
+  credit(tx.to, tx.amount);
+  if (burn > 0) credit(NULL_ADDRESS, burn);
+  bump();
 }
 
 export class Blockchain {
@@ -107,25 +285,19 @@ export class Blockchain {
     return expectedDifficulty(this.chain, this.height + 1);
   }
 
-  // ---- 状态：重放整条链，得到余额表与 nonce 表 ----
+  // ---- 状态：重放整条链，得到余额表 / nonce 表 / 红包池（假定链已合法；校验在 validateChain）----
   computeState(chain: Block[] = this.chain): ChainState {
-    const balances = new Map<string, number>();
-    const nonces = new Map<string, number>();
-    const credit = (addr: string, amt: number) =>
-      balances.set(addr, (balances.get(addr) ?? 0) + amt);
-
+    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map() };
     for (const block of chain) {
       for (const tx of block.transactions) {
-        if (!isCoinbase(tx)) {
-          const burn = tx.burn ?? 0;
-          credit(tx.from, -(tx.amount + tx.fee + burn)); // 发送方付 金额 + 手续费 + 销毁额
-          if (burn > 0) credit(NULL_ADDRESS, burn); // 销毁额记入虚空地址：永不可花=已销毁，又让总账守恒、可查“全网已烧毁”
-          nonces.set(tx.from, (nonces.get(tx.from) ?? 0) + 1);
+        if (isCoinbase(tx)) {
+          st.balances.set(tx.to, (st.balances.get(tx.to) ?? 0) + tx.amount); // 矿工/预挖收款
+          continue;
         }
-        credit(tx.to, tx.amount); // 收款方实收金额（消息为 0）；手续费经 coinbase.amount 归矿工，全链守恒
+        applyTx(tx, st, block.hash, block.index); // 与 validateChain 同一套状态机
       }
     }
-    return { balances, nonces };
+    return st;
   }
 
   balanceOf(address: string): number {
@@ -144,17 +316,22 @@ export class Blockchain {
     if (this.mempool.length >= MAX_MEMPOOL) return { ok: false, error: '交易池已满' };
     // 先单独判金额/销毁额/手续费，给出明确报错（否则非整数/费太低会被 verifyTransaction 笼统当成“签名无效”，误导用户）
     const burn = tx.burn ?? 0;
+    const isZeroOp = typeof tx.memo === 'string' && (tx.memo.startsWith(CLAIM_PREFIX) || tx.memo.startsWith(REFUND_PREFIX));
     if (!Number.isInteger(tx.amount) || tx.amount < 0) return { ok: false, error: '金额必须是非负整数' };
     if (!Number.isInteger(burn) || burn < 0) return { ok: false, error: '销毁额必须是非负整数' };
-    if (tx.amount === 0 && burn === 0) return { ok: false, error: '空交易：转账须金额>0，消息须销毁额>0' };
+    if (tx.amount === 0 && burn === 0 && !isZeroOp) return { ok: false, error: '空交易：转账须金额>0，消息须销毁额>0' };
     if (!Number.isInteger(tx.fee) || tx.fee < MIN_FEE) return { ok: false, error: `手续费至少 ${MIN_FEE}（gas）` };
     if (!verifyTransaction(tx)) return { ok: false, error: '签名无效或备注超长' };
     if (!isValidAddress(tx.to) || tx.to === NULL_ADDRESS) {
       return { ok: false, error: '收款地址格式无效' }; // 防止打钱给畸形/空地址导致永久销毁
     }
+    // 发往红包托管地址只允许合法红包（RED）；其它一律拒（防误把钱锁死）。redOpError 下方统一判。
     if (this.mempool.some((t) => t.txid === tx.txid)) return { ok: false, error: '交易已在池中' };
 
-    const { balances, nonces } = this.computeState();
+    const { balances, nonces, pools } = this.computeState();
+    // 红包操作（RED/CLAIM/REFUND）合法性：池存在/未抢完/未重复领/已过期等（按 height+1 估算）
+    const redErr = redOpError(tx, pools, this.height + 1);
+    if (redErr) return { ok: false, error: redErr };
     const pending = this.mempool.filter((t) => t.from === tx.from);
     const expectedNonce = (nonces.get(tx.from) ?? 0) + pending.length;
     if (tx.nonce !== expectedNonce) {
@@ -178,7 +355,8 @@ export class Blockchain {
    * 同一发送方的后续 nonce；最多挑 MAX_BLOCK_TXS 笔 —— 拥堵时给得多的先上链。
    */
   private selectMempoolTxs(): Transaction[] {
-    const { balances, nonces } = this.computeState();
+    const st = this.computeState(); // {balances, nonces, pools}（pools 含真实剩余，本块将打到 height+1）
+    const atHeight = this.height + 1;
     const queue: (Transaction | undefined)[] = [...this.mempool].sort(
       (a, b) => b.fee - a.fee || (a.txid < b.txid ? -1 : 1),
     );
@@ -189,15 +367,17 @@ export class Blockchain {
       for (let i = 0; i < queue.length && selected.length < MAX_BLOCK_TXS; i++) {
         const tx = queue[i];
         if (!tx) continue;
-        const bal = balances.get(tx.from) ?? 0;
-        const expected = nonces.get(tx.from) ?? 0;
-        const burn = tx.burn ?? 0;
-        if (tx.nonce === expected && tx.amount + tx.fee + burn <= bal && verifyTransaction(tx)) {
+        const expected = st.nonces.get(tx.from) ?? 0;
+        const cost = tx.amount + tx.fee + (tx.burn ?? 0); // 发送方实付（RED=总额+费；CLAIM/REFUND=费）
+        // 同 validateChain 的接纳条件：nonce 对、红包操作合法、余额够付、自洽签名 → 必能通过整链校验
+        if (
+          tx.nonce === expected &&
+          !redOpError(tx, st.pools, atHeight) &&
+          cost <= (st.balances.get(tx.from) ?? 0) &&
+          verifyTransaction(tx)
+        ) {
           selected.push(tx);
-          balances.set(tx.from, bal - tx.amount - tx.fee - burn);
-          balances.set(tx.to, (balances.get(tx.to) ?? 0) + tx.amount);
-          if (burn > 0) balances.set(NULL_ADDRESS, (balances.get(NULL_ADDRESS) ?? 0) + burn);
-          nonces.set(tx.from, expected + 1);
+          applySelect(tx, st, atHeight); // 推进 nonce/池校验字段（CLAIM 仅占位、不结算 share）
           queue[i] = undefined;
           progressed = true;
         }
@@ -299,9 +479,8 @@ export class Blockchain {
     const badCp = violatesCheckpoint(chain);
     if (badCp) return { ok: false, error: `#${badCp.index} 与 checkpoint 不一致` };
 
-    const balances = new Map<string, number>();
-    const nonces = new Map<string, number>();
-    const credit = (a: string, amt: number) => balances.set(a, (balances.get(a) ?? 0) + amt);
+    // 状态机：余额/nonce/红包池。与 computeState 共用 applyTx，确保各节点一致。
+    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map() };
 
     for (let i = 0; i < chain.length; i++) {
       const b = chain[i];
@@ -346,21 +525,25 @@ export class Blockchain {
           // coinbase/创世也必须校验 txid===内容哈希，把金额/收款方绑定到 txid，
           // 从而经由 merkleRoot→区块 hash 被 PoW 真正锚定，杜绝凭空增发。
           if (!verifyTransaction(tx)) return { ok: false, error: `#${i} coinbase txid 与内容不符` };
-          credit(tx.to, tx.amount);
+          st.balances.set(tx.to, (st.balances.get(tx.to) ?? 0) + tx.amount);
           continue;
         }
         if (!verifyTransaction(tx)) return { ok: false, error: `#${i} 交易签名无效或手续费过低` };
-        const expected = nonces.get(tx.from) ?? 0;
+        const expected = st.nonces.get(tx.from) ?? 0;
         if (tx.nonce !== expected) {
           return { ok: false, error: `#${i} nonce 错误（${tx.from.slice(0, 10)}… 期望 ${expected}）` };
         }
-        const bal = balances.get(tx.from) ?? 0;
-        const burn = tx.burn ?? 0;
-        if (tx.amount + tx.fee + burn > bal) return { ok: false, error: `#${i} 余额不足（双花/超额，含手续费与销毁额）` };
-        credit(tx.from, -(tx.amount + tx.fee + burn)); // 扣 金额 + 手续费 + 销毁额
-        credit(tx.to, tx.amount); // 收款方实收金额（消息为 0）；手续费已计入 coinbase 归矿工
-        if (burn > 0) credit(NULL_ADDRESS, burn); // 销毁额记入虚空地址（守恒、可查全网已烧毁）
-        nonces.set(tx.from, expected + 1);
+        // 普通交易不得打到空地址（销毁应走 burn 字段）；发往托管地址的合法性交给 redOpError 判
+        if (tx.to === NULL_ADDRESS) return { ok: false, error: `#${i} 收款为空地址非法` };
+        // 红包操作合法性（池存在/未抢完/未重复领/发起人退款且已过期…）；非红包返回 null
+        const redErr = redOpError(tx, st.pools, b.index);
+        if (redErr) return { ok: false, error: `#${i} 红包：${redErr}` };
+        // 余额够付：发送方实付 = 金额 + 手续费 + 销毁额（RED=总额+费；CLAIM/REFUND=费；收到的 share 由 applyTx 入账）
+        const cost = tx.amount + tx.fee + (tx.burn ?? 0);
+        if (cost > (st.balances.get(tx.from) ?? 0)) {
+          return { ok: false, error: `#${i} 余额不足（双花/超额，含手续费与销毁额）` };
+        }
+        applyTx(tx, st, b.hash, b.index); // 与 computeState 同一套：扣款/派发/退款/开池 一致
       }
     }
     return { ok: true };

@@ -94,5 +94,20 @@ export const GENESIS_PREMINE_ADDRESS =
 /** 固定创世时间戳 —— 所有节点必须一致，保证各自算出的创世 hash 相同 */
 export const GENESIS_TIMESTAMP = 1_700_000_000_000;
 
-/** 空地址：coinbase 与创世交易的 from */
+/** 空地址：coinbase 与创世交易的 from。也是“销毁/虚空”地址（消息烧币、红包烧掉的钱进这里）。 */
 export const NULL_ADDRESS = '0x' + '0'.repeat(64);
+
+// ---- 链上抢红包（共识级托管 + 条件支付）----
+/** 红包托管地址：发红包时锁定的总额记到这里（不可花，等价于“合约托管账户”）。与 NULL 区分，便于审计。 */
+export const RED_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '1';
+/** 三种红包操作的 memo 前缀。RED 是“自转 amount=总额 + memo”；CLAIM/REFUND 是 amount=0 + memo。 */
+export const RED_PREFIX = 'RED|'; // 发红包：RED|<份数>|<r|e>（r=拼手气随机, e=均分）
+export const CLAIM_PREFIX = 'CLAIM|'; // 抢红包：CLAIM|<红包txid>
+export const REFUND_PREFIX = 'REFUND|'; // 退款：REFUND|<红包txid>（仅发起人、且过期后）
+/** 单个红包最多份数（防滥用 + 限制单红包状态规模） */
+export const MAX_RED_COUNT = 100;
+/**
+ * 红包过期块数：创建后再过这么多块仍没抢完，发起人可发 REFUND 取回剩余。
+ * 取 10（约 80 秒 @ 8s 目标出块）——抢红包讲究“快”，过期即可退（过期前后都能抢，直到退款）。所有节点须一致（改它即软分叉）。
+ */
+export const RED_EXPIRY = 10;

@@ -8,6 +8,8 @@ import {
   MAX_MEMO,
   MIN_FEE,
   MESSAGE_BURN,
+  CLAIM_PREFIX,
+  REFUND_PREFIX,
 } from './config.js';
 import type { Wallet } from './wallet.js';
 
@@ -112,7 +114,9 @@ export function verifyTransaction(t: Transaction): boolean {
   if (!Number.isInteger(t.amount) || t.amount < 0 || t.amount > Number.MAX_SAFE_INTEGER) return false;
   if (!Number.isInteger(burn) || burn < 0 || burn > Number.MAX_SAFE_INTEGER) return false;
   // 空操作交易（既不转账 amount=0 又不销毁 burn=0）一律拒：转账须 amount>0，消息须 burn>0。
-  if (t.amount === 0 && burn === 0) return false;
+  // 例外：红包的 CLAIM/REFUND 是 amount=0（领/退由共识从托管池支付，不在本交易里转币）。
+  const zeroOk = typeof t.memo === 'string' && (t.memo.startsWith(CLAIM_PREFIX) || t.memo.startsWith(REFUND_PREFIX));
+  if (t.amount === 0 && burn === 0 && !zeroOk) return false;
   // 手续费同样必须是整数且在安全范围内（同样的浮点累积误差会撕裂共识）。此处只判范围，最低值按类型在下方判。
   if (!Number.isInteger(t.fee) || t.fee < 0 || t.fee > Number.MAX_SAFE_INTEGER) return false;
   // 备注 / 消息正文须为串且不超长。按 Unicode 码点计数（与“字符”一致，避免 emoji 被当成 2 个）；
