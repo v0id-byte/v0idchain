@@ -107,9 +107,9 @@ start --name miner --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:
 挖矿时另开一个终端查自己状态：
 
 ```bash
-v="corepack pnpm exec tsx packages/cli/src/index.ts"   # 简写
-$v info --name miner          # 地址 / 余额 / 链高 / 对等数
-$v balance --name miner       # 只看余额
+v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }   # 简写
+v info --name miner          # 地址 / 余额 / 链高 / 对等数
+v balance --name miner       # 只看余额
 ```
 
 > ⚠️ **挖到第一个币，立刻备份钱包**（见 [TUTORIAL.md §8](../TUTORIAL.md#8-钱包备份与找回必看)）：私钥只在 `.data/miner/wallet.json`，删了数据目录币就没了。
@@ -137,16 +137,16 @@ corepack pnpm dev:node2
 **终端 3 — 操作**
 
 ```bash
-v="corepack pnpm exec tsx packages/cli/src/index.ts"
+v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
 
-$v info --api http://127.0.0.1:7001 --name node1    # 看 node1 状态（含地址）
-$v info --api http://127.0.0.1:7002 --name node2    # 看 node2 状态，复制地址备用
+v info --api http://127.0.0.1:7001 --name node1    # 看 node1 状态（含地址）
+v info --api http://127.0.0.1:7002 --name node2    # 看 node2 状态，复制地址备用
 
 # node1 挖几块后有余额，把 5 个币转给 node2（手续费 1，备注随意）
-$v send 0x<node2地址> 5 --fee 1 --memo "午饭钱" --api http://127.0.0.1:7001 --name node1
+v send 0x<node2地址> 5 --fee 1 --memo "午饭钱" --api http://127.0.0.1:7001 --name node1
 
 # 等 node1 挖出下一块打包这笔交易，两端余额应一致
-$v balance 0x<node2地址> --api http://127.0.0.1:7002
+v balance 0x<node2地址> --api http://127.0.0.1:7002
 ```
 
 ---

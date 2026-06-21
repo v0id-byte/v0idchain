@@ -112,6 +112,14 @@ export class P2P {
   start(port: number): void {
     this.port = port;
     this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD });
+    // 端口被占等监听错误：给一行中文提示再退出，别甩 Node 堆栈
+    this.wss.on('error', (e: NodeJS.ErrnoException) => {
+      if (e.code === 'EADDRINUSE') {
+        console.error(`✖ P2P 端口 ${port} 已被占用——换 --p2p-port，或先关掉占用它的进程。`);
+        process.exit(1);
+      }
+      throw e;
+    });
     this.wss.on('connection', (ws) => this.setupSocket(ws));
     this.loadPeers(); // 读取上次保存的邻居表，种子挂了也能找到已知节点
     // 每 5s 尝试补连已知但未连上的节点（自愈 + 种子节点重连，掉线后快速回网）

@@ -49,6 +49,13 @@ export function writeWalletFile(path: string, w: Wallet): void {
 export function loadWallet(dataDir: string): Wallet | null {
   const f = walletPath(dataDir);
   if (!existsSync(f)) return null;
+  // 兜底收紧权限：早期版本（0600 硬化之前）生成的钱包仍是 0644（明文私钥全局可读）。
+  // 每次读取时回填 0600，让“私钥文件 0600”对存量钱包也成立（chmod 失败不致命，忽略）。
+  try {
+    chmodSync(f, 0o600);
+  } catch {
+    /* 只读介质/无权限：尽力而为 */
+  }
   const data = JSON.parse(readFileSync(f, 'utf8')) as { privateKey: string };
   return Wallet.fromPrivateKeyHex(data.privateKey);
 }

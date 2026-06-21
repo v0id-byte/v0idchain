@@ -100,6 +100,12 @@ export const NULL_ADDRESS = '0x' + '0'.repeat(64);
 // ---- 链上抢红包（共识级托管 + 条件支付）----
 /** 红包托管地址：发红包时锁定的总额记到这里（不可花，等价于“合约托管账户”）。与 NULL 区分，便于审计。 */
 export const RED_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '1';
+
+/**
+ * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址。
+ * 供 UI / 新人发现等处把它们与真实用户区分（如不把红包托管地址误报成“🆕 新地址首次上链”）。
+ */
+export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS]);
 /** 三种红包操作的 memo 前缀。RED 是“自转 amount=总额 + memo”；CLAIM/REFUND 是 amount=0 + memo。 */
 export const RED_PREFIX = 'RED|'; // 发红包：RED|<份数>|<r|e>（r=拼手气随机, e=均分）
 export const CLAIM_PREFIX = 'CLAIM|'; // 抢红包：CLAIM|<红包txid>

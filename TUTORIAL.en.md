@@ -32,11 +32,11 @@ cd v0idchain
 corepack pnpm install       # any pnpm command = corepack pnpm …
 ```
 
-A shorthand to save typing (`$v` = the CLI throughout this tutorial):
+A shorthand to save typing (`v` = the CLI throughout this tutorial):
 
 ```bash
-v="corepack pnpm exec tsx packages/cli/src/index.ts"
-$v --help                   # list all commands
+v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
+v --help                   # list all commands
 ```
 
 ---
@@ -61,8 +61,8 @@ This starts a node named `miner`, connects to the public seed `ws://mc.void1211.
 While mining, drive the `miner` node from another terminal (note `--name miner`, see the token note below):
 
 ```bash
-$v info  --name miner                 # your address / balance / height
-$v balance --name miner               # this node's balance
+v info  --name miner                 # your address / balance / height
+v balance --name miner               # this node's balance
 ```
 
 > ⚠️ **Token**: `pnpm mine` uses node name **miner**. Read-only commands (info/balance/peers) need no token; but **writes (transfer/mine/market)** need `--name miner` so the CLI can auto-read `.data/miner/api.token` (else `unauthorized`). Or pass `--token <token>` explicitly.
@@ -92,17 +92,17 @@ corepack pnpm dev:node2
 **Terminal 3** — drive them (each has its own data dir + token in `.data/node1`, `.data/node2`):
 
 ```bash
-v="corepack pnpm exec tsx packages/cli/src/index.ts"
+v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
 
-$v info --api http://127.0.0.1:7001 --name node1     # node1: height & balance climbing (it mines)
-$v info --api http://127.0.0.1:7002 --name node2     # node2: copy its [address]
+v info --api http://127.0.0.1:7001 --name node1     # node1: height & balance climbing (it mines)
+v info --api http://127.0.0.1:7002 --name node2     # node2: copy its [address]
 
 # node1 sends 5 of its mined coins to node2 (fee 1, with a memo)
-$v send 0x<node2-address> 5 --fee 1 --memo "lunch" --api http://127.0.0.1:7001 --name node1
+v send 0x<node2-address> 5 --fee 1 --memo "lunch" --api http://127.0.0.1:7001 --name node1
 
 # after node1 mines a block that packs it, both nodes agree on the balance
-$v balance 0x<node2-address> --api http://127.0.0.1:7001     # shows 5
-$v balance 0x<node2-address> --api http://127.0.0.1:7002     # node2 too (synced)
+v balance 0x<node2-address> --api http://127.0.0.1:7001     # shows 5
+v balance 0x<node2-address> --api http://127.0.0.1:7002     # node2 too (synced)
 ```
 
 Once this clicks, you understand the whole chain.
@@ -116,7 +116,7 @@ All "client" subcommands talk to a **running** node via `--api <url>` (default `
 ### `start` — run a node (the big one)
 
 ```bash
-$v start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --mine
+v start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --mine
 ```
 
 | Option | Meaning |
@@ -134,7 +134,7 @@ On start it prints: address, P2P/API URLs, data dir, **token path** (`api.token`
 ### `info` — node status
 
 ```bash
-$v info --name me
+v info --name me
 ```
 ```
 address   0x….
@@ -149,14 +149,14 @@ peers     1
 ### `balance` — check balance
 
 ```bash
-$v balance                       # no address = this node
-$v balance 0x<address> --name me # any address
+v balance                       # no address = this node
+v balance 0x<address> --name me # any address
 ```
 
 ### `send` — transfer (core)
 
 ```bash
-$v send 0x<to-address> 100 --fee 2 --memo "thanks!" --name me
+v send 0x<to-address> 100 --fee 2 --memo "thanks!" --name me
 ```
 - Sender is debited **amount + fee** (102 here); recipient receives **amount** (100); the fee (2) goes to the miner who packs it.
 - `--fee`: min **1**; **higher = packed sooner** (fee auction under congestion).
@@ -166,21 +166,21 @@ $v send 0x<to-address> 100 --fee 2 --memo "thanks!" --name me
 ### `mine` — mine a few blocks manually
 
 ```bash
-$v mine 3 --name me      # make the running node mine 3 blocks now
+v mine 3 --name me      # make the running node mine 3 blocks now
 ```
 (`start --mine` mines continuously in the background; `mine N` nudges a few — handy in the sandbox.)
 
 ### `peers` / `connect` — view / add peers
 
 ```bash
-$v peers --name me
-$v connect ws://127.0.0.1:6002 --name me
+v peers --name me
+v connect ws://127.0.0.1:6002 --name me
 ```
 
 ### `checkpoint` — produce a history-freeze entry (operator use)
 
 ```bash
-$v checkpoint 300 --name me
+v checkpoint 300 --name me
 #  { index: 300, hash: '0000…' },     ← paste into CHECKPOINTS in packages/core/src/config.ts
 ```
 Pins a well-confirmed height to block deep reorgs (≥51% attacks). **All nodes must carry identical entries and restart together**; a wrong hash makes the local chain fail validation. Most people never need this — it's a maintainer chore.
@@ -188,33 +188,33 @@ Pins a well-confirmed height to block deep reorgs (≥51% attacks). **All nodes 
 ### `market` — marketplace (see [§6](#6-marketplace-buy--sell))
 
 ```bash
-$v market list [--all] --name me
-$v market sell <price> <title…> --name me
-$v market buy  <listing-id-prefix> --name me
-$v market delist <listing-id> --name me
+v market list [--all] --name me
+v market sell <price> <title…> --name me
+v market buy  <listing-id-prefix> --name me
+v market delist <listing-id> --name me
 ```
 
 ### `msg` / `inbox` — on-chain messages (burn-to-speak, see [§7](#7-on-chain-messages--newcomer-discovery-))
 
 ```bash
-$v msg 0x<recipient> hello there --name me      # send: default burns 5 + 1 fee
-$v inbox --name me2                              # recipient reads the inbox (wait one block)
-$v inbox --sent --name me                        # see what you've sent
+v msg 0x<recipient> hello there --name me      # send: default burns 5 + 1 fee
+v inbox --name me2                              # recipient reads the inbox (wait one block)
+v inbox --sent --name me                        # see what you've sent
 ```
 
 ### `newcomers` — newcomers found this session
 
 ```bash
-$v newcomers --name me     # lists "new node online" / "new address first seen" (a running node also prints 🆕 live)
+v newcomers --name me     # lists "new node online" / "new address first seen" (a running node also prints 🆕 live)
 ```
 
 ### `name` — on-chain nicknames (globally-unique, first-come-first-served)
 
 ```bash
-$v name claim v0id-boss --name me   # claim a nickname (self-transfer + memo; first-come; wait one block)
-$v name list  --name me             # list registered nicknames
-$v name who   v0id-boss --name me   # which address owns this nickname
-$v name of    --name me             # my (or a given address's) display nickname
+v name claim v0id-boss --name me   # claim a nickname (self-transfer + memo; first-come; wait one block)
+v name list  --name me             # list registered nicknames
+v name who   v0id-boss --name me   # which address owns this nickname
+v name of    --name me             # my (or a given address's) display nickname
 ```
 
 Once claimed, transfers/messages/the explorer show you as `@v0id-boss` instead of a long address. Names are 1–20 chars of lowercase letters/digits/`_`/`-`; reserved names like `treasury`/`official` are blocked. Pure memo convention — **no consensus change**.
@@ -222,10 +222,10 @@ Once claimed, transfers/messages/the explorer show you as `@v0id-boss` instead o
 ### `wallet` — wallet management (**no running node needed**, reads the data dir)
 
 ```bash
-$v wallet show --name me [--secret]     # address/pubkey; --secret also reveals the private key (= backup)
-$v wallet new  --name me2               # generate a fresh wallet in a new data dir
-$v wallet import <64-hex-key> --name me # recover a wallet from a backed-up key (balances come back too)
-$v wallet treasury-address             # show the "treasury" pre-mine address (public info)
+v wallet show --name me [--secret]     # address/pubkey; --secret also reveals the private key (= backup)
+v wallet new  --name me2               # generate a fresh wallet in a new data dir
+v wallet import <64-hex-key> --name me # recover a wallet from a backed-up key (balances come back too)
+v wallet treasury-address             # show the "treasury" pre-mine address (public info)
 ```
 
 ---
@@ -250,19 +250,19 @@ The marketplace is built purely on "transfer + memo" — **no consensus change, 
 
 ```bash
 # seller lists (self-transfer 1 coin + min fee, records the item on-chain; needs ≥2 balance)
-$v market sell 30 "chapter-3 study notes" --name me
+v market sell 30 "chapter-3 study notes" --name me
 #  🏷 listed txid=9f59c01a…(visible after one block confirms)
 
 # anyone can see it (synced network-wide)
-$v market list --name me
+v market list --name me
 #  [on sale] 30 $V0ID  chapter-3 study notes   seller 0x12ab…  id 9f59c01a34bc…
 
 # buyer purchases (pays the price to the seller; id prefix is fine)
-$v market buy 9f59c01a --name me
+v market buy 9f59c01a --name me
 #  🛒 ordered & paid txid=…
 ```
 
-Delist: `$v market delist <listing-id> --name me` (only the seller). **Settle on-chain (payment + sale record), deliver off-chain** (notes / help / a drink).
+Delist: `v market delist <listing-id> --name me` (only the seller). **Settle on-chain (payment + sale record), deliver off-chain** (notes / help / a drink).
 
 ---
 
@@ -274,14 +274,14 @@ Technically it's a new kind of transaction (`amount=0 + burn>0 + memo=body`), pl
 
 ```bash
 # node1 messages node2 (default burns 5 + 1 fee)
-$v msg 0x<node2-addr> "leaving you a note on-chain 👋" --name node1
+v msg 0x<node2-addr> "leaving you a note on-chain 👋" --name node1
 #  ✉️ message broadcast txid=…  🔥burn=5 fee=1
 
 # after a block packs it, node2 reads its inbox
-$v inbox --name node2
+v inbox --name node2
 #  ← 0x…(node1)  leaving you a note on-chain 👋   🔥5 #25   2026/6/21 …
 
-$v inbox --sent --name node1     # node1 sees what it sent
+v inbox --sent --name node1     # node1 sees what it sent
 ```
 
 Burn more to flex / deflate harder: `--burn 50`. Total burned across the network: "Burned 🔥" in `v0id info` or atop the dashboard.
@@ -289,8 +289,8 @@ Burn more to flex / deflate harder: `--burn 50`. Total burned across the network
 **🔒 Encrypted DMs**: add `-e` so only the recipient can read it (ciphertext on-chain as `ENC|…`; you, the sender, can also decrypt your own):
 
 ```bash
-$v msg 0x<node2-addr> "a secret only you can read 🤫" -e --name node1
-$v inbox --name node2     # node2 auto-decrypts to plaintext + 🔒
+v msg 0x<node2-addr> "a secret only you can read 🤫" -e --name node1
+v inbox --name node2     # node2 auto-decrypts to plaintext + 🔒
 ```
 
 > Encryption raises the memo cap from 128 to 512 (to fit ciphertext) — a soft fork, so upgrade all nodes together; no chain reset.
@@ -312,10 +312,10 @@ Your private key lives only in `.data/<node-name>/wallet.json` (mode `0600`, own
 
 ```bash
 # Back up: reveal the key, store it somewhere safe (don't screenshot it into a group chat)
-$v wallet show --name miner --secret
+v wallet show --name miner --secret
 
 # Recover: after a wipe or new machine, restore from the key (balances come back)
-$v wallet import <your-64-hex-key> --name miner
+v wallet import <your-64-hex-key> --name miner
 # then run corepack pnpm mine to go online; the balance re-syncs
 ```
 
@@ -328,13 +328,13 @@ $v wallet import <your-64-hex-key> --name miner
 Person A finds their LAN IP (e.g. `192.168.1.23`) and acts as a mini-seed:
 
 ```bash
-$v start --name me --p2p-port 6001 --api-port 7001 --advertise ws://192.168.1.23:6001 --mine
+v start --name me --p2p-port 6001 --api-port 7001 --advertise ws://192.168.1.23:6001 --mine
 ```
 
 Others connect to them (one is enough — gossip discovers the rest):
 
 ```bash
-$v start --name me --p2p-port 6001 --api-port 7001 --peers ws://192.168.1.23:6001 --mine
+v start --name me --p2p-port 6001 --api-port 7001 --peers ws://192.168.1.23:6001 --mine
 ```
 
 ### B. Across networks — just use the public seed

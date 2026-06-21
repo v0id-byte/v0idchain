@@ -100,17 +100,18 @@ corepack pnpm dev:node2
 Open a **third terminal** to drive them:
 
 ```bash
-v="corepack pnpm exec tsx packages/cli/src/index.ts"   # or: corepack pnpm v0id
+# `corepack pnpm v0id <cmd>` runs the CLI against a running node (zsh-safe — no shell-var word-split traps).
+# Prefer a shorter helper? Define a function (works in bash & zsh): v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
 
 # each node prints its own "address 0x…" on startup; `info` shows it too
-$v info --api http://127.0.0.1:7001        # node1 status: height / balance / peers / [address]
-$v info --api http://127.0.0.1:7002        # node2 status: copy its [address]
+corepack pnpm v0id info --api http://127.0.0.1:7001        # node1 status: height / balance / peers / [address]
+corepack pnpm v0id info --api http://127.0.0.1:7002        # node2 status: copy its [address]
 
 # coins come from mining: node1 has --mine, so it accrues a balance (see `info`)
 # node1 sends 300 of its mined coins to node2 (pays a fee, default min 1; --fee to override, optional --memo "note")
-$v send 0x<node2-address> 300 --api http://127.0.0.1:7001
+corepack pnpm v0id send 0x<node2-address> 300 --api http://127.0.0.1:7001
 
-$v balance 0x<address> --api http://127.0.0.1:7001   # both nodes should agree on the balance
+corepack pnpm v0id balance 0x<address> --api http://127.0.0.1:7001   # both nodes should agree on the balance
 ```
 
 > The pre-mine (1000 at genesis) sits in the "treasury" address. Only the holder of its private key (the project author — key stays local, never committed) can distribute it via `send`. Everyone else earns coins by **mining**. The treasury is a plain single-sig address with **no minting privilege** (new coins only ever come from coinbase; the **block-reward part** is fixed at `BLOCK_REWARD` by consensus — the coinbase total is `reward + the block's fees`, and fees are merely moved from senders, not minted) — so losing its key just loses those 1000 coins, like any wallet; keep it safe (`wallet.json` is now `0600`).
@@ -188,9 +189,9 @@ Any node scans the chain to reconstruct the listing list (sold/delisted auto-mar
 in the dashboard, or use the CLI:
 
 ```bash
-$v market sell 30 ch3-revision-notes --api http://127.0.0.1:7001   # list (wait one block to confirm)
-$v market list --api http://127.0.0.1:7002                         # other nodes see it too (synced)
-$v market buy 9f59c01a --api http://127.0.0.1:7002                 # buy by id prefix
+corepack pnpm v0id market sell 30 ch3-revision-notes --api http://127.0.0.1:7001   # list (wait one block to confirm)
+corepack pnpm v0id market list --api http://127.0.0.1:7002                         # other nodes see it too (synced)
+corepack pnpm v0id market buy 9f59c01a --api http://127.0.0.1:7002                 # buy by id prefix
 ```
 
 > On-chain settlement (payment + sale record), off-chain delivery (the notes / the favor / the drink). Listing needs ≥2 balance (the self-transfer of 1 + the min fee of 1, which goes to the miner).
@@ -204,9 +205,9 @@ into the void address (`NULL_ADDRESS`, forever unspendable = destroyed). The bod
 and is permanent. Technically it's a new kind of transaction: `amount=0 + burn>0 + memo=body`, plus the min fee to the including miner.
 
 ```bash
-$v msg 0x720c…b1ce "leaving you a note on-chain 👋" --api http://127.0.0.1:7001   # default burns 5 + 1 gas
-$v inbox --api http://127.0.0.1:7002        # the recipient node reads its inbox (wait one block)
-$v inbox --sent --api http://127.0.0.1:7001 # see what you've sent
+corepack pnpm v0id msg 0x720c…b1ce "leaving you a note on-chain 👋" --api http://127.0.0.1:7001   # default burns 5 + 1 gas
+corepack pnpm v0id inbox --api http://127.0.0.1:7002        # the recipient node reads its inbox (wait one block)
+corepack pnpm v0id inbox --sent --api http://127.0.0.1:7001 # see what you've sent
 ```
 
 Total burned across the network = the void address's balance, shown as "Burned 🔥" in `v0id info` and atop the dashboard
@@ -215,7 +216,7 @@ Total burned across the network = the void address's balance, shown as "Burned �
 **🔒 End-to-end encrypted DMs.** Add `-e` so only the recipient can read it (encrypted to their pubkey via x25519 ECDH + XChaCha20-Poly1305; the ciphertext goes on-chain as `ENC|…` gibberish to everyone else; the sender can also decrypt their own via ECDH). Only the **body** is encrypted — sender/recipient/time/burn stay public.
 
 ```bash
-$v msg 0x… "a secret only you can read 🤫" -e --api http://127.0.0.1:7001   # end-to-end encrypted
+corepack pnpm v0id msg 0x… "a secret only you can read 🤫" -e --api http://127.0.0.1:7001   # end-to-end encrypted
 ```
 
 > Encrypted DMs raise `MAX_MEMO` from 128 to 512 (to fit the ciphertext) — a **soft fork** (old nodes reject blocks with >128-char memos), so the whole network must upgrade together; but it's not hashed and does not reset the chain.
@@ -229,9 +230,9 @@ $v msg 0x… "a secret only you can read 🤫" -e --api http://127.0.0.1:7001   
 **🪪 On-chain nicknames (globally-unique, first-come-first-served).** Give an address a name; transfers/messages/the explorer then show `@name` instead of a long `0x…`. Claim = self-transfer of 1 + memo `NAME|<name>`, **first-come-first-served** (a name belongs to its first claimant). Names are 1–20 chars of lowercase letters/digits/`_`/`-`; reserved names like `treasury`/`official`/`admin` are blocked (anti-impersonation).
 
 ```bash
-$v name claim v0id-boss --api http://127.0.0.1:7001   # claim (wait one block)
-$v name who  v0id-boss --api http://127.0.0.1:7002    # other nodes resolve it too → address
-$v inbox --api http://127.0.0.1:7002                  # inbox shows the sender as @v0id-boss
+corepack pnpm v0id name claim v0id-boss --api http://127.0.0.1:7001   # claim (wait one block)
+corepack pnpm v0id name who  v0id-boss --api http://127.0.0.1:7002    # other nodes resolve it too → address
+corepack pnpm v0id inbox --api http://127.0.0.1:7002                  # inbox shows the sender as @v0id-boss
 ```
 
 > Nicknames are a pure memo convention — **no consensus change, no soft fork**: a claim is just a valid self-transfer that old nodes accept; only clients that want to *display* names need the new code.
@@ -295,7 +296,7 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - **Genesis is fully pinned**: the genesis block is checked both by its `.hash` field and by recomputing the hash from content, plus the per-tx txid binding above → an attacker can neither steal the pre-mine nor inject a mint-from-thin-air tx. (An earlier version had this bug; fixed with a regression test.)
 - **Amounts must be positive integers**: floats would let nodes accumulate rounding differences and disagree on "is the balance enough", splitting consensus — so non-integer/out-of-range amounts are rejected at signature-verification time.
 - **All untrusted input is guarded**: P2P messages are field-validated and malformed packets dropped (a bad packet can't crash a node); recipient addresses must be valid `0x`+64hex; `knownUrls`/`seenTx` are capped against unbounded memory growth and reconnect storms.
-- **Local API has two layers**: the HTTP API binds `127.0.0.1` only and CORS allows only localhost pages (browser-CSRF defense); on top of that, **mutating endpoints (send/mine/connect/market) require a Bearer token** — `.data/<node>/api.token` (random 32 bytes, `0600`, auto-generated on start; the CLI reads it automatically, the dashboard takes it pasted once). This stops other local processes / other local users from `POST /send`-ing to drain your wallet. Read-only GETs and `/health` stay open.
+- **Local API has two layers**: the HTTP API binds `127.0.0.1` only and CORS allows only localhost pages (browser-CSRF defense); on top of that, **mutating endpoints (send/mine/connect/market) require a Bearer token** — `.data/<node>/api.token` (random 32 bytes, `0600`, auto-generated on start; the CLI reads it automatically, the dashboard takes it pasted once). This stops **other local users** from `POST /send`-ing to drain your wallet: they can't read the `0600` `api.token`, and the token is **never served over any endpoint** (a previous unauthenticated `/my-token` that echoed it has been removed). ⚠️ A **process running as you** (e.g. a malicious npm postinstall) can still read `api.token` directly — `0600` only keeps out *other* users, not your own processes; that's the inherent limit of a file-based token. Read-only GETs and `/health` stay open.
 - **P2P hardening**: gossip-learned peer URLs are filtered for private/loopback/link-local addresses (anti-SSRF; operator-supplied `--peers`/`--advertise` go through a trusted path and are exempt). **IPv6 literals use a "global-unicast `2000::/3` allowlist only"**, closing `::ffff:` IPv4-mapped, `64:ff9b::` NAT64, `[::1]` and similar bypasses (Node normalizes `::ffff:127.0.0.1` to a bracketed hex form, so prefix blacklists are unreliable). `knownUrls` FIFO-evicts the oldest non-pinned entry when full while operator seeds are pinned forever (so junk floods can't crowd out real peers); single WS message ≤ 64MB (anti-OOM); `mempool` ≤ `MAX_MEMPOOL`.
 - **Private-key / token files are `0600`**: both `wallet.json` (plaintext key) and `api.token` are owner-only.
 - **`chain.json` corruption fail-safe**: if it can't be loaded (parse error or failed full-chain validation), the bad file is **renamed to a backup** (`chain.json.corrupt-<ts>`) before rebuilding from genesis — never silently wiped, so a one-byte tamper can't make a node lose all local state on restart.

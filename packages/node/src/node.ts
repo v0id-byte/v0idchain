@@ -10,6 +10,7 @@ import {
   MESSAGE_BURN,
   MAX_MEMO,
   NULL_ADDRESS,
+  SYSTEM_ADDRESSES,
   encryptMemo,
   decryptMemo,
   isEncryptedMemo,
@@ -260,7 +261,8 @@ export class V0idNode {
     for (let i = this.lastScanHeight + 1; i <= h; i++) {
       for (const tx of this.bc.chain[i].transactions) {
         for (const addr of [tx.from, tx.to]) {
-          if (addr === NULL_ADDRESS || this.knownAddresses.has(addr)) continue;
+          // 跳过系统/协议地址（虚空、红包托管…）——它们不是真人，别误报成“新地址首次上链”
+          if (SYSTEM_ADDRESSES.has(addr) || this.knownAddresses.has(addr)) continue;
           this.knownAddresses.add(addr);
           this.notice(`🆕 新地址首次上链 ${short(addr)} @ #${i}`);
           this.pushNewcomer({ kind: 'address', address: addr, height: i, at: Date.now() });

@@ -123,7 +123,7 @@ export async function postJSON<T>(base: string, path: string, body: unknown, tok
   });
   const data = await res.json().catch(() => ({}) as any);
   if (!res.ok) {
-    if (res.status === 401) throw new Error('API 令牌无效 — 请刷新页面（会自动重新读取），或手动粘贴 .data/<节点名>/api.token 的内容到右上角输入框');
+    if (res.status === 401) throw new Error('API 令牌无效 — 请把 .data/<节点名>/api.token 的内容手动粘贴到右上角「API 令牌」输入框');
     throw new Error(data.error || res.statusText);
   }
   return data as T;

@@ -51,9 +51,6 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
         switch (url.pathname) {
           case '/health':
             return json(200, { ok: true });
-          case '/my-token':
-            // 无需鉴权：API 只绑 127.0.0.1，CORS 也只放行本机源；本地用户本来就能直接读文件。
-            return json(200, { token });
           case '/info':
             return json(200, node.info());
           case '/chain':
@@ -153,6 +150,14 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
     } catch (e) {
       json(500, { error: e instanceof Error ? e.message : String(e) });
     }
+  });
+  // 端口被占等监听错误：给一行中文提示再退出，别甩一坨 Node 堆栈给用户
+  server.on('error', (e: NodeJS.ErrnoException) => {
+    if (e.code === 'EADDRINUSE') {
+      console.error(`✖ API 端口 ${port} 已被占用——换 --api-port，或先关掉占用它的进程。`);
+      process.exit(1);
+    }
+    throw e;
   });
   server.listen(port, '127.0.0.1');
   return server;

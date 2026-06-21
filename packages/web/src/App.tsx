@@ -72,13 +72,6 @@ export default function App() {
     localStorage.setItem('v0id-token', token);
   }, [token]);
 
-  // 切换节点时自动拉取令牌（/my-token 无需鉴权，只绑 127.0.0.1）
-  useEffect(() => {
-    getJSON<{ token: string }>(api, '/my-token')
-      .then(({ token: t }) => setToken(t))
-      .catch(() => {});
-  }, [api]);
-
   const me = info?.address ?? '';
   const recent = [...chain].reverse().slice(0, 25);
 
@@ -361,8 +354,8 @@ function Actions({ api, token, me, minFee, onDone }: { api: string; token: strin
         </div>
       </div>
       <div className="field">
-        <label>备注（可选，≤128 字，上链可查）</label>
-        <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="给同学的留言…" maxLength={128} />
+        <label>备注（可选，≤512 字，上链可查）</label>
+        <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="给同学的留言…" maxLength={512} />
       </div>
       <div className="btns">
         <button disabled={busy || !to || !amount} onClick={submit}>
@@ -446,8 +439,8 @@ function Messaging({
       </div>
       <div className="row2">
         <div className="field" style={{ flex: 2 }}>
-          <label>消息正文（≤128 字，明文上链）</label>
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="在链上给 TA 留句话…" maxLength={128} />
+          <label>消息正文（≤512 字，明文上链）</label>
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="在链上给 TA 留句话…" maxLength={512} />
         </div>
         <div className="field">
           <label>烧 🔥（销毁，≥1）</label>
