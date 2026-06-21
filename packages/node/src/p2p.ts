@@ -8,7 +8,7 @@ export type P2PMessage =
   | { type: 'HELLO'; address: string; height: number; listen: string }
   | { type: 'QUERY_LATEST' }
   | { type: 'QUERY_ALL' }
-  | { type: 'BLOCKS'; blocks: Block[] }
+  | { type: 'BLOCKS'; blocks: Block[]; from?: number; total?: number }
   | { type: 'TX'; tx: Transaction }
   | { type: 'QUERY_PEERS' }
   | { type: 'PEERS'; peers: string[] };
@@ -254,9 +254,23 @@ export class P2P {
         case 'QUERY_LATEST':
           this.send(ws, { type: 'BLOCKS', blocks: [this.handlers.getLatest()] });
           break;
-        case 'QUERY_ALL':
-          this.send(ws, { type: 'BLOCKS', blocks: this.handlers.getChain() });
+        case 'QUERY_ALL': {
+          const chain = this.handlers.getChain();
+          const CHUNK = 500;
+          if (chain.length <= CHUNK) {
+            this.send(ws, { type: 'BLOCKS', blocks: chain });
+          } else {
+            for (let i = 0; i < chain.length; i += CHUNK) {
+              this.send(ws, {
+                type: 'BLOCKS',
+                blocks: chain.slice(i, Math.min(i + CHUNK, chain.length)),
+                from: i,
+                total: chain.length,
+              });
+            }
+          }
           break;
+        }
         case 'BLOCKS':
           if (Array.isArray(msg.blocks)) this.handlers.onBlocks(msg.blocks, ws);
           break;

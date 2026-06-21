@@ -33,6 +33,10 @@ public final class NodeClient: ObservableObject {
     private var generation = 0   // 每次 connect 自增，用于丢弃旧连接的回调
     private var syncingStart: Date?
 
+    // ---- 分块同步缓冲（服务端把大链拆成 ≤500 块一片，iOS 累积后再 adopt）----
+    private var chunkBuffer: [Block] = []
+    private var chunkTotal: Int = 0
+
     // ---- 种子失效 fallback：gossip 学到的备用地址 + 连续失败计数 ----
     private var backupURLs: [String] = []
     private var failCount = 0
@@ -41,7 +45,10 @@ public final class NodeClient: ObservableObject {
     public init(nodeURL: String) {
         self.nodeURL = nodeURL
         self.connectURL = nodeURL
-        self.session = URLSession(configuration: .default)
+        // 不走系统 HTTP 代理：WebSocket over proxy 容易被中间件截断或不支持。
+        let cfg = URLSessionConfiguration.default
+        cfg.connectionProxyDictionary = [:]
+        self.session = URLSession(configuration: cfg)
         self.backupURLs = UserDefaults.standard.stringArray(forKey: "v0id-peer-backup") ?? []
     }
 
@@ -124,6 +131,7 @@ public final class NodeClient: ObservableObject {
         keepAlive?.invalidate(); keepAlive = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        chunkBuffer = []; chunkTotal = 0   // 旧连接的残片不要带入下一次同步
         if manual { status = .disconnected }
     }
 
@@ -207,12 +215,32 @@ public final class NodeClient: ObservableObject {
         switch parsed {
         case .blocks(let blocks):
             onBlocks(blocks)
+        case .blocksChunk(let blocks, let from, let total):
+            onBlocksChunk(blocks, from: from, total: total)
         case .blocksError(let msg):
             lastError = msg
         case .peers(let urls):
             learnPeers(urls)
         case .other:
             break // 节点的 HELLO/QUERY_* 等：忽略
+        }
+    }
+
+    /// 累积分块同步的片段，收齐后交给 onBlocks() 统一处理。
+    private func onBlocksChunk(_ blocks: [Block], from: Int, total: Int) {
+        if from == 0 || chunkTotal != total {
+            // 新的同步会话开始（或 total 变了说明链又长了）：重置缓冲。
+            chunkBuffer = []
+            chunkTotal = total
+        }
+        chunkBuffer.append(contentsOf: blocks)
+        // 重置超时计时器，让 keepAlive 知道我们还在正常接收，不要触发重连。
+        syncingStart = Date()
+        if chunkBuffer.count >= chunkTotal {
+            let full = chunkBuffer
+            chunkBuffer = []
+            chunkTotal = 0
+            onBlocks(full)
         }
     }
 
@@ -288,6 +316,87 @@ public final class NodeClient: ObservableObject {
         return tx
     }
 
+    // ---- 新功能：昵称 / 集市 / 红包 / 加密私信（都建在转账 + memo 上）----
+
+    /// 抢注链上昵称：自转 1 $V0ID，memo `NAME|<name>`。先到先得、全网唯一。
+    @discardableResult
+    public func claimName(wallet: Wallet, name: String) throws -> Transaction {
+        let (memo, err) = Names.makeNameClaim(name)
+        guard let memo else { throw FeatureError.invalid(err ?? "昵称无效") }
+        return try sendTransfer(wallet: wallet, to: wallet.address, amount: 1, memo: memo, fee: TxBuilder.minFee)
+    }
+
+    /// 集市上架：自转 1 $V0ID，memo `MKT|<price>|<title>`。
+    @discardableResult
+    public func sellListing(wallet: Wallet, price: Int, title: String) throws -> Transaction {
+        let (memo, err) = Market.makeListing(price: price, title: title)
+        guard let memo else { throw FeatureError.invalid(err ?? "上架参数无效") }
+        return try sendTransfer(wallet: wallet, to: wallet.address, amount: 1, memo: memo, fee: TxBuilder.minFee)
+    }
+
+    /// 集市购买：付给卖家 listing.price，memo `BUY|<listingTxid>`。
+    @discardableResult
+    public func buyListing(wallet: Wallet, listing: Listing) throws -> Transaction {
+        try sendTransfer(wallet: wallet, to: listing.seller, amount: listing.price,
+                         memo: "\(Config.buyPrefix)\(listing.id)", fee: TxBuilder.minFee)
+    }
+
+    /// 集市撤单：自转 1 $V0ID，memo `DEL|<listingTxid>`（仅卖家本人有效）。
+    @discardableResult
+    public func delistListing(wallet: Wallet, listing: Listing) throws -> Transaction {
+        try sendTransfer(wallet: wallet, to: wallet.address, amount: 1,
+                         memo: "\(Config.delPrefix)\(listing.id)", fee: TxBuilder.minFee)
+    }
+
+    /// 发红包：转给托管地址 total，memo `RED|<count>|<r|e>`。
+    @discardableResult
+    public func sendRedPacket(wallet: Wallet, total: Int, count: Int, mode: RedMode) throws -> Transaction {
+        let (memo, err) = RedPacket.makeRedPacket(total: total, count: count, mode: mode)
+        guard let memo else { throw FeatureError.invalid(err ?? "红包参数无效") }
+        return try sendTransfer(wallet: wallet, to: Config.redEscrowAddress, amount: total, memo: memo, fee: TxBuilder.minFee)
+    }
+
+    /// 抢红包：自转 amount=0，memo `CLAIM|<id>`。入账由共识从托管池派发。
+    @discardableResult
+    public func claimRedPacket(wallet: Wallet, id: String) throws -> Transaction {
+        try sendZeroAmountOp(wallet: wallet, memo: "\(Config.claimPrefix)\(id)")
+    }
+
+    /// 退红包：自转 amount=0，memo `REFUND|<id>`（仅发起人、过期后有效）。
+    @discardableResult
+    public func refundRedPacket(wallet: Wallet, id: String) throws -> Transaction {
+        try sendZeroAmountOp(wallet: wallet, memo: "\(Config.refundPrefix)\(id)")
+    }
+
+    /// 加密私信：明文用 ECDH 共享密钥加密成 `ENC|<密文>`，再走链上消息（amount0+burn+memo）。
+    @discardableResult
+    public func sendEncryptedMessage(wallet: Wallet, to: String, plaintext: String,
+                                     burn: Int = TxBuilder.messageBurn, fee: Int = TxBuilder.minFee) throws -> Transaction {
+        guard let memo = Encryption.encryptMemo(plaintext, recipientAddress: to, senderSeed: wallet.privateKey) else {
+            throw FeatureError.invalid("加密失败：收件地址无效")
+        }
+        guard memo.unicodeScalars.count <= Config.maxMemo else { throw FeatureError.invalid("密文超出 \(Config.maxMemo) 码点上限") }
+        return try sendMessage(wallet: wallet, to: to, text: memo, burn: burn, fee: fee)
+    }
+
+    /// CLAIM/REFUND 这类 amount=0 自转：跳过“空交易”拦截（入账由共识从托管池支付），但仍校验手续费/余额。
+    private func sendZeroAmountOp(wallet: Wallet, memo: String) throws -> Transaction {
+        let fee = TxBuilder.minFee
+        let pendingOut = pending
+            .filter { $0.from == wallet.address }
+            .reduce(0) { $0 + $1.amount + $1.fee + $1.burnAmount }
+        let available = state.balance(of: wallet.address) - pendingOut
+        if fee > available { throw SendError.insufficient(available: available, need: fee) }
+        let tx = try wallet.createTransaction(to: wallet.address, amount: 0, nonce: nextNonce(), memo: memo, fee: fee)
+        broadcast(tx)
+        return tx
+    }
+
+    public enum FeatureError: LocalizedError {
+        case invalid(String)
+        public var errorDescription: String? { if case let .invalid(s) = self { return s }; return nil }
+    }
+
     private func broadcast(_ tx: Transaction) {
         pending.append(tx)
         send(.tx(tx))
@@ -330,4 +439,25 @@ public final class NodeClient: ObservableObject {
     public func outbox() -> [ChainMessage] { address.map { Messages.outbox(chain, address: $0) } ?? [] }
     public func recentBlocks(_ n: Int = 30) -> [Block] { Array(chain.suffix(n).reversed()) }
     public func search(_ q: String) -> Explorer.Result { Explorer.search(chain, q) }
+
+    // ---- 新功能：派生只读视图（重放整条链）----
+
+    /// 昵称注册表（先到先得）。
+    public func nameRegistry() -> NameRegistry { Names.parseNames(chain) }
+    /// 地址 → 显示名（没有则 nil）。
+    public func name(for address: String) -> String? { nameRegistry().name(for: address) }
+    /// 集市商品（最新在前）。
+    public func listings() -> [Listing] { Market.parseMarket(chain) }
+    /// 红包（最新在前）。
+    public func redPackets() -> [RedPacketView] { RedPacket.parseRedPackets(chain) }
+    /// 新成员（首次上链，最新在前）。
+    public func newcomers(_ limit: Int = 25) -> [Newcomer] { Explorer.newcomers(chain, limit: limit) }
+
+    /// 用当前钱包尝试解密一条 `ENC|` 私信；非加密原样返回，解不开返回 nil。
+    /// 我是收件人 → 对方=发件人；我是发件人 → 对方=收件人（ECDH 对称）。
+    public func decrypt(message msg: ChainMessage, wallet: Wallet) -> String? {
+        guard Encryption.isEncryptedMemo(msg.text) else { return msg.text }
+        let other = (msg.to == wallet.address) ? msg.from : msg.to
+        return Encryption.decryptMemo(msg.text, otherPartyAddress: other, mySeed: wallet.privateKey)
+    }
 }

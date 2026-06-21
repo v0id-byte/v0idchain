@@ -34,6 +34,7 @@ enum OutgoingMessage {
 /// 入站解析：先取 type，再按需取负载。
 enum IncomingMessage {
     case blocks([Block])
+    case blocksChunk([Block], from: Int, total: Int)   // 分块同步：服务端把大链拆成多片发来
     case peers([String])       // PEERS 消息：节点告知的其他可连地址
     case blocksError(String)   // BLOCKS 消息收到但 JSON 解码失败
     case other(String)
@@ -45,6 +46,9 @@ enum IncomingMessage {
         case "BLOCKS":
             do {
                 let m = try decoder.decode(BlocksMessage.self, from: data)
+                if let from = m.from, let total = m.total {
+                    return .blocksChunk(m.blocks, from: from, total: total)
+                }
                 return .blocks(m.blocks)
             } catch {
                 return .blocksError("BLOCKS 解码失败：\(error.localizedDescription)")
@@ -58,6 +62,6 @@ enum IncomingMessage {
     }
 
     private struct Envelope: Decodable { let type: String }
-    private struct BlocksMessage: Decodable { let blocks: [Block] }
+    private struct BlocksMessage: Decodable { let blocks: [Block]; let from: Int?; let total: Int? }
     private struct PeersMessage: Decodable { let peers: [String] }
 }
