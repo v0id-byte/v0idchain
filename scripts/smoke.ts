@@ -3,12 +3,14 @@ import {
   Blockchain,
   Wallet,
   createTransaction,
+  createMessage,
   verifyTransaction,
   isCoinbase,
   violatesCheckpoint,
   merkleRoot,
   expectedDifficulty,
   parseMarket,
+  parseMessages,
   buildListMemo,
   BUY_PREFIX,
   DEL_PREFIX,
@@ -18,6 +20,7 @@ import {
   GENESIS_PREMINE_ADDRESS,
   BLOCK_REWARD,
   MIN_FEE,
+  MESSAGE_BURN,
   GENESIS_DIFFICULTY,
   MAX_FUTURE_DRIFT_MS,
   MAX_MEMO,
@@ -257,6 +260,36 @@ const l3 = parseMarket(mk.chain).find((l) => l.title === '橡皮')!;
 mk.addTransaction(createTransaction(bob, bob.address, 1, mk.nonceOf(bob.address), `${DEL_PREFIX}${l3.id}`));
 await mk.mine(bob.address);
 check('非卖家撤单无效（商品仍在售）', parseMarket(mk.chain).find((l) => l.id === l3.id)?.delisted === false);
+
+console.log(`\n— 链上消息：发消息（不转币、烧 ${MESSAGE_BURN} 进虚空、付手续费）→ 收件箱 —`);
+const msgBc = new Blockchain();
+for (let i = 0; i < (MESSAGE_BURN + MIN_FEE); i++) await msgBc.mine(bob.address); // bob 挖够付 销毁+手续费
+const bobBefore = msgBc.balanceOf(bob.address);
+const carolMiner = Wallet.generate();
+const dm = createMessage(bob, alice.address, '在链上给你留个话 👋', msgBc.nonceOf(bob.address));
+check('消息默认 amount=0 / burn=MESSAGE_BURN', dm.amount === 0 && dm.burn === MESSAGE_BURN);
+check('消息交易自洽（签名/txid 合法）', verifyTransaction(dm));
+check('消息进池', msgBc.addTransaction(dm).ok);
+await msgBc.mine(carolMiner.address); // 由 carol 打包，手续费归 carol，便于核账
+const parsed = parseMessages(msgBc.chain);
+check('收件箱解析出该消息（收件人/正文/销毁额正确）',
+  parsed.length === 1 && parsed[0].to === alice.address && parsed[0].from === bob.address &&
+  parsed[0].text === '在链上给你留个话 👋' && parsed[0].burn === MESSAGE_BURN);
+check('收件人未收到任何币（消息不转账）', msgBc.balanceOf(alice.address) === 0);
+check('发件人实扣 = 销毁额 + 手续费', msgBc.balanceOf(bob.address) === bobBefore - MESSAGE_BURN - MIN_FEE);
+check('打包矿工实得 = 出块奖励 + 手续费', msgBc.balanceOf(carolMiner.address) === BLOCK_REWARD + MIN_FEE);
+check(`销毁额进虚空地址（🔥 已烧毁 = ${MESSAGE_BURN}）`, msgBc.balanceOf(NULL_ADDRESS) === MESSAGE_BURN);
+check('含消息的链整链校验通过', Blockchain.validateChain(msgBc.chain).ok);
+const supplyMsg = [...msgBc.computeState().balances.values()].reduce((s, v) => s + v, 0);
+check('全链守恒不变（销毁额记入虚空地址，总账不丢）', supplyMsg === GENESIS_PREMINE + msgBc.height * BLOCK_REWARD);
+// 防篡改：偷改销毁额（不重签）→ txid 不再匹配内容 → 校验失败
+check('偷改消息销毁额 → txid 校验失败', !verifyTransaction({ ...dm, burn: dm.burn! + 100 }));
+// 空操作：burn=0 的“消息”（既不转账也不销毁）必须被拒
+check('burn=0 的空消息被拒', !verifyTransaction(createMessage(bob, alice.address, 'x', 0, 0, MIN_FEE)));
+// 向后兼容：普通转账的 txid 不受 burn 影响（burn=0/缺省 不进 hash）→ 创世/历史哈希不变
+const plain = createTransaction(bob, alice.address, 1, 0, 'hi', MIN_FEE);
+check('转账显式补 burn=0 不改变 txid（哈希向后兼容，创世/checkpoint 不变）',
+  ({ ...plain, burn: 0 }).txid === plain.txid && verifyTransaction({ ...plain, burn: 0 }));
 
 console.log(`\n余额总览：`);
 console.log(`  央行预挖 ${bc.balanceOf(GENESIS_PREMINE_ADDRESS)} ${SYMBOL}`);
