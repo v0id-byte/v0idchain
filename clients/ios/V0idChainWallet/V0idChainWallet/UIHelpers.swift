@@ -15,6 +15,32 @@ enum Clipboard {
     static func copy(_ s: String) { UIPasteboard.general.string = s }
 }
 
+extension String {
+    /// 地址 → 显示文本：有昵称则 `@name`，否则地址缩写。
+    func display(in registry: NameRegistry) -> String {
+        if let name = registry.name(for: self) { return "@\(name)" }
+        return shortAddress
+    }
+}
+
+/// 地址标签：有昵称显示 `@name`（主）+ 地址缩写（次）；无昵称仅显示地址缩写。
+struct AddressLabel: View {
+    let address: String
+    let registry: NameRegistry
+    var prefix: String = ""           // 例如 "来自 " / "发给 "
+
+    var body: some View {
+        if let name = registry.name(for: address) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(prefix)@\(name)").font(.subheadline).foregroundStyle(.primary)
+                Text(address.shortAddress).font(.caption2).foregroundStyle(.secondary)
+            }
+        } else {
+            Text("\(prefix)\(address.shortAddress)").font(.subheadline).foregroundStyle(.primary)
+        }
+    }
+}
+
 extension NodeClient.Status {
     var label: String {
         switch self {

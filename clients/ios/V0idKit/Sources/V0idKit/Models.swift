@@ -46,6 +46,26 @@ public struct Block: Codable, Identifiable, Hashable {
     public var id: Int { index }
 }
 
+public extension Transaction {
+    /// 单笔交易自洽性校验（金额 / txid 匹配内容 / 签名）。不含余额 / nonce 顺序（那依赖整链状态）。
+    /// 对应 packages/core 的 verifyTransaction。轻客户端可选用（trustless 进阶）。
+    func selfValid() -> Bool {
+        let b = burnAmount
+        guard amount >= 0, b >= 0, fee >= 0 else { return false }
+        // 空操作（amount0 且 burn0）一律拒；例外：红包 CLAIM/REFUND 的入账由共识从托管池支付。
+        let zeroOk = memo.hasPrefix(Config.claimPrefix) || memo.hasPrefix(Config.refundPrefix)
+        if amount == 0 && b == 0 && !zeroOk { return false }
+        if memo.unicodeScalars.count > Config.maxMemo { return false }   // 按码点计数
+        let recomputed = TxBuilder.txid(from: from, to: to, amount: amount, fee: fee,
+                                        nonce: nonce, timestamp: timestamp, memo: memo, burn: b)
+        guard recomputed == txid else { return false }
+        if isCoinbase { return fee == 0 && b == 0 && amount > 0 }
+        if fee < Config.minFee { return false }
+        let pubHex = from.hasPrefix("0x") ? String(from.dropFirst(2)) : from
+        return Crypto.verify(signatureHex: signature, messageHex: txid, publicKeyHex: pubHex)
+    }
+}
+
 /// 链上消息（由消息交易还原）。
 public struct ChainMessage: Identifiable, Hashable {
     public var txid: String

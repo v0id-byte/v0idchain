@@ -34,13 +34,13 @@ fun parseMessages(chain: List<Block>): List<ChainMessage> {
     return out
 }
 
-/** 链上出现过的全部地址（作为 from 或 to），排除虚空地址。用于“新地址首次上链”发现。 */
+/** 链上出现过的全部地址（作为 from 或 to），排除虚空 / 红包托管地址。用于“新地址首次上链”发现。 */
 fun collectAddresses(chain: List<Block>): Set<String> {
     val set = LinkedHashSet<String>()
     for (block in chain) {
         for (tx in block.transactions) {
-            if (tx.from != NULL_ADDRESS) set.add(tx.from)
-            if (tx.to != NULL_ADDRESS) set.add(tx.to)
+            if (tx.from != NULL_ADDRESS && tx.from != RED_ESCROW_ADDRESS) set.add(tx.from)
+            if (tx.to != NULL_ADDRESS && tx.to != RED_ESCROW_ADDRESS) set.add(tx.to)
         }
     }
     return set

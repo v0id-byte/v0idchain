@@ -22,35 +22,20 @@ public struct ChainMessage: Identifiable, Equatable {
     public let txid: String
     public let from: String
     public let to: String
-    public let text: String
+    public let text: String          // 原始 memo（加密私信为 `ENC|<密文>`，由 UI 用钱包解密）
     public let burn: Int
     public let timestamp: Int
     public let height: Int
+    /// 是否端到端加密私信（memo 以 `ENC|` 开头）。
+    public var encrypted: Bool { text.hasPrefix(Config.encPrefix) }
     public var id: String { txid }
 }
 
-/// 红包里的一条领取记录。
-public struct RedPacketClaim: Identifiable, Equatable {
-    public let who: String
-    public let amount: Int
+/// “新成员”事件：某地址在链上的首次出现（首笔上链），按高度倒序（最新在前）。
+public struct Newcomer: Identifiable, Equatable {
+    public let address: String
     public let height: Int
-    public var id: String { who }
-}
-
-/// 链上红包只读视图（扫链重放，与共识同源）。
-public struct RedPacketView: Identifiable, Equatable {
-    public let id: String
-    public let creator: String
-    public let total: Int
-    public let count: Int
-    public let mode: String        // "r" = 拼手气, "e" = 均分
-    public var remaining: Int
-    public var remainingCount: Int
-    public let createHeight: Int
-    public var claims: [RedPacketClaim]
-    public var refunded: Bool
-    public var done: Bool
-    public var isRandom: Bool { mode == "r" }
+    public var id: String { address }
 }
 
 /// 浏览器里一条交易的引用（带其所在区块高度）。
@@ -69,23 +54,80 @@ public enum SearchResult: Equatable {
 
 public enum Chain {
     // ---- 状态：重放整条链（CLIENT-PROTOCOL §4），无服务端 ----
+    // 复刻 blockchain.ts 的 computeState + applyTx：余额/nonce + 红包托管状态机。
+    // ⚠️ 红包 CLAIM/REFUND 的入账来自托管池（不是本交易的 amount），必须按同一套派发公式重放，
+    //    否则抢/退过红包的地址余额会与全网漂移。链由所连节点保证合法 → 这里只“应用”，不再校验。
     public static func computeState(_ chain: [Block]) -> ChainState {
         var balances = [String: Int]()
         var nonces = [String: Int]()
+        struct Pool { var remaining: Int; var remainingCount: Int; var mode: RedMode }
+        var pools = [String: Pool]()
         func credit(_ addr: String, _ amt: Int) { balances[addr, default: 0] += amt }
+        func bump(_ addr: String) { nonces[addr, default: 0] += 1 }
 
         for block in chain {
             for tx in block.transactions {
-                if !tx.isCoinbase {
-                    let burn = tx.burn ?? 0
-                    credit(tx.from, -(tx.amount + tx.fee + burn))   // 发送方付 金额 + 手续费 + 销毁额
-                    if burn > 0 { credit(Config.nullAddress, burn) } // 销毁额记入虚空（守恒、= 全网已烧毁）
-                    nonces[tx.from, default: 0] += 1
+                if tx.isCoinbase { credit(tx.to, tx.amount); continue }   // 矿工/预挖收款，无 nonce
+                let m = tx.memo
+
+                // 发红包：转给托管地址 → 锁总额、开池。余额效果 = 普通转账到托管，额外开池。
+                if tx.to == Config.redEscrowAddress, m.hasPrefix(Config.redPrefix),
+                   let meta = RedPacket.parseCreate(m), tx.amount >= meta.count {
+                    credit(tx.from, -(tx.amount + tx.fee))
+                    credit(Config.redEscrowAddress, tx.amount)
+                    pools[tx.txid] = Pool(remaining: tx.amount, remainingCount: meta.count, mode: meta.mode)
+                    bump(tx.from)
+                    continue
                 }
-                credit(tx.to, tx.amount)                            // 收款方实收（消息为 0）
+                // 抢红包：从托管派一份（拼手气随机额由所在区块 hash 决定）
+                if m.hasPrefix(Config.claimPrefix), tx.amount == 0,
+                   let id = RedPacket.parseClaimId(m), var p = pools[id] {
+                    let share = RedPacket.computeShare(remaining: p.remaining, remainingCount: p.remainingCount,
+                                                       mode: p.mode,
+                                                       seedHex: RedPacket.redSeed(blockHash: block.hash, claimTxid: tx.txid))
+                    credit(tx.from, share - tx.fee)            // 收到 share、付出 fee
+                    credit(Config.redEscrowAddress, -share)
+                    p.remaining -= share; p.remainingCount -= 1
+                    pools[id] = p
+                    bump(tx.from)
+                    continue
+                }
+                // 退款：发起人取回剩余
+                if m.hasPrefix(Config.refundPrefix), tx.amount == 0,
+                   let id = RedPacket.parseRefundId(m), var p = pools[id] {
+                    let amt = p.remaining
+                    credit(tx.from, amt - tx.fee)
+                    credit(Config.redEscrowAddress, -amt)
+                    p.remaining = 0; p.remainingCount = 0
+                    pools[id] = p
+                    bump(tx.from)
+                    continue
+                }
+
+                // 普通交易（转账/消息/昵称/集市）
+                let burn = tx.burn ?? 0
+                credit(tx.from, -(tx.amount + tx.fee + burn))   // 发送方付 金额 + 手续费 + 销毁额
+                credit(tx.to, tx.amount)                        // 收款方实收（消息为 0）
+                if burn > 0 { credit(Config.nullAddress, burn) } // 销毁额记入虚空（守恒、= 全网已烧毁）
+                bump(tx.from)
             }
         }
         return ChainState(balances: balances, nonces: nonces)
+    }
+
+    /// 新成员：每个地址按“首次上链高度”倒序（最新在前）。排除虚空 / 托管地址。
+    public static func newcomers(_ chain: [Block], limit: Int = 25) -> [Newcomer] {
+        var firstSeen = [String: Int]()
+        for b in chain {
+            for tx in b.transactions {
+                for addr in [tx.from, tx.to] where addr != Config.nullAddress && addr != Config.redEscrowAddress {
+                    if firstSeen[addr] == nil { firstSeen[addr] = b.index }
+                }
+            }
+        }
+        return firstSeen.map { Newcomer(address: $0.key, height: $0.value) }
+            .sorted { $0.height > $1.height }
+            .prefix(limit).map { $0 }
     }
 
     /// 你下一笔交易该用的 nonce = 已上链 nonce + 已广播但未打包的待发笔数（pending）。
@@ -175,71 +217,6 @@ public enum Chain {
         }
         if let b = findBlock(chain, q) { return .block(b) }
         return .none
-    }
-
-    // ---- 红包（对应 packages/core/src/redpacket.ts）----
-
-    /// 拼手气份额计算（全整数，与共识同源）。
-    static func computeShare(remaining: Int, remainingCount: Int, mode: String, seedHex: String) -> Int {
-        if remainingCount <= 1 { return remaining }
-        if mode == "e" { return remaining / remainingCount }
-        let maxShare = remaining - (remainingCount - 1)
-        let upper = max(1, min((2 * remaining) / remainingCount, maxShare))
-        let seed = Int(UInt64(String(seedHex.prefix(12)), radix: 16) ?? 0)
-        return 1 + (seed % upper)
-    }
-
-    /// 扫整条链还原所有红包及其领取记录（只读展示，最新在前）。
-    public static func parseRedPackets(_ chain: [Block]) -> [RedPacketView] {
-        var pools = [String: RedPacketView]()
-        for b in chain {
-            for tx in b.transactions {
-                let m = tx.memo
-                if m.isEmpty { continue }
-                // 发红包
-                if tx.to == Config.redEscrowAddress && m.hasPrefix(Config.redPrefix) {
-                    let rest = String(m.dropFirst(Config.redPrefix.count))
-                    let parts = rest.split(separator: "|", maxSplits: 1)
-                    guard parts.count == 2,
-                          let count = Int(parts[0]),
-                          count >= 1, count <= Config.maxRedCount,
-                          (parts[1] == "r" || parts[1] == "e"),
-                          tx.amount >= count else { continue }
-                    pools[tx.txid] = RedPacketView(
-                        id: tx.txid, creator: tx.from,
-                        total: tx.amount, count: count, mode: String(parts[1]),
-                        remaining: tx.amount, remainingCount: count,
-                        createHeight: b.index, claims: [], refunded: false, done: false)
-                    continue
-                }
-                // 抢红包
-                if m.hasPrefix(Config.claimPrefix) {
-                    let claimId = String(m.dropFirst(Config.claimPrefix.count))
-                    guard claimId.count == 64, claimId.allSatisfy({ $0.isHexDigit }),
-                          var p = pools[claimId],
-                          !p.done, p.remainingCount > 0,
-                          tx.from != p.creator,
-                          !p.claims.contains(where: { $0.who == tx.from }) else { continue }
-                    let seed = Crypto.sha256Hex(b.hash + tx.txid)
-                    let share = computeShare(remaining: p.remaining, remainingCount: p.remainingCount, mode: p.mode, seedHex: seed)
-                    p.claims.append(RedPacketClaim(who: tx.from, amount: share, height: b.index))
-                    p.remaining -= share
-                    p.remainingCount -= 1
-                    if p.remainingCount == 0 { p.done = true }
-                    pools[claimId] = p
-                    continue
-                }
-                // 退款
-                if m.hasPrefix(Config.refundPrefix) {
-                    let refundId = String(m.dropFirst(Config.refundPrefix.count))
-                    guard var p = pools[refundId],
-                          !p.done, tx.from == p.creator, p.remaining > 0 else { continue }
-                    p.refunded = true; p.remaining = 0; p.remainingCount = 0; p.done = true
-                    pools[refundId] = p
-                }
-            }
-        }
-        return pools.values.sorted { $0.createHeight > $1.createHeight }
     }
 
     // ---- 可选：轻量完整性自检（不含难度重定向引擎，保持简单可靠）----

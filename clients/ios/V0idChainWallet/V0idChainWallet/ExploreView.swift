@@ -5,14 +5,27 @@ import V0idKit
 struct ExploreView: View {
     @EnvironmentObject var node: NodeClient
     @State private var query = ""
+    private var registry: NameRegistry { node.nameRegistry() }
 
     var body: some View {
         NavigationStack {
             List {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    let newcomers = node.newcomers(12)
+                    if !newcomers.isEmpty {
+                        Section("新成员 🆕") {
+                            ForEach(newcomers) { n in
+                                HStack {
+                                    AddressLabel(address: n.address, registry: registry)
+                                    Spacer()
+                                    Text("#\(n.height)").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
                     Section("最近区块") {
                         ForEach(node.recentBlocks(40)) { block in
-                            NavigationLink { BlockDetail(block: block) } label: { BlockRow(block: block) }
+                            NavigationLink { BlockDetail(block: block, registry: registry) } label: { BlockRow(block: block) }
                         }
                     }
                 } else {
@@ -36,13 +49,13 @@ struct ExploreView: View {
             }
             Section("历史（最新在前）") {
                 if history.isEmpty { Text("无记录").foregroundStyle(.secondary) }
-                ForEach(history) { ref in TxRow(ref: ref, focus: address) }
+                ForEach(history) { ref in TxRow(ref: ref, focus: address, registry: registry) }
             }
         case let .tx(ref):
             Section("交易") { TxDetail(ref: ref) }
         case let .block(block):
             Section("区块") {
-                NavigationLink { BlockDetail(block: block) } label: { BlockRow(block: block) }
+                NavigationLink { BlockDetail(block: block, registry: registry) } label: { BlockRow(block: block) }
             }
         case .none:
             ContentUnavailableView.search(text: query)
@@ -67,12 +80,13 @@ private struct BlockRow: View {
 
 private struct BlockDetail: View {
     let block: Block
+    let registry: NameRegistry
     var body: some View {
         List {
             Section("区块头") {
                 LabeledContent("高度", value: "\(block.index)")
                 LabeledContent("难度（bit）", value: "\(block.difficulty)")
-                LabeledContent("矿工", value: block.miner.shortAddress)
+                LabeledContent("矿工", value: block.miner.display(in: registry))
                 CopyableRow(label: "hash", value: block.hash)
                 CopyableRow(label: "prevHash", value: block.prevHash)
                 CopyableRow(label: "merkleRoot", value: block.merkleRoot)
@@ -90,14 +104,16 @@ private struct BlockDetail: View {
 private struct TxRow: View {
     let ref: TxRef
     let focus: String   // 当前关注的地址（用于标方向）
+    let registry: NameRegistry
     private var tx: V0idKit.Transaction { ref.tx }
     private var outgoing: Bool { tx.from == focus }
+    private var memoPreview: String { tx.memo.hasPrefix(Config.encPrefix) ? "🔒 加密私信" : tx.memo }
     var body: some View {
         HStack {
             Image(systemName: tx.isMessage ? "envelope" : (outgoing ? "arrow.up.right" : "arrow.down.left"))
                 .foregroundStyle(tx.isMessage ? .blue : (outgoing ? .red : .green))
             VStack(alignment: .leading, spacing: 2) {
-                Text(tx.isCoinbase ? "coinbase" : (tx.isMessage ? "消息：\(tx.memo)" : (outgoing ? "转出 → \(tx.to.shortAddress)" : "转入 ← \(tx.from.shortAddress)")))
+                Text(tx.isCoinbase ? "coinbase" : (tx.isMessage ? "消息：\(memoPreview)" : (outgoing ? "转出 → \(tx.to.display(in: registry))" : "转入 ← \(tx.from.display(in: registry))")))
                     .font(.subheadline).lineLimit(1)
                 Text("#\(ref.blockIndex) · \(tx.txid.prefix(12))…").font(.caption2).foregroundStyle(.secondary)
             }

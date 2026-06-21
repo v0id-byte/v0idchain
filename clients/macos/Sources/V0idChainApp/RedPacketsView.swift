@@ -1,158 +1,127 @@
-// 链上红包：发红包（托管 + memo RED|count|mode）/ 抢红包（CLAIM）/ 退款（REFUND）。
+// 红包：发（转给托管 + memo）/ 抢（CLAIM）/ 退款（REFUND，过期后）。拼手气随机额由抢中区块 hash 决定，抢前不可预测。
 import SwiftUI
 import V0idKit
 
 struct RedPacketsView: View {
     @EnvironmentObject var model: AppModel
-    @State private var totalText = "10"
-    @State private var countText = "3"
-    @State private var isRandom = true
+    @State private var total = ""
+    @State private var count = ""
+    @State private var equal = false   // 默认拼手气随机
+
+    private var openPackets: [RedPacketView] { model.redPackets.filter { !$0.done } }
+    private var done: [RedPacketView] { model.redPackets.filter { $0.done } }
 
     var body: some View {
         Group {
             if model.wallet == nil {
                 ContentUnavailableState(icon: "gift", title: "请先创建或登录钱包",
-                                        message: "到「钱包」页创建新钱包或导入私钥后再来发红包。")
+                                        message: "到「钱包」页创建新钱包或导入私钥后再来发 / 抢红包。")
             } else {
                 ScrollView {
                     VStack(spacing: 20) {
                         sendCard
-                        listCard
+                        openCard
+                        if !done.isEmpty { doneCard }
                     }
                     .padding(20)
-                    .frame(maxWidth: 640)
+                    .frame(maxWidth: 720)
                     .frame(maxWidth: .infinity)
                 }
             }
         }
-        .navigationTitle("链上红包")
+        .navigationTitle("红包 · \(openPackets.count) 个在抢")
     }
 
-    // MARK: - 发红包卡
-
     private var sendCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("发一个链上红包", systemImage: "gift").font(.headline)
-            Text("红包总额转进托管地址，抢的人各得一份；过期未抢完可退款。")
+        VStack(alignment: .leading, spacing: 10) {
+            Label("发一个红包", systemImage: "gift.fill").font(.headline)
+            Text("总额转入链上托管；别人发 CLAIM 抢，拼手气份额由抢中区块 hash 决定；过期未抢完你可退款。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                labeledField("总额 \(Config.symbol)") {
-                    TextField("10", text: $totalText).textFieldStyle(.roundedBorder).frame(width: 80)
+                labeled("总额 \(Config.symbol)") {
+                    TextField("100", text: $total).textFieldStyle(.roundedBorder).frame(width: 110)
                 }
-                labeledField("份数") {
-                    TextField("3", text: $countText).textFieldStyle(.roundedBorder).frame(width: 80)
-                }
-                labeledField("类型") {
-                    Picker("", selection: $isRandom) {
-                        Text("拼手气").tag(true)
-                        Text("均分").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 140)
+                labeled("份数（≤ 总额）") {
+                    TextField("10", text: $count).textFieldStyle(.roundedBorder).frame(width: 110)
                 }
                 Spacer()
                 Button {
-                    model.sendRedPacket(
-                        total: Int(totalText) ?? 0,
-                        count: Int(countText) ?? 1,
-                        isRandom: isRandom)
-                    if model.lastError == nil { totalText = "10"; countText = "3" }
-                } label: {
-                    Label("发出", systemImage: "gift.fill")
-                }
+                    model.redSend(total: Int(total) ?? 0, count: Int(count) ?? 0, mode: equal ? .equal : .random)
+                    if model.lastError == nil { total = ""; count = "" }
+                } label: { Label("发红包", systemImage: "paperplane.fill") }
                 .controlSize(.large).buttonStyle(.borderedProminent)
-                .disabled(!canSend)
+                .disabled((Int(total) ?? 0) <= 0 || (Int(count) ?? 0) <= 0)
             }
+            Toggle(isOn: $equal) { Text("均分（默认拼手气随机）").font(.caption) }
+                .toggleStyle(.checkbox)
         }
         .card()
     }
 
-    private func labeledField<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            content()
-        }
-    }
-
-    private var canSend: Bool {
-        guard let total = Int(totalText), total >= 1,
-              let count = Int(countText), count >= 1, count <= Config.maxRedCount,
-              total >= count else { return false }
-        return model.available >= total + Config.minFee
-    }
-
-    // MARK: - 红包列表
-
-    private var listCard: some View {
+    private var openCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("链上红包").font(.headline)
-            let packets = model.redPackets
-            if packets.isEmpty {
-                Text("链上暂无红包。").foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+            Text("在抢").font(.headline)
+            if openPackets.isEmpty {
+                Text("还没有红包，发一个吧 🧧").foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
             } else {
                 LazyVStack(spacing: 10) {
-                    ForEach(packets) { p in packetRow(p) }
+                    ForEach(openPackets) { p in packetRow(p) }
                 }
             }
         }
-        .card()
     }
 
     private func packetRow(_ p: RedPacketView) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                statusBadge(p)
-                Spacer()
-                Text("· #\(p.createHeight)").font(.caption2).foregroundStyle(.secondary)
+        let me = model.address
+        let mine = p.creator == me
+        let grabbed = p.claims.contains { $0.who == me }
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("\(p.total) \(Config.symbol)").font(.headline).monospacedDigit()
+                    Text(p.mode == .equal ? "均分" : "拼手气").font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                    if mine { Text("我发的").font(.caption2).foregroundStyle(.orange) }
+                }
+                Text("剩 \(p.remaining) / \(p.remainingCount) 份（共 \(p.count)）")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("发起 \(model.displayName(p.creator)) · #\(p.createHeight)")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
-            HStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("发起：\(short(p.creator))").font(.caption).foregroundStyle(.secondary)
-                    Text("\(p.total) \(Config.symbol) / \(p.count) 份 · \(p.isRandom ? "拼手气" : "均分")")
-                        .font(.subheadline)
-                }
-                Spacer()
-                if !p.done {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text("剩余 \(p.remaining) / \(p.remainingCount) 份")
-                            .font(.caption).foregroundStyle(.secondary)
-                        actionButton(p)
-                    }
-                }
-            }
-            if !p.claims.isEmpty {
-                Divider()
-                ForEach(p.claims) { c in
-                    HStack {
-                        Text(short(c.who)).font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        Text("+\(c.amount) · #\(c.height)").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
+            Spacer()
+            if mine {
+                Button("退款") { model.redRefund(p) }.buttonStyle(.bordered).controlSize(.small)
+            } else if grabbed {
+                Text("已抢 ✓").font(.caption).foregroundStyle(.green)
+            } else {
+                Button("抢") { model.redGrab(p) }.buttonStyle(.borderedProminent).controlSize(.small)
             }
         }
         .card(radius: 12, padding: 12)
     }
 
-    private func statusBadge(_ p: RedPacketView) -> some View {
-        let label = p.refunded ? "已退款" : p.done ? "已抢完" : "进行中"
-        let color: Color = (p.done || p.refunded) ? .gray : .green
-        return Text(label)
-            .font(.caption2)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
+    private var doneCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("已结束").font(.subheadline).foregroundStyle(.secondary)
+            ForEach(done.prefix(12)) { p in
+                HStack {
+                    Text(p.refunded ? "↩️ 已退" : "✓ 抢完").font(.caption)
+                        .foregroundStyle(p.refunded ? .secondary : .green)
+                    Text("\(p.total) \(Config.symbol) / \(p.count) 份").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("发起 \(model.displayName(p.creator))").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .card()
     }
 
-    @ViewBuilder
-    private func actionButton(_ p: RedPacketView) -> some View {
-        if p.creator == (model.address ?? "") {
-            Button("退款") { model.refundRedPacket(id: p.id) }
-                .controlSize(.small).buttonStyle(.bordered)
-        } else if !p.claims.contains(where: { $0.who == (model.address ?? "") }) {
-            Button("抢红包") { model.claimRedPacket(id: p.id) }
-                .controlSize(.small).buttonStyle(.borderedProminent)
+    private func labeled<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            content()
         }
     }
 }
