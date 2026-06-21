@@ -41,8 +41,13 @@ export const CHECKPOINTS: { index: number; hash: string }[] = [
   { index: 300, hash: '000001e93ce2e77f98a07ec6a0688c3534458a8e8eca2977349aaeb73fa73d06' },
 ];
 
-/** 交易备注最大长度（字符） */
-export const MAX_MEMO = 128;
+/**
+ * 交易备注 / 消息正文最大长度（Unicode 码点）。128→512：容纳端到端加密私信的密文
+ * （nonce+tag+base/hex 开销后仍够发一段话）。
+ * ⚠️ 这是**共识校验上限**（verifyTransaction 据此判合法），不进 txid 哈希 → 创世/checkpoint 不变、链不重置；
+ * 但属**软分叉**：超 128 码点 memo 的块在旧节点（旧上限 128）会被拒 → 全网须一起升级到本值。
+ */
+export const MAX_MEMO = 512;
 
 /**
  * 链上消息默认销毁额（$V0ID）：发一条消息默认烧掉这么多币进虚空（NULL_ADDRESS，永久不可花 = 销毁）。

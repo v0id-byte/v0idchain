@@ -1,8 +1,10 @@
-// 密码学原语：SHA-256 哈希 + ed25519 签名。
+// 密码学原语：SHA-256 哈希 + ed25519 签名 + 端到端加密（x25519 ECDH + XChaCha20-Poly1305）。
 import * as ed from '@noble/ed25519';
 import { sha256 } from '@noble/hashes/sha256';
 import { sha512 } from '@noble/hashes/sha512';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes, utf8ToBytes, randomBytes } from '@noble/hashes/utils';
+import { x25519, edwardsToMontgomeryPub, edwardsToMontgomeryPriv } from '@noble/curves/ed25519';
+import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 
 // @noble/ed25519 v2 默认只提供异步 API；注入同步 sha512 后即可同步签名/验签。
 ed.etc.sha512Sync = (...m: Uint8Array[]) => sha512(ed.etc.concatBytes(...m));
@@ -82,4 +84,49 @@ export function publicKeyToAddress(publicKey: Uint8Array): string {
 /** 从地址取回公钥 hex（地址本身就内含公钥，验签时直接用） */
 export function addressToPublicKeyHex(address: string): string {
   return address.startsWith('0x') ? address.slice(2) : address;
+}
+
+// ---- 端到端加密私信：用收件人地址(=ed25519 公钥)加密，只有收发双方能解 ----
+// 方案：ed25519 密钥转 x25519 → ECDH 出共享密钥 → XChaCha20-Poly1305 认证加密。
+// ECDH 对称：(我私钥, 对方公钥) 与 (对方私钥, 我公钥) 得到同一共享密钥 → 发件人也能解自己发的（无需另存副本）。
+// 密文上链格式：`ENC|` + hex(24 字节随机 nonce ‖ 密文+tag)。非收发双方只看到这串密文。
+export const ENC_PREFIX = 'ENC|';
+
+export function isEncryptedMemo(memo: string): boolean {
+  return typeof memo === 'string' && memo.startsWith(ENC_PREFIX);
+}
+
+/** 共享密钥：我的 ed25519 私钥(种子) × 对方地址(ed25519 公钥) → 32 字节对称密钥 */
+function sharedKey(myPrivateKey: Uint8Array, otherAddress: string): Uint8Array {
+  const otherPub = hexToBytes(addressToPublicKeyHex(otherAddress));
+  const secret = x25519.getSharedSecret(edwardsToMontgomeryPriv(myPrivateKey), edwardsToMontgomeryPub(otherPub));
+  return secret.subarray(0, 32);
+}
+
+/** 加密一段明文给收件人（发送方用自己的私钥）。返回 `ENC|<hex>` 串，直接当 memo 上链。 */
+export function encryptMemo(plaintext: string, recipientAddress: string, senderPrivateKey: Uint8Array): string {
+  const nonce = randomBytes(24);
+  const ct = xchacha20poly1305(sharedKey(senderPrivateKey, recipientAddress), nonce).encrypt(utf8ToBytes(plaintext));
+  const blob = new Uint8Array(nonce.length + ct.length);
+  blob.set(nonce);
+  blob.set(ct, nonce.length);
+  return ENC_PREFIX + bytesToHex(blob);
+}
+
+/**
+ * 解密一条 `ENC|` 私信。otherPartyAddress = 对方地址（我是收件人→填发件人；我是发件人→填收件人）。
+ * 用我的私钥还原同一共享密钥。失败（非本人/被篡改/格式坏）返回 null。
+ */
+export function decryptMemo(memo: string, otherPartyAddress: string, myPrivateKey: Uint8Array): string | null {
+  if (!isEncryptedMemo(memo)) return null;
+  try {
+    const blob = hexToBytes(memo.slice(ENC_PREFIX.length));
+    if (blob.length < 24 + 16) return null; // nonce(24) + 至少一个 poly1305 tag(16)
+    const nonce = blob.subarray(0, 24);
+    const ct = blob.subarray(24);
+    const pt = xchacha20poly1305(sharedKey(myPrivateKey, otherPartyAddress), nonce).decrypt(ct);
+    return new TextDecoder().decode(pt);
+  } catch {
+    return null;
+  }
 }
