@@ -103,4 +103,32 @@ final class GoldVectorTests: XCTestCase {
         XCTAssertTrue(tx.isMessage)
         XCTAssertTrue(tx.selfValid())
     }
+
+    // 加密私信互操作（本次修复的核心）：ENC| 密文 memo 超过旧 128 上限、但 ≤ MAX_MEMO(512)。
+    // 修复前 maxMemo=128 会让 selfValid() 对这类合法消息返回 false → 原生客户端拒收全网加密私信区块。
+    func testEncryptedMessage512MemoSelfValid() throws {
+        let a = try wallet()
+        let bAddr = "0x" + String(repeating: "ab", count: 32)
+        // 长明文 → ENC| 密文 memo 远超 128 码点（memo 码点数 ≈ 84 + 2×明文字节）。
+        let plaintext = String(repeating: "这是一条加密私信。", count: 3)   // 81 字节 → memo ≈ 246 码点
+        let memo = try XCTUnwrap(Encryption.encryptMemo(plaintext, recipientAddress: bAddr, senderSeed: a.privateKey))
+        XCTAssertTrue(memo.hasPrefix(Config.encPrefix))
+        XCTAssertGreaterThan(memo.unicodeScalars.count, 128, "该用例必须超过旧 128 上限才有意义")
+        XCTAssertLessThanOrEqual(memo.unicodeScalars.count, Config.maxMemo)
+        let tx = try TxBuilder.message(wallet: a, to: bAddr, text: memo, nonce: 0,
+                                       burn: Config.messageBurn, fee: 1, timestamp: ts)
+        XCTAssertTrue(tx.selfValid(), "含加密私信（memo>128）的合法消息必须自洽校验通过，否则会被原生客户端拒收")
+    }
+
+    // 边界：恰好 512 码点通过、513 码点拒绝（上限仍强制执行，只是从 128 抬到 512）。
+    func testMemoLengthBoundaryAt512() throws {
+        let a = try wallet()
+        let bAddr = "0x" + String(repeating: "ab", count: 32)
+        let memo512 = Config.encPrefix + String(repeating: "a", count: Config.maxMemo - Config.encPrefix.unicodeScalars.count)
+        XCTAssertEqual(memo512.unicodeScalars.count, 512)
+        let ok = try TxBuilder.message(wallet: a, to: bAddr, text: memo512, nonce: 0, burn: 5, fee: 1, timestamp: ts)
+        XCTAssertTrue(ok.selfValid(), "512 码点 memo 必须通过")
+        let tooLong = try TxBuilder.message(wallet: a, to: bAddr, text: memo512 + "a", nonce: 0, burn: 5, fee: 1, timestamp: ts)
+        XCTAssertFalse(tooLong.selfValid(), "513 码点 memo 必须被拒（上限仍强制执行）")
+    }
 }

@@ -176,6 +176,37 @@ class FeatureVectorTest {
         assertEquals(30L, computeShare(90L, 3, RedMode.EQUAL, ""))
     }
 
+    // ───── 加密私信互操作（本次修复的核心）：MAX_MEMO 128→512 容纳 ENC| 密文 ─────
+    // Android 无 tx 级 selfValid，verify 等价 = 备注门禁 codePointCount ≤ MAX_MEMO（WalletViewModel/Names/Market 同款）。
+    // 修复前 MAX_MEMO=128 会让这类合法加密私信无法构造/发送 → 与升级后的链不互通。
+
+    @Test
+    fun encryptedMessage512MemoWithinLimit() {
+        val a = Wallet.generate()
+        val b = Wallet.generate()
+        val plaintext = "这是一条加密私信。".repeat(3)   // 81 字节 → memo ≈ 246 码点
+        val memo = Encryption.encryptMemo(plaintext, b.address, a.seed)
+        assertNotNull(memo)
+        assertTrue(memo!!.startsWith(ENC_PREFIX))
+        val cp = memo.codePointCount(0, memo.length)
+        assertTrue("该用例必须超过旧 128 上限才有意义", cp > 128)
+        assertTrue("密文 memo 必须 ≤ MAX_MEMO(512)", cp <= MAX_MEMO)
+        // 构造一条带该密文的消息交易，txid 必须可由内容逐字节重算（well-formed）。
+        val tx = signMessage(a, b.address, memo, 0L, MESSAGE_BURN, 1L, 0L)
+        assertEquals(computeTxid(a.address, b.address, 0L, 1L, 0L, 0L, memo, MESSAGE_BURN), tx.txid)
+        assertTrue(tx.isMessage())
+    }
+
+    // 边界：恰好 512 码点通过门禁、513 码点被拒（上限仍强制执行，只是从 128 抬到 512）。
+    @Test
+    fun memoLengthBoundaryAt512() {
+        val memo512 = ENC_PREFIX + "a".repeat(MAX_MEMO - ENC_PREFIX.length)
+        assertEquals(512, memo512.codePointCount(0, memo512.length))
+        assertTrue("512 码点 memo 必须通过门禁", memo512.codePointCount(0, memo512.length) <= MAX_MEMO)
+        val memo513 = memo512 + "a"
+        assertFalse("513 码点 memo 必须被拒", memo513.codePointCount(0, memo513.length) <= MAX_MEMO)
+    }
+
     // ───── 测试辅助：构造区块 / coinbase（解析与状态机不校验签名/PoW，可用占位字段）─────
 
     private fun block(txs: List<Transaction>, hash: String = "00"): Block =

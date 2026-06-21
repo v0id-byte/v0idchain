@@ -46,7 +46,7 @@ amount: number      // 转账金额（整数 ≥0）；消息恒为 0
 fee: number         // 手续费/gas（整数 ≥1，普通交易）；给打包矿工
 nonce: number       // 发送方自增计数（防重放）
 timestamp: number   // 毫秒 epoch 整数
-memo: string        // 备注 / 消息正文（≤128 Unicode 码点）
+memo: string        // 备注 / 消息正文（≤ MAX_MEMO=512 Unicode 码点；曾为 128，已软分叉抬升以容纳加密私信 ENC| 密文，见 §8.6）
 burn?: number       // 销毁额（消息用，整数 >0）；普通转账省略（=0）
 signature: string   // ed25519 签名 hex（见 3.3）
 txid: string        // = sha256(规范化预映像)（见 3.2）
