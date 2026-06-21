@@ -19,8 +19,10 @@ import androidx.compose.material.icons.outlined.Create
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.MailOutline
+import androidx.compose.material.icons.outlined.Redeem
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.v0id.wallet.MessageView
 import com.v0id.wallet.Newcomer
 import com.v0id.wallet.SearchResult
 import com.v0id.wallet.WalletUi
@@ -90,6 +93,8 @@ fun WalletApp(vm: WalletViewModel) {
         TabSpec("钱包", Icons.Outlined.AccountBalanceWallet),
         TabSpec("转账", Icons.AutoMirrored.Outlined.Send),
         TabSpec("消息", Icons.Outlined.MailOutline),
+        TabSpec("集市", Icons.Outlined.Storefront),
+        TabSpec("红包", Icons.Outlined.Redeem),
         TabSpec("逛链", Icons.Outlined.Explore),
         TabSpec("设置", Icons.Outlined.Settings),
     )
@@ -135,7 +140,9 @@ fun WalletApp(vm: WalletViewModel) {
                 0 -> WalletScreen(vm, ui)
                 1 -> SendScreen(vm, ui)
                 2 -> MessagesScreen(ui)
-                3 -> ExploreScreen(vm, ui)
+                3 -> MarketScreen(vm, ui)
+                4 -> RedPacketScreen(vm, ui)
+                5 -> ExploreScreen(vm, ui)
                 else -> SettingsScreen(vm, ui)
             }
         }
@@ -407,6 +414,10 @@ private fun WalletScreen(vm: WalletViewModel, ui: WalletUi) {
 
         FormSection {
             CopyCell("我的地址（= 公钥，可公开）", ui.address)
+            if (ui.myName != null) {
+                RowDivider()
+                KeyValue("我的昵称", "@${ui.myName}", MaterialTheme.colorScheme.primary)
+            }
             RowDivider()
             KeyValue("下一笔 nonce", "${ui.nextNonce}")
             if (ui.pendingCount > 0) {
@@ -519,25 +530,37 @@ private fun MessagesScreen(ui: WalletUi) {
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(list, key = { it.txid }) { m -> MessageCard(m, inbox) }
+                items(list, key = { it.msg.txid }) { mv -> MessageCard(mv, inbox, ui) }
             }
         }
     }
 }
 
 @Composable
-private fun MessageCard(m: ChainMessage, inbox: Boolean) {
+private fun MessageCard(mv: MessageView, inbox: Boolean, ui: WalletUi) {
+    val m = mv.msg
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(
-                    (if (inbox) "来自 " else "发给 ") + shortAddr(if (inbox) m.from else m.to),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        (if (inbox) "来自 " else "发给 ") + ui.display(if (inbox) m.from else m.to),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
+                    )
+                    if (mv.encrypted) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("🔒", fontSize = 12.sp)
+                    }
+                }
                 Text("🔥${m.burn} · #${m.height}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
             Spacer(Modifier.height(6.dp))
-            Text(m.text, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp)
+            if (mv.locked) {
+                Text("（加密内容，无法解密）", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 15.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+            } else {
+                Text(mv.plaintext ?: m.text, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp)
+            }
             Spacer(Modifier.height(6.dp))
             Text(fmtTime(m.timestamp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
         }
@@ -551,6 +574,7 @@ private fun ComposeSheet(vm: WalletViewModel, ui: WalletUi, onDismiss: () -> Uni
     var text by remember { mutableStateOf("") }
     var burn by remember { mutableStateOf("5") }
     var fee by remember { mutableStateOf("1") }
+    var encrypt by remember { mutableStateOf(false) }
     val connected = ui.connection == WsClient.Status.CONNECTED
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
         Column(
@@ -561,16 +585,29 @@ private fun ComposeSheet(vm: WalletViewModel, ui: WalletUi, onDismiss: () -> Uni
             FormSection(header = "收件人地址") {
                 BlockField(to, { to = it }, "0x + 64 位 hex", mono = true, minLines = 2)
             }
-            FormSection(header = "正文（≤128 码点）") {
+            FormSection(header = "正文（≤$PLAIN_TEXT_LIMIT 码点）") {
                 BlockField(text, { text = it }, "写点什么…", minLines = 3)
+            }
+            FormSection(
+                header = "加密",
+                footer = "开启端到端加密后，密文上链，只有你和 TA（用各自私钥）能解开，其他人只看到乱码。",
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🔒 端到端加密（只有 TA 能解）", color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 15.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = encrypt, onCheckedChange = { encrypt = it })
+                }
             }
             FormSection(header = "烧币与手续费", footer = "链上消息 = amount 0 + 烧币 + 正文。烧掉的 $SYMBOL 进虚空永久不可花；另付手续费给矿工。需所连节点已支持消息。") {
                 NumberRow("销毁 burn（进虚空）", burn, { burn = it }, "5")
                 RowDivider()
                 NumberRow("手续费 / gas", fee, { fee = it }, "1")
             }
-            PrimaryButton("烧币发送", Icons.AutoMirrored.Outlined.Send, connected) {
-                vm.sendMessage(to, text, burn, fee); onDismiss()
+            PrimaryButton(if (encrypt) "加密并烧币发送" else "烧币发送", Icons.AutoMirrored.Outlined.Send, connected) {
+                vm.sendMessage(to, text, burn, fee, encrypt); onDismiss()
             }
         }
     }
@@ -594,7 +631,7 @@ private fun ExploreScreen(vm: WalletViewModel, ui: WalletUi) {
         }
         when (val r = result) {
             SearchResult.Empty -> {
-                if (ui.newcomers.isNotEmpty()) item { NewcomersSection(ui.newcomers) }
+                if (ui.newcomers.isNotEmpty()) item { NewcomersSection(ui.newcomers, ui) }
                 item {
                     Text("最近区块", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
                         modifier = Modifier.padding(start = 4.dp, top = 4.dp))
@@ -623,7 +660,7 @@ private fun ExploreScreen(vm: WalletViewModel, ui: WalletUi) {
                 }
                 item { Text("历史（最新在前）", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
                     modifier = Modifier.padding(start = 4.dp, top = 4.dp)) }
-                items(r.txs.take(40)) { (h, tx) -> AddressTxRow(h, tx, r.address) }
+                items(r.txs.take(40)) { (h, tx) -> AddressTxRow(h, tx, r.address, ui) }
             }
         }
     }
@@ -649,11 +686,11 @@ private fun BlockSearchField(query: String, onChange: (String) -> Unit) {
 }
 
 @Composable
-private fun NewcomersSection(newcomers: List<Newcomer>) {
+private fun NewcomersSection(newcomers: List<Newcomer>, ui: WalletUi) {
     FormSection(header = "新成员（最近首次上链）") {
         newcomers.take(6).forEachIndexed { i, nc ->
             if (i > 0) RowDivider()
-            KeyValue(shortAddr(nc.address), "#${nc.height}")
+            KeyValue(ui.display(nc.address), "#${nc.height}")
         }
     }
 }
@@ -683,13 +720,13 @@ private fun BlockCard(b: Block, expanded: Boolean = false) {
 }
 
 @Composable
-private fun AddressTxRow(height: Long, tx: Transaction, focus: String) {
+private fun AddressTxRow(height: Long, tx: Transaction, focus: String, ui: WalletUi) {
     val out = tx.from == focus
     val kind = when {
         tx.isCoinbase() -> "coinbase"
         tx.isMessage() -> "消息：${tx.memo}"
-        out -> "转出 → ${shortAddr(tx.to)}"
-        else -> "转入 ← ${shortAddr(tx.from)}"
+        out -> "转出 → ${ui.display(tx.to)}"
+        else -> "转入 ← ${ui.display(tx.from)}"
     }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -834,6 +871,231 @@ private fun CheckRow(label: String, ok: Boolean) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(if (ok) LocalStatus.current.online else MaterialTheme.colorScheme.error))
         Spacer(Modifier.width(10.dp))
         Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+    }
+}
+
+// ───────────────────────── 集市 ─────────────────────────
+
+@Composable
+private fun MarketScreen(vm: WalletViewModel, ui: WalletUi) {
+    var showSell by rememberSaveable { mutableStateOf(false) }
+    val me = ui.address
+    val connected = ui.connection == WsClient.Status.CONNECTED
+
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.padding(16.dp)) {
+            PrimaryButton("上架商品", Icons.Outlined.Create, connected) { showSell = true }
+        }
+        if (ui.listings.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Outlined.Storefront, null, modifier = Modifier.size(40.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(10.dp))
+                    Text("集市空空如也", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("上架 = 自转 1 $SYMBOL + 备注 MKT|价格|标题，所连节点打包后出现。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, textAlign = TextAlign.Center)
+                }
+            }
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(ui.listings, key = { it.id }) { l -> ListingCard(l, me, connected, vm, ui) }
+            }
+        }
+    }
+    if (showSell) SellSheet(vm, onDismiss = { showSell = false })
+}
+
+@Composable
+private fun ListingCard(l: Listing, me: String, connected: Boolean, vm: WalletViewModel, ui: WalletUi) {
+    val mine = l.seller == me
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(l.title, color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text("${l.price} $SYMBOL", color = MaterialTheme.colorScheme.primary, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text("卖家 ${if (mine) "我" else ui.display(l.seller)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            Spacer(Modifier.height(10.dp))
+            when {
+                l.sold -> StatusPill("已售出" + (l.soldBy?.let { " · 买家 ${if (it == me) "我" else ui.display(it)}" } ?: ""), LocalStatus.current.online)
+                l.delisted -> StatusPill("已撤单", MaterialTheme.colorScheme.onSurfaceVariant)
+                mine -> OutlinedButton(
+                    onClick = { vm.delistItem(l) }, enabled = connected,
+                    shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth(),
+                ) { Text("撤单") }
+                else -> Button(
+                    onClick = { vm.buyItem(l) }, enabled = connected,
+                    shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth(),
+                ) { Text("购买（付 ${l.price} $SYMBOL）") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusPill(text: String, color: androidx.compose.ui.graphics.Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SellSheet(vm: WalletViewModel, onDismiss: () -> Unit) {
+    var price by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf("") }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
+        Column(
+            Modifier.padding(horizontal = 16.dp).padding(bottom = 32.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("上架商品", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+            FormSection(header = "标题（≤$MAX_TITLE 字）") {
+                BlockField(title, { title = it }, "比如：复习笔记 / 二手书…", minLines = 1)
+            }
+            FormSection(
+                header = "价格（$SYMBOL）",
+                footer = "上架 = 自转 1 $SYMBOL + 手续费 $MIN_FEE，备注写 MKT|价格|标题。买家付款给你即成交。",
+            ) {
+                NumberRow("价格", price, { price = it }, "0")
+            }
+            PrimaryButton("上架", Icons.Outlined.Storefront, price.isNotBlank() && title.isNotBlank()) {
+                vm.listItem(price, title); onDismiss()
+            }
+        }
+    }
+}
+
+// ───────────────────────── 红包 ─────────────────────────
+
+@Composable
+private fun RedPacketScreen(vm: WalletViewModel, ui: WalletUi) {
+    var showSend by rememberSaveable { mutableStateOf(false) }
+    val me = ui.address
+    val connected = ui.connection == WsClient.Status.CONNECTED
+
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.padding(16.dp)) {
+            PrimaryButton("发红包", Icons.Outlined.Redeem, connected) { showSend = true }
+        }
+        if (ui.redPackets.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Outlined.Redeem, null, modifier = Modifier.size(40.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(10.dp))
+                    Text("还没有红包", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("发红包 = 转给托管地址 + 备注 RED|份数|模式。抢到的金额由所在区块敲定。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, textAlign = TextAlign.Center)
+                }
+            }
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(ui.redPackets, key = { it.id }) { rp -> RedPacketCard(rp, me, connected, ui.height, vm, ui) }
+            }
+        }
+    }
+    if (showSend) SendRedSheet(vm, onDismiss = { showSend = false })
+}
+
+@Composable
+private fun RedPacketCard(rp: RedPacketView, me: String, connected: Boolean, height: Long, vm: WalletViewModel, ui: WalletUi) {
+    val mine = rp.creator == me
+    val iClaimed = rp.claims.firstOrNull { it.who == me }
+    val canRefund = mine && !rp.done && height >= rp.createHeight + RED_EXPIRY
+    val expireAt = rp.createHeight + RED_EXPIRY
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("🧧 ${rp.total} $SYMBOL · ${rp.count} 份",
+                    color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(if (rp.mode == RedMode.RANDOM) "拼手气" else "均分",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text("发起 ${if (mine) "我" else ui.display(rp.creator)} · #${rp.createHeight} · 剩 ${rp.remaining} / ${rp.remainingCount} 份",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+
+            // 领取记录
+            if (rp.claims.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                rp.claims.forEach { c ->
+                    Text("· ${if (c.who == me) "我" else ui.display(c.who)} 抢到 ${c.amount} $SYMBOL（#${c.height}）",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            when {
+                rp.refunded -> StatusPill("已退款", MaterialTheme.colorScheme.onSurfaceVariant)
+                iClaimed != null -> StatusPill("已抢到 ${iClaimed.amount} $SYMBOL", LocalStatus.current.online)
+                rp.done -> StatusPill("已抢完", MaterialTheme.colorScheme.onSurfaceVariant)
+                mine -> {
+                    if (canRefund) {
+                        OutlinedButton(
+                            onClick = { vm.refundRedPacket(rp) }, enabled = connected,
+                            shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth(),
+                        ) { Text("退回剩余 ${rp.remaining} $SYMBOL") }
+                    } else {
+                        StatusPill("自己发的，#$expireAt 后可退款", LocalStatus.current.pending)
+                    }
+                }
+                else -> Button(
+                    onClick = { vm.claimRedPacket(rp) }, enabled = connected,
+                    shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth(),
+                ) { Text("抢红包") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SendRedSheet(vm: WalletViewModel, onDismiss: () -> Unit) {
+    var total by remember { mutableStateOf("") }
+    var count by remember { mutableStateOf("") }
+    var random by remember { mutableStateOf(true) }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
+        Column(
+            Modifier.padding(horizontal = 16.dp).padding(bottom = 32.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("发红包", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+            FormSection(header = "金额与份数") {
+                NumberRow("总额（$SYMBOL）", total, { total = it }, "0")
+                RowDivider()
+                NumberRow("份数（1~$MAX_RED_COUNT）", count, { count = it }, "0")
+            }
+            FormSection(
+                header = "玩法",
+                footer = "发红包 = 转给托管地址 + 备注 RED|份数|模式 + 手续费 $MIN_FEE。拼手气随机额由抢取所在区块敲定；超 $RED_EXPIRY 块没抢完可退款。",
+            ) {
+                Box(Modifier.padding(12.dp)) {
+                    SegmentRow(
+                        options = listOf("拼手气", "均分"),
+                        selected = if (random) 0 else 1,
+                        onSelect = { random = it == 0 },
+                    )
+                }
+            }
+            PrimaryButton("塞钱并发出", Icons.Outlined.Redeem, total.isNotBlank() && count.isNotBlank()) {
+                vm.sendRedPacket(total, count, if (random) RedMode.RANDOM else RedMode.EQUAL); onDismiss()
+            }
+        }
     }
 }
 

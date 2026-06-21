@@ -19,6 +19,17 @@ import kotlinx.coroutines.withContext
 /** 链上新成员（地址首次出现的高度）。 */
 data class Newcomer(val address: String, val height: Long)
 
+/**
+ * 收/发件箱里一条消息的展示态：原始消息 + 解密结果。
+ * 加密私信若能用本钱包解出 → plaintext 非空；解不开（非本人/格式坏）→ locked=true。
+ */
+data class MessageView(
+    val msg: ChainMessage,
+    val encrypted: Boolean,
+    val locked: Boolean,        // 加密但无法解密
+    val plaintext: String?,     // 解密后的明文（明文消息直接 = 原文）
+)
+
 /** 逛链搜索结果。 */
 sealed interface SearchResult {
     data object Empty : SearchResult
@@ -48,12 +59,26 @@ data class WalletUi(
     val pendingCount: Int = 0,
     val txCount: Int = 0,
     val chain: List<Block> = emptyList(),
-    val inbox: List<ChainMessage> = emptyList(),
-    val outbox: List<ChainMessage> = emptyList(),
+    val inbox: List<MessageView> = emptyList(),
+    val outbox: List<MessageView> = emptyList(),
     val newcomers: List<Newcomer> = emptyList(),
+    val names: NameRegistry = NameRegistry(emptyMap(), emptyMap()),
+    val myName: String? = null,
+    val listings: List<Listing> = emptyList(),
+    val redPackets: List<RedPacketView> = emptyList(),
     val log: String = "",
     val selfTest: SelfTestResult? = null,
-)
+) {
+    /** 地址 → `@名字` 显示（无昵称则返回缩写地址）。 */
+    fun display(address: String): String {
+        val n = names.nameFor(address)
+        return if (n != null) "@$n" else shortAddress(address)
+    }
+}
+
+/** 地址缩写（与 UI 一致）。 */
+fun shortAddress(a: String): String =
+    if (a.length > 16) "${a.take(8)}…${a.takeLast(6)}" else a
 
 class WalletViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -270,11 +295,14 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         val chain = _ui.value.chain
         val state = computeState(chain)
         val msgs = parseMessages(chain)
+        val names = parseNames(chain)
         val addr = w?.address ?: ""
         val balance = state.balanceOf(addr)
         val pendingOut = pending.sumOf { it.amount + it.fee + (it.burn ?: 0L) }
         val nextNonce = state.nonceOf(addr) + pending.size
         val txCount = chain.sumOf { it.transactions.size }
+        val inbox = if (addr.isEmpty()) emptyList() else msgs.filter { it.to == addr }.map { messageView(it, addr, isInbox = true) }
+        val outbox = if (addr.isEmpty()) emptyList() else msgs.filter { it.from == addr }.map { messageView(it, addr, isInbox = false) }
         _ui.update {
             it.copy(
                 height = if (chain.isEmpty()) -1 else chain.last().index,
@@ -284,18 +312,33 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
                 nextNonce = nextNonce,
                 pendingCount = pending.size,
                 txCount = txCount,
-                inbox = if (addr.isEmpty()) emptyList() else msgs.filter { m -> m.to == addr },
-                outbox = if (addr.isEmpty()) emptyList() else msgs.filter { m -> m.from == addr },
+                inbox = inbox,
+                outbox = outbox,
                 newcomers = recentNewcomers(chain, 25),
+                names = names,
+                myName = if (addr.isEmpty()) null else names.nameFor(addr),
+                listings = parseMarket(chain),
+                redPackets = parseRedPackets(chain),
             )
         }
+    }
+
+    /** 一条消息的展示态：加密私信尝试用本钱包种子解密（收件→对方=from；发件→对方=to）。 */
+    private fun messageView(m: ChainMessage, me: String, isInbox: Boolean): MessageView {
+        val w = wallet
+        if (!Encryption.isEncryptedMemo(m.text) || w == null) {
+            return MessageView(m, encrypted = false, locked = false, plaintext = m.text)
+        }
+        val other = if (isInbox) m.from else m.to
+        val pt = Encryption.decryptMemo(m.text, other, w.seed)
+        return MessageView(m, encrypted = true, locked = pt == null, plaintext = pt)
     }
 
     private fun recentNewcomers(chain: List<Block>, limit: Int): List<Newcomer> {
         val firstSeen = LinkedHashMap<String, Long>()
         for (b in chain) for (tx in b.transactions) {
             for (a in listOf(tx.from, tx.to)) {
-                if (a == NULL_ADDRESS) continue
+                if (a == NULL_ADDRESS || a == RED_ESCROW_ADDRESS) continue
                 if (a !in firstSeen) firstSeen[a] = b.index
             }
         }
@@ -330,26 +373,37 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun sendMessage(toRaw: String, text: String, burnStr: String, feeStr: String) {
+    fun sendMessage(toRaw: String, text: String, burnStr: String, feeStr: String, encrypt: Boolean = false) {
         val w = wallet ?: return emit("请先创建钱包")
         val to = toRaw.trim()
         if (!isValidAddress(to)) return emit("收件地址格式无效（应为 0x + 64 hex）")
         if (to == NULL_ADDRESS) return emit("不能向虚空地址发消息")
         if (text.isBlank()) return emit("消息正文不能为空")
-        if (text.codePointCount() > MAX_MEMO) return emit("正文最多 $MAX_MEMO 个字符")
+        // 明文上限与 web 一致（128 码点）；加密密文上链可用到 MAX_MEMO（512）。
+        if (text.codePointCount() > PLAIN_TEXT_LIMIT) return emit("正文最多 $PLAIN_TEXT_LIMIT 个字符")
         val burn = burnStr.trim().toLongOrNull()
         if (burn == null || burn < 1) return emit("销毁额必须是 ≥1 的整数")
         val fee = feeStr.trim().toLongOrNull()
         if (fee == null || fee < MIN_FEE) return emit("手续费至少为 $MIN_FEE")
         if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+
+        // 加密：明文 → ENC|<密文> memo（端到端，只有收发双方能解）。
+        val memo = if (encrypt) {
+            Encryption.encryptMemo(text, to, w.seed) ?: return emit("加密失败：收件地址无效")
+        } else {
+            text
+        }
+        if (memo.codePointCount() > MAX_MEMO) return emit("密文过长（上限 $MAX_MEMO 码点）")
+
         val need = burn + fee
         if (need > _ui.value.available) return emit("余额不足：可用 ${_ui.value.available}，需要 $need（烧 $burn + 手续费 $fee）")
 
-        val tx = signMessage(w, to, text, _ui.value.nextNonce, burn, fee, System.currentTimeMillis())
+        val tx = signMessage(w, to, memo, _ui.value.nextNonce, burn, fee, System.currentTimeMillis())
         if (ws.broadcastTx(tx)) {
             pending.add(tx)
             recompute()
-            emit("已广播消息，烧掉 $burn ${SYMBOL}，txid ${tx.txid.take(12)}…")
+            val tag = if (encrypt) "🔒加密消息" else "消息"
+            emit("已广播$tag，烧掉 $burn ${SYMBOL}，txid ${tx.txid.take(12)}…")
         } else {
             emit("广播失败：连接不可用")
         }
@@ -372,6 +426,101 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             emit("广播失败：连接不可用")
         }
+    }
+
+    // ---- 集市（MKT/BUY/DEL，余额走普通转账）----
+    /** 上架：自转 1 $V0ID + memo MKT|<价格>|<标题>。 */
+    fun listItem(priceStr: String, title: String) {
+        val w = wallet ?: return emit("请先创建钱包")
+        val price = priceStr.trim().toLongOrNull()
+        if (price == null || price <= 0) return emit("价格必须是正整数")
+        val (memo, err) = makeListing(price, title)
+        if (memo == null) return emit(err ?: "标题无效")
+        if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+        if (_ui.value.available < 1 + MIN_FEE) return emit("余额不足：上架需 ${1 + MIN_FEE} $SYMBOL（自转 1 + 手续费 $MIN_FEE）")
+        val tx = signTransaction(w, w.address, 1L, _ui.value.nextNonce, memo, MIN_FEE, System.currentTimeMillis())
+        if (ws.broadcastTx(tx)) {
+            pending.add(tx); recompute()
+            emit("已上架「$title」标价 $price $SYMBOL，txid ${tx.txid.take(12)}…")
+        } else emit("广播失败：连接不可用")
+    }
+
+    /** 购买：付款给卖家（amount=标价）+ memo BUY|<上架txid>。 */
+    fun buyItem(listing: Listing) {
+        val w = wallet ?: return emit("请先创建钱包")
+        if (listing.seller == w.address) return emit("不能购买自己上架的商品")
+        if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+        val need = listing.price + MIN_FEE
+        if (need > _ui.value.available) return emit("余额不足：可用 ${_ui.value.available}，需要 $need（货款 ${listing.price} + 手续费 $MIN_FEE）")
+        val tx = signTransaction(w, listing.seller, listing.price, _ui.value.nextNonce, "${BUY_PREFIX}${listing.id}", MIN_FEE, System.currentTimeMillis())
+        if (ws.broadcastTx(tx)) {
+            pending.add(tx); recompute()
+            emit("已下单「${listing.title}」付 ${listing.price} $SYMBOL，txid ${tx.txid.take(12)}…")
+        } else emit("广播失败：连接不可用")
+    }
+
+    /** 撤单：自转 1 $V0ID + memo DEL|<上架txid>（仅卖家本人）。 */
+    fun delistItem(listing: Listing) {
+        val w = wallet ?: return emit("请先创建钱包")
+        if (listing.seller != w.address) return emit("只有卖家本人能撤单")
+        if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+        if (_ui.value.available < 1 + MIN_FEE) return emit("余额不足：撤单需 ${1 + MIN_FEE} $SYMBOL")
+        val tx = signTransaction(w, w.address, 1L, _ui.value.nextNonce, "${DEL_PREFIX}${listing.id}", MIN_FEE, System.currentTimeMillis())
+        if (ws.broadcastTx(tx)) {
+            pending.add(tx); recompute()
+            emit("已撤单「${listing.title}」，txid ${tx.txid.take(12)}…")
+        } else emit("广播失败：连接不可用")
+    }
+
+    // ---- 红包（RED/CLAIM/REFUND，托管 + 条件支付）----
+    /** 发红包：转给托管地址 amount=总额 + memo RED|<份数>|<r|e>。 */
+    fun sendRedPacket(totalStr: String, countStr: String, mode: RedMode) {
+        val w = wallet ?: return emit("请先创建钱包")
+        val total = totalStr.trim().toLongOrNull()
+        val count = countStr.trim().toIntOrNull()
+        if (total == null || count == null) return emit("总额与份数都必须是整数")
+        val (memo, err) = makeRedPacket(total, count, mode)
+        if (memo == null) return emit(err ?: "红包参数无效")
+        if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+        val need = total + MIN_FEE
+        if (need > _ui.value.available) return emit("余额不足：可用 ${_ui.value.available}，需要 $need（红包 $total + 手续费 $MIN_FEE）")
+        val tx = signTransaction(w, RED_ESCROW_ADDRESS, total, _ui.value.nextNonce, memo, MIN_FEE, System.currentTimeMillis())
+        if (ws.broadcastTx(tx)) {
+            pending.add(tx); recompute()
+            emit("已发出 $count 份红包共 $total $SYMBOL，txid ${tx.txid.take(12)}…")
+        } else emit("广播失败：连接不可用")
+    }
+
+    /** 抢红包：自转 amount=0 + memo CLAIM|<红包id>（入账由共识从托管池支付）。 */
+    fun claimRedPacket(rp: RedPacketView) {
+        val w = wallet ?: return emit("请先创建钱包")
+        if (rp.creator == w.address) return emit("不能抢自己发的红包")
+        if (rp.done) return emit("红包已抢完或已退款")
+        if (rp.claims.any { it.who == w.address }) return emit("你已经抢过这个红包了")
+        if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+        if (_ui.value.available < MIN_FEE) return emit("余额不足：抢红包需付手续费 $MIN_FEE")
+        // amount=0、burn=0、memo=CLAIM|<id>：共识允许此零额操作。
+        val tx = signTransaction(w, w.address, 0L, _ui.value.nextNonce, "${CLAIM_PREFIX}${rp.id}", MIN_FEE, System.currentTimeMillis())
+        if (ws.broadcastTx(tx)) {
+            pending.add(tx); recompute()
+            emit("已抢红包，金额由所在区块敲定，txid ${tx.txid.take(12)}…")
+        } else emit("广播失败：连接不可用")
+    }
+
+    /** 退款：自转 amount=0 + memo REFUND|<红包id>（仅发起人，过期后取回剩余）。 */
+    fun refundRedPacket(rp: RedPacketView) {
+        val w = wallet ?: return emit("请先创建钱包")
+        if (rp.creator != w.address) return emit("只有发起人能退款")
+        if (rp.done) return emit("红包已抢完或已退款")
+        val expireAt = rp.createHeight + RED_EXPIRY
+        if (_ui.value.height < expireAt) return emit("未到退款高度：需到 #$expireAt（当前 #${_ui.value.height}）")
+        if (ws.status != WsClient.Status.CONNECTED) return emit("未连接节点，无法广播")
+        if (_ui.value.available < MIN_FEE) return emit("余额不足：退款需付手续费 $MIN_FEE")
+        val tx = signTransaction(w, w.address, 0L, _ui.value.nextNonce, "${REFUND_PREFIX}${rp.id}", MIN_FEE, System.currentTimeMillis())
+        if (ws.broadcastTx(tx)) {
+            pending.add(tx); recompute()
+            emit("已申请退款，取回剩余 ${rp.remaining} $SYMBOL，txid ${tx.txid.take(12)}…")
+        } else emit("广播失败：连接不可用")
     }
 
     // ---- 逛链搜索 ----
