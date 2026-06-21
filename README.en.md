@@ -62,6 +62,16 @@ corepack pnpm -v      # any pnpm command can be written as: corepack pnpm …
 corepack pnpm install
 ```
 
+**Install the global `v0id` command (recommended).** A prebuilt single file you can run from any directory, with no per-call TS cold start:
+
+```bash
+corepack pnpm build:cli                       # esbuild bundle → packages/cli/dist/index.cjs
+cd packages/cli && corepack pnpm link --global && cd ../..
+v0id --help                                   # now available globally
+```
+
+> First-time `link` says `Unable to find the global bin directory`? Run `corepack pnpm setup` once (adds pnpm's global bin dir to your PATH; open a new terminal), then link again. After editing CLI source, re-run `corepack pnpm build:cli` to refresh. No global install? Define a same-named function from the repo root: `v0id() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }` (~1s cold start).
+
 ### 🚀 Join the public network and mine (fastest path)
 
 After installing, **one command** connects to the public seed node and starts mining:
@@ -82,6 +92,8 @@ corepack pnpm smoke          # core logic: mining / transfers / balances / repla
 corepack pnpm exec tsx scripts/integration.ts   # multi-node: broadcast / sync / late-joiner catch-up / persistence
 ```
 
+> 🧪 **Want to play attacker and watch the defenses reject you?** See the **[hands-on attack/defense labs → docs/LABS.md](docs/LABS.md)** — tamper a tx amount, a low-difficulty long fork, future timestamps, double-spends, a corrupted chain file, and a past-checkpoint reorg, organized as 6 reproducible experiments (one command each, with the actual rejection output). Drop-in lab for a distributed-systems / cryptography course. *(Doc is in Chinese.)*
+
 ### 3. Run two local nodes
 
 Open **two terminals**:
@@ -100,18 +112,17 @@ corepack pnpm dev:node2
 Open a **third terminal** to drive them:
 
 ```bash
-# `corepack pnpm v0id <cmd>` runs the CLI against a running node (zsh-safe — no shell-var word-split traps).
-# Prefer a shorter helper? Define a function (works in bash & zsh): v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
+# `v0id <cmd>` (installed above) drives a running node. No global install? Define a fallback from the repo root: v0id() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
 
 # each node prints its own "address 0x…" on startup; `info` shows it too
-corepack pnpm v0id info --api http://127.0.0.1:7001        # node1 status: height / balance / peers / [address]
-corepack pnpm v0id info --api http://127.0.0.1:7002        # node2 status: copy its [address]
+v0id info --api http://127.0.0.1:7001        # node1 status: height / balance / peers / [address]
+v0id info --api http://127.0.0.1:7002        # node2 status: copy its [address]
 
 # coins come from mining: node1 has --mine, so it accrues a balance (see `info`)
 # node1 sends 300 of its mined coins to node2 (pays a fee, default min 1; --fee to override, optional --memo "note")
-corepack pnpm v0id send 0x<node2-address> 300 --api http://127.0.0.1:7001
+v0id send 0x<node2-address> 300 --api http://127.0.0.1:7001
 
-corepack pnpm v0id balance 0x<address> --api http://127.0.0.1:7001   # both nodes should agree on the balance
+v0id balance 0x<address> --api http://127.0.0.1:7001   # both nodes should agree on the balance
 ```
 
 > The pre-mine (1000 at genesis) sits in the "treasury" address. Only the holder of its private key (the project author — key stays local, never committed) can distribute it via `send`. Everyone else earns coins by **mining**. The treasury is a plain single-sig address with **no minting privilege** (new coins only ever come from coinbase; the **block-reward part** is fixed at `BLOCK_REWARD` by consensus — the coinbase total is `reward + the block's fees`, and fees are merely moved from senders, not minted) — so losing its key just loses those 1000 coins, like any wallet; keep it safe (`wallet.json` is now `0600`).
@@ -189,9 +200,9 @@ Any node scans the chain to reconstruct the listing list (sold/delisted auto-mar
 in the dashboard, or use the CLI:
 
 ```bash
-corepack pnpm v0id market sell 30 ch3-revision-notes --api http://127.0.0.1:7001   # list (wait one block to confirm)
-corepack pnpm v0id market list --api http://127.0.0.1:7002                         # other nodes see it too (synced)
-corepack pnpm v0id market buy 9f59c01a --api http://127.0.0.1:7002                 # buy by id prefix
+v0id market sell 30 ch3-revision-notes --api http://127.0.0.1:7001   # list (wait one block to confirm)
+v0id market list --api http://127.0.0.1:7002                         # other nodes see it too (synced)
+v0id market buy 9f59c01a --api http://127.0.0.1:7002                 # buy by id prefix
 ```
 
 > On-chain settlement (payment + sale record), off-chain delivery (the notes / the favor / the drink). Listing needs ≥2 balance (the self-transfer of 1 + the min fee of 1, which goes to the miner).
@@ -205,9 +216,9 @@ into the void address (`NULL_ADDRESS`, forever unspendable = destroyed). The bod
 and is permanent. Technically it's a new kind of transaction: `amount=0 + burn>0 + memo=body`, plus the min fee to the including miner.
 
 ```bash
-corepack pnpm v0id msg 0x720c…b1ce "leaving you a note on-chain 👋" --api http://127.0.0.1:7001   # default burns 5 + 1 gas
-corepack pnpm v0id inbox --api http://127.0.0.1:7002        # the recipient node reads its inbox (wait one block)
-corepack pnpm v0id inbox --sent --api http://127.0.0.1:7001 # see what you've sent
+v0id msg 0x720c…b1ce "leaving you a note on-chain 👋" --api http://127.0.0.1:7001   # default burns 5 + 1 gas
+v0id inbox --api http://127.0.0.1:7002        # the recipient node reads its inbox (wait one block)
+v0id inbox --sent --api http://127.0.0.1:7001 # see what you've sent
 ```
 
 Total burned across the network = the void address's balance, shown as "Burned 🔥" in `v0id info` and atop the dashboard
@@ -216,7 +227,7 @@ Total burned across the network = the void address's balance, shown as "Burned �
 **🔒 End-to-end encrypted DMs.** Add `-e` so only the recipient can read it (encrypted to their pubkey via x25519 ECDH + XChaCha20-Poly1305; the ciphertext goes on-chain as `ENC|…` gibberish to everyone else; the sender can also decrypt their own via ECDH). Only the **body** is encrypted — sender/recipient/time/burn stay public.
 
 ```bash
-corepack pnpm v0id msg 0x… "a secret only you can read 🤫" -e --api http://127.0.0.1:7001   # end-to-end encrypted
+v0id msg 0x… "a secret only you can read 🤫" -e --api http://127.0.0.1:7001   # end-to-end encrypted
 ```
 
 > Encrypted DMs raise `MAX_MEMO` from 128 to 512 (to fit the ciphertext) — a **soft fork** (old nodes reject blocks with >128-char memos), so the whole network must upgrade together; but it's not hashed and does not reset the chain.
@@ -230,9 +241,9 @@ corepack pnpm v0id msg 0x… "a secret only you can read 🤫" -e --api http://1
 **🪪 On-chain nicknames (globally-unique, first-come-first-served).** Give an address a name; transfers/messages/the explorer then show `@name` instead of a long `0x…`. Claim = self-transfer of 1 + memo `NAME|<name>`, **first-come-first-served** (a name belongs to its first claimant). Names are 1–20 chars of lowercase letters/digits/`_`/`-`; reserved names like `treasury`/`official`/`admin` are blocked (anti-impersonation).
 
 ```bash
-corepack pnpm v0id name claim v0id-boss --api http://127.0.0.1:7001   # claim (wait one block)
-corepack pnpm v0id name who  v0id-boss --api http://127.0.0.1:7002    # other nodes resolve it too → address
-corepack pnpm v0id inbox --api http://127.0.0.1:7002                  # inbox shows the sender as @v0id-boss
+v0id name claim v0id-boss --api http://127.0.0.1:7001   # claim (wait one block)
+v0id name who  v0id-boss --api http://127.0.0.1:7002    # other nodes resolve it too → address
+v0id inbox --api http://127.0.0.1:7002                  # inbox shows the sender as @v0id-boss
 ```
 
 > Nicknames are a pure memo convention — **no consensus change, no soft fork**: a claim is just a valid self-transfer that old nodes accept; only clients that want to *display* names need the new code.

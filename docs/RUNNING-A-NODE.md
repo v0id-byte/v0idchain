@@ -77,6 +77,16 @@ corepack pnpm install      # 首次约 30 s，装完不会重复装
 corepack pnpm smoke        # 跑核心冒烟测试，全绿说明 OK
 ```
 
+**装上全局短命令 `v0id`（推荐）。** 预编译成单文件，之后任意目录直接敲 `v0id <子命令>`，没有每次的 TS 冷启动：
+
+```bash
+corepack pnpm build:cli                       # esbuild 打包 → packages/cli/dist/index.cjs
+cd packages/cli && corepack pnpm link --global && cd ../..
+v0id --help                                   # 现在全局可用
+```
+
+> 首次 `link` 若报 `Unable to find the global bin directory`，先跑一次 `corepack pnpm setup`（把 pnpm 全局 bin 目录写进 PATH，新开终端生效）再 link。改了 CLI 源码后重跑 `corepack pnpm build:cli` 刷新即可，link 不用重做。本文余下命令都用 `v0id <子命令>`；不想装全局就在仓库根目录定义同名函数：`v0id() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }`。
+
 ---
 
 ## 5. 加入公网、开始挖矿（最快上手）
@@ -107,9 +117,8 @@ start --name miner --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:
 挖矿时另开一个终端查自己状态：
 
 ```bash
-v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }   # 简写
-v info --name miner          # 地址 / 余额 / 链高 / 对等数
-v balance --name miner       # 只看余额
+v0id info --name miner          # 地址 / 余额 / 链高 / 对等数
+v0id balance --name miner       # 只看余额
 ```
 
 > ⚠️ **挖到第一个币，立刻备份钱包**（见 [TUTORIAL.md §8](../TUTORIAL.md#8-钱包备份与找回必看)）：私钥只在 `.data/miner/wallet.json`，删了数据目录币就没了。
@@ -137,16 +146,14 @@ corepack pnpm dev:node2
 **终端 3 — 操作**
 
 ```bash
-v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
-
-v info --api http://127.0.0.1:7001 --name node1    # 看 node1 状态（含地址）
-v info --api http://127.0.0.1:7002 --name node2    # 看 node2 状态，复制地址备用
+v0id info --api http://127.0.0.1:7001 --name node1    # 看 node1 状态（含地址）
+v0id info --api http://127.0.0.1:7002 --name node2    # 看 node2 状态，复制地址备用
 
 # node1 挖几块后有余额，把 5 个币转给 node2（手续费 1，备注随意）
-v send 0x<node2地址> 5 --fee 1 --memo "午饭钱" --api http://127.0.0.1:7001 --name node1
+v0id send 0x<node2地址> 5 --fee 1 --memo "午饭钱" --api http://127.0.0.1:7001 --name node1
 
 # 等 node1 挖出下一块打包这笔交易，两端余额应一致
-v balance 0x<node2地址> --api http://127.0.0.1:7002
+v0id balance 0x<node2地址> --api http://127.0.0.1:7002
 ```
 
 ---

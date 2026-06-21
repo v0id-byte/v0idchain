@@ -33,14 +33,20 @@ cd v0idchain
 corepack pnpm install       # 装依赖（任何 pnpm 命令都写成 corepack pnpm …）
 ```
 
-为了少打字，先记一个**简写**（本教程后面都用 `v` 代表 CLI）。用 **shell 函数**（bash / zsh 都适用）——别用 `v="…"` 变量，它在 macOS 默认的 zsh 下不会自动分词、第一条命令就会报 `no such file or directory`：
+本教程后面所有命令都写成 **`v0id <子命令>`**。装一次**全局短命令**最省事——预编译成单文件，任意目录直接敲 `v0id`，没有每次的 TS 冷启动：
 
 ```bash
-v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
-v --help                   # 看所有命令
+corepack pnpm build:cli                       # esbuild 打包 → packages/cli/dist/index.cjs
+cd packages/cli && corepack pnpm link --global && cd ../..
+v0id --help                                   # 现在全局可用，列出所有命令
 ```
 
-> 不想定义函数？每条命令也可以直接写全：`corepack pnpm v0id <子命令>`（同样躲过 zsh 的引号陷阱）。
+> 首次 `link` 若报 `Unable to find the global bin directory`，先跑一次 `corepack pnpm setup`（把 pnpm 全局 bin 目录写进 PATH，新开终端生效）再 link。改了 CLI 源码后重跑 `corepack pnpm build:cli` 刷新即可，link 不用重做。
+>
+> 不想装全局？定义一个**同名** shell 函数也行（带 ~1s 冷启动，需在仓库根目录运行）——下文的 `v0id <子命令>` 照样适用：
+> ```bash
+> v0id() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
+> ```
 
 ---
 
@@ -64,8 +70,8 @@ corepack pnpm mine
 挖矿时另开一个终端操作这个 `miner` 节点（注意带 `--name miner`，见下方「令牌」说明）：
 
 ```bash
-v info  --name miner                 # 看自己的地址/余额/链高
-v balance --name miner               # 查本节点余额
+v0id info  --name miner                 # 看自己的地址/余额/链高
+v0id balance --name miner               # 查本节点余额
 ```
 
 > ⚠️ **令牌（token）**：`pnpm mine` 的节点名是 **miner**。查询类命令（info/balance/peers）不需要令牌；但**转账/挖矿等写操作**要带 `--name miner`，CLI 才能从 `.data/miner/api.token` 自动读到令牌（否则会 `unauthorized`）。也可显式 `--token <令牌>`。
@@ -95,17 +101,16 @@ corepack pnpm dev:node2
 **终端 3** —— 操作它们（本地沙盒里 node1/node2 各有独立数据目录，令牌各自在 `.data/node1`、`.data/node2`）：
 
 ```bash
-v() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
-
-v info --api http://127.0.0.1:7001 --name node1     # node1：链高在涨、余额在涨（它在挖）
-v info --api http://127.0.0.1:7002 --name node2     # node2：复制它的【地址】备用
+# 装了全局 v0id 直接用；没装就在仓库根目录先跑一次：v0id() { corepack pnpm exec tsx packages/cli/src/index.ts "$@"; }
+v0id info --api http://127.0.0.1:7001 --name node1     # node1：链高在涨、余额在涨（它在挖）
+v0id info --api http://127.0.0.1:7002 --name node2     # node2：复制它的【地址】备用
 
 # node1 把挖来的币转 5 给 node2（带 1 手续费、附条备注）
-v send 0x<node2地址> 5 --fee 1 --memo "午饭钱" --api http://127.0.0.1:7001 --name node1
+v0id send 0x<node2地址> 5 --fee 1 --memo "午饭钱" --api http://127.0.0.1:7001 --name node1
 
 # 等 node1 再挖出一块把这笔打包，两个节点查到的余额应一致
-v balance 0x<node2地址> --api http://127.0.0.1:7001     # 应显示 5
-v balance 0x<node2地址> --api http://127.0.0.1:7002     # node2 也是 5（已同步）
+v0id balance 0x<node2地址> --api http://127.0.0.1:7001     # 应显示 5
+v0id balance 0x<node2地址> --api http://127.0.0.1:7002     # node2 也是 5（已同步）
 ```
 
 看明白这一圈，你就懂了整条链。
@@ -119,7 +124,7 @@ v balance 0x<node2地址> --api http://127.0.0.1:7002     # node2 也是 5（已
 ### `start` —— 启动节点（最重要）
 
 ```bash
-v start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --mine
+v0id start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --mine
 ```
 
 | 选项 | 作用 |
@@ -137,7 +142,7 @@ v start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6
 ### `info` —— 节点状态
 
 ```bash
-v info --name me
+v0id info --name me
 ```
 ```
 地址   0x….
@@ -152,38 +157,38 @@ v info --name me
 ### `balance` —— 查余额
 
 ```bash
-v balance                       # 不带地址 = 查本节点自己
-v balance 0x<某地址> --name me   # 查任意地址
+v0id balance                       # 不带地址 = 查本节点自己
+v0id balance 0x<某地址> --name me   # 查任意地址
 ```
 
 ### `send` —— 转账（核心）
 
 ```bash
-v send 0x<收款地址> 100 --fee 2 --memo "请你喝奶茶" --name me
+v0id send 0x<收款地址> 100 --fee 2 --memo "请你喝奶茶" --name me
 ```
 - 发送方实际扣 **金额 + 手续费**（这里 102）；收款方收到 **金额**（100）；手续费（2）给把这笔打进区块的矿工。
 - `--fee`：默认最低 **1**；**给多了打包更优先**（拥堵时拼手续费）。
-- `--memo`：上链可查的备注（≤128 字，可含 emoji）。
+- `--memo`：上链可查的备注（≤512 字，可含 emoji）。
 - 输出 `✅ 交易已广播 txid=… 手续费=2`。交易要等被矿工挖进一个区块才算确认（余额才变）。
 
 ### `mine` —— 手动挖几块
 
 ```bash
-v mine 3 --name me      # 让运行中的节点立刻挖 3 个块
+v0id mine 3 --name me      # 让运行中的节点立刻挖 3 个块
 ```
 （`start --mine` 是后台连续挖；`mine N` 是手动催几块，沙盒里调试很方便。）
 
 ### `peers` / `connect` —— 看/加对等节点
 
 ```bash
-v peers --name me                                  # 当前连了谁
-v connect ws://127.0.0.1:6002 --name me            # 主动连一个节点
+v0id peers --name me                                  # 当前连了谁
+v0id connect ws://127.0.0.1:6002 --name me            # 主动连一个节点
 ```
 
 ### `checkpoint` —— 生成历史冻结点（运营者用）
 
 ```bash
-v checkpoint 300 --name me
+v0id checkpoint 300 --name me
 #  { index: 300, hash: '0000…' },     ← 粘进 packages/core/src/config.ts 的 CHECKPOINTS
 ```
 把某个**已充分确认**的高度钉死，防深度回滚（≥51% 攻击）。**所有节点必须填一致并一起重启**，填错 hash 会让本地链校验不过。一般人用不到，这是给维护者周期性加的。
@@ -191,33 +196,33 @@ v checkpoint 300 --name me
 ### `market` —— 集市（见 [第 6 节](#6-集市摆摊买卖)）
 
 ```bash
-v market list [--all] --name me
-v market sell <价格> <标题…> --name me
-v market buy  <商品id前缀> --name me
-v market delist <商品id> --name me
+v0id market list [--all] --name me
+v0id market sell <价格> <标题…> --name me
+v0id market buy  <商品id前缀> --name me
+v0id market delist <商品id> --name me
 ```
 
 ### `msg` / `inbox` —— 链上消息（烧币留言，见 [第 7 节](#7-链上消息--新人发现-)）
 
 ```bash
-v msg 0x<收件人地址> 你好呀 --name me            # 发消息：默认烧 5 + 1 手续费
-v inbox --name me2                              # 收件人查收件箱（等一个区块确认）
-v inbox --sent --name me                        # 看自己发出去的
+v0id msg 0x<收件人地址> 你好呀 --name me            # 发消息：默认烧 5 + 1 手续费
+v0id inbox --name me2                              # 收件人查收件箱（等一个区块确认）
+v0id inbox --sent --name me                        # 看自己发出去的
 ```
 
 ### `newcomers` —— 看本次会话发现的新成员
 
 ```bash
-v newcomers --name me     # 列出「新节点上线」「新地址首次上链」（运行中的节点也会实时打 🆕）
+v0id newcomers --name me     # 列出「新节点上线」「新地址首次上链」（运行中的节点也会实时打 🆕）
 ```
 
 ### `name` —— 链上昵称（全网唯一抢注，先到先得）
 
 ```bash
-v name claim v0id-boss --name me   # 抢注昵称（自转 1 币 + memo；先到先得；等一个区块）
-v name list  --name me             # 看已注册的昵称
-v name who   v0id-boss --name me   # 这个昵称属于哪个地址
-v name of    --name me             # 我（或指定地址）的显示昵称
+v0id name claim v0id-boss --name me   # 抢注昵称（自转 1 币 + memo；先到先得；等一个区块）
+v0id name list  --name me             # 看已注册的昵称
+v0id name who   v0id-boss --name me   # 这个昵称属于哪个地址
+v0id name of    --name me             # 我（或指定地址）的显示昵称
 ```
 
 抢到后，转账/消息/浏览器里你就显示成 `@v0id-boss` 而不是一长串地址。名字 1~20 位 小写字母/数字/`_`/`-`；`treasury`/`official` 等保留名禁注。纯 memo 约定、**不改共识**。
@@ -225,10 +230,10 @@ v name of    --name me             # 我（或指定地址）的显示昵称
 ### `wallet` —— 钱包管理（**不需要节点在跑**，直接读数据目录）
 
 ```bash
-v wallet show --name me [--secret]     # 看地址/公钥；--secret 连私钥一起显示（= 备份）
-v wallet new  --name me2               # 在新数据目录里生成一个新钱包
-v wallet import <64位私钥> --name me   # 用备份私钥恢复钱包（连链上余额一起找回）
-v wallet treasury-address             # 显示「央行」预挖地址（公开信息）
+v0id wallet show --name me [--secret]     # 看地址/公钥；--secret 连私钥一起显示（= 备份）
+v0id wallet new  --name me2               # 在新数据目录里生成一个新钱包
+v0id wallet import <64位私钥> --name me   # 用备份私钥恢复钱包（连链上余额一起找回）
+v0id wallet treasury-address             # 显示「央行」预挖地址（公开信息）
 ```
 
 ---
@@ -253,15 +258,15 @@ corepack pnpm dev:web
 
 ```bash
 # 卖家上架（自转 1 币 + 最低手续费，把商品记上链；需 ≥2 余额）
-v market sell 30 复习笔记第3章 --name me
+v0id market sell 30 复习笔记第3章 --name me
 #  🏷 已上架 txid=9f59c01a…（等一个区块确认后可见）
 
 # 任何人都能看到（已同步全网）
-v market list --name me
+v0id market list --name me
 #  [在售] 30 $V0ID  复习笔记第3章   卖家 0x12ab…  id 9f59c01a34bc…
 
 # 买家购买（付标价给卖家，id 填前缀即可）
-v market buy 9f59c01a --name me
+v0id market buy 9f59c01a --name me
 #  🛒 已下单付款 txid=…
 ```
 
@@ -277,14 +282,14 @@ v market buy 9f59c01a --name me
 
 ```bash
 # node1 给 node2 发消息（默认烧 5 + 1 手续费）
-v msg 0x<node2地址> "在链上给你留个话 👋" --name node1
+v0id msg 0x<node2地址> "在链上给你留个话 👋" --name node1
 #  ✉️ 消息已广播 txid=…  🔥烧=5 手续费=1
 
 # 等一个区块把它打包后，node2 查收件箱
-v inbox --name node2
+v0id inbox --name node2
 #  ← 0x…（node1）  在链上给你留个话 👋   🔥5 #25   2026/6/21 …
 
-v inbox --sent --name node1     # node1 看自己发出去的
+v0id inbox --sent --name node1     # node1 看自己发出去的
 ```
 
 烧得多更壕、更通缩：`--burn 50`。**余额少时**可烧到最低 `--burn 1`（默认 5，新手刚挖到几个币时省着发）。全网累计销毁量看 `v0id info` 的「已销毁 🔥」或仪表盘顶部。
@@ -292,8 +297,8 @@ v inbox --sent --name node1     # node1 看自己发出去的
 **🔒 加密私信**：加 `-e`，消息只有收件人能解（密文上链、旁人只看到 `ENC|` 乱码；你作为发件人也能解自己发的）：
 
 ```bash
-v msg 0x<node2地址> "只有你能看到的悄悄话 🤫" -e --name node1
-v inbox --name node2     # node2 自动解密显示明文 + 🔒
+v0id msg 0x<node2地址> "只有你能看到的悄悄话 🤫" -e --name node1
+v0id inbox --name node2     # node2 自动解密显示明文 + 🔒
 ```
 
 > 加密把 memo 上限从 128 抬到 512（装密文）——这是软分叉，需全网一起升级；不重置链。
@@ -314,10 +319,10 @@ v inbox --name node2     # node2 自动解密显示明文 + 🔒
 
 ```bash
 # 备份：显示私钥，抄到安全的地方（别截图发群里）
-v wallet show --name miner --secret
+v0id wallet show --name miner --secret
 
 # 找回：换机或误删后，用私钥恢复（连链上余额一起回来）
-v wallet import <你抄下的64位私钥> --name miner
+v0id wallet import <你抄下的64位私钥> --name miner
 # 然后正常 corepack pnpm mine 联网，余额会自动同步回来
 ```
 
@@ -330,13 +335,13 @@ v wallet import <你抄下的64位私钥> --name miner
 A 同学查到自己内网 IP（如 `192.168.1.23`）后当「小种子」：
 
 ```bash
-v start --name me --p2p-port 6001 --api-port 7001 --advertise ws://192.168.1.23:6001 --mine
+v0id start --name me --p2p-port 6001 --api-port 7001 --advertise ws://192.168.1.23:6001 --mine
 ```
 
 其他人连上他（连一个就够，gossip 会自动发现其他人）：
 
 ```bash
-v start --name me --p2p-port 6001 --api-port 7001 --peers ws://192.168.1.23:6001 --mine
+v0id start --name me --p2p-port 6001 --api-port 7001 --peers ws://192.168.1.23:6001 --mine
 ```
 
 ### B. 跨网络 —— 直接用现成的公网种子
