@@ -170,6 +170,22 @@ merkleRoot(txids): 两两 sha256Hex(a+b) 逐层归并，奇数复制末尾；空
 
 **安全显示建议**：把地址渲染成 `@名字` 时，**仍让完整/缩写地址可见**（如长按/tooltip），便于识破同形/仿冒名；保留名已禁注以防冒充“央行/官方”。
 
+## 8.6 端到端加密私信（可选）
+
+让一条消息只有收发双方能读，密文上链、其他人只看到乱码。**仍是普通 burn 消息**（amount0+burn+memo），只是 memo 是密文。
+
+**算法（务必完全照此，否则与全网/参考实现不互通）：**
+
+1. 双方都把自己的 **ed25519 私钥(32 字节种子) → x25519 私钥**、对方 **ed25519 公钥(地址) → x25519 公钥**（Edwards→Montgomery 转换，见 `@noble/curves` 的 `edwardsToMontgomeryPriv/Pub`）。
+2. **x25519 原始 ECDH**（RFC 7748）得 32 字节共享密钥——**直接当对称密钥用，不再做 HSalsa20/HKDF 派生**。⚠️ 因此**不能用 libsodium 的 `crypto_box`**（它内部是 X25519+HSalsa20+XSalsa20，和这里不一样）；要用「裸 x25519 ECDH + XChaCha20-Poly1305」。
+3. **XChaCha20-Poly1305** 加密：24 字节**随机** nonce + 共享密钥 → 密文(含 16 字节 poly1305 tag)。
+4. memo = `"ENC|"` + `hex(nonce(24) ‖ 密文+tag)`。长度需 ≤ `MAX_MEMO`（现 512）。
+5. **解密**：我是收件人→对方=`tx.from`；我是发件人→对方=`tx.to`。用 (我的 x25519 私钥, 对方 x25519 公钥) 得同一共享密钥；认证失败/非本人→解不开。ECDH 对称 → 发件人也能解自己发的。
+
+**隐私边界**：只有**正文**加密；收发地址、时间、烧币额、"有这么一条消息"都公开（链上元数据）。无前向保密（同一对地址共享密钥固定，每条仅 nonce 变化）。教学链够用。
+
+**原生库**：Apple 端 ed25519→x25519 转换 + 裸 x25519 可用 CryptoKit `Curve25519.KeyAgreement`（注意它对 ed25519 种子的处理，需自行 clamp/转换以匹配 RFC7748 结果）或直接移植 noble 算法；XChaCha20-Poly1305 用 swift-sodium 的 `aead_xchacha20poly1305`（**只用它的 AEAD，别用 box**）。Android 同理：BouncyCastle `X25519Agreement` + XChaCha20-Poly1305 AEAD。务必用下面向量对齐。
+
 ## 9. 金标准测试向量（自检用）
 
 固定私钥种子 = 32 字节 `01 02 03 … 20`：
@@ -197,5 +213,17 @@ SIGNATURE 817ccc45061524d52b8f1fc41f0b3542498993679c5e73a9497f60421dd0f7c19ea183
 ```
 
 转义自检：`JSON.stringify(["x\"y\nz\t🎲"])` 必须 == `["x\"y\nz\t🎲"]`（即字面 `[`、`"x\"y\nz\t🎲"`、`]`）。
+
+**加密私信向量**（A 种子=`01..20`；B 种子=`21 22 … 40`，即 0x21–0x40）：
+```
+A 地址      0x79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664
+B 地址      0xe7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0
+共享密钥    22dd9afeb5878d76b7b7eba66e349a1a00858963745f1b92b78a1741e9ccf249   (A↔B 双向一致)
+```
+固定 nonce=`aa`×24 时，明文 `hi 🔐` 的密文 memo：
+```
+ENC|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa6359b5d168414e050a885e42c9dc6eabf98ecbaea44fa9
+```
+你的实现：先复现「共享密钥」（最易错——Edwards→Montgomery 转换 + 裸 x25519），再用固定 nonce 复现上面这条 memo，最后让 B 解出 `hi 🔐`。实际发送请用**随机** nonce。
 
 **对齐顺序**：先让你的实现复现上面的 PUB_HEX/ADDRESS → 再复现两条 PREIMAGE 字符串（最容易错的一步）→ 再复现 TXID → 最后复现 SIGNATURE。四步全绿即与全网兼容。

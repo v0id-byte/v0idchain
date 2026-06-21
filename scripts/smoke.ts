@@ -14,6 +14,9 @@ import {
   parseNames,
   makeNameClaim,
   buildNameMemo,
+  encryptMemo,
+  decryptMemo,
+  isEncryptedMemo,
   buildListMemo,
   BUY_PREFIX,
   DEL_PREFIX,
@@ -293,6 +296,28 @@ check('burn=0 的空消息被拒', !verifyTransaction(createMessage(bob, alice.a
 const plain = createTransaction(bob, alice.address, 1, 0, 'hi', MIN_FEE);
 check('转账显式补 burn=0 不改变 txid（哈希向后兼容，创世/checkpoint 不变）',
   ({ ...plain, burn: 0 }).txid === plain.txid && verifyTransaction({ ...plain, burn: 0 }));
+
+console.log(`\n— 端到端加密私信（x25519 ECDH + XChaCha20-Poly1305）+ MAX_MEMO 512 —`);
+const secret = '只有你能看到的悄悄话：周五老地方见 🤫';
+const enc = encryptMemo(secret, bob.address, alice.privateKey); // alice → bob
+check('密文带 ENC| 前缀且不含明文', isEncryptedMemo(enc) && !enc.includes('悄悄话'));
+check('收件人 bob 能解（自己私钥 + 发件人地址）', decryptMemo(enc, alice.address, bob.privateKey) === secret);
+check('发件人 alice 也能解自己发的（ECDH 对称）', decryptMemo(enc, bob.address, alice.privateKey) === secret);
+const carol2e = Wallet.generate();
+check('第三方无法解密（返回 null）', decryptMemo(enc, alice.address, carol2e.privateKey) === null);
+check('密文被篡改 → 认证失败返回 null', decryptMemo(enc.slice(0, -2) + (enc.endsWith('00') ? '11' : '00'), alice.address, bob.privateKey) === null);
+check('512 码点 memo 合法（MAX_MEMO 已抬到 512）', verifyTransaction(createTransaction(bob, alice.address, 1, 0, 'x'.repeat(512))));
+check('513 码点 memo 仍被拒', !verifyTransaction(createTransaction(bob, alice.address, 1, 0, 'x'.repeat(513))));
+// 加密私信整条上链 + 解析 + 解密（密文 >128 码点，顺带验证 512 上限放行）
+const encBc = new Blockchain();
+for (let i = 0; i < 8; i++) await encBc.mine(alice.address);
+const encMsg = createMessage(alice, bob.address, encryptMemo('链上加密第一条 🔐', bob.address, alice.privateKey), encBc.nonceOf(alice.address));
+check('加密消息交易自洽（签名/txid/memo长度）', verifyTransaction(encMsg));
+encBc.addTransaction(encMsg);
+await encBc.mine(alice.address);
+const pm = parseMessages(encBc.chain)[0];
+check('加密私信上链且密文不可读', isEncryptedMemo(pm.text) && !pm.text.includes('加密第一条'));
+check('收件人从链上密文解出明文', decryptMemo(pm.text, pm.from, bob.privateKey) === '链上加密第一条 🔐');
 
 console.log(`\n— 链上昵称：全网唯一抢注（先到先得）+ 改名 + 自转约束 —`);
 const nm = new Blockchain();

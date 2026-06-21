@@ -158,7 +158,7 @@ v0id market sell   <price> <title…> [--api]   list an item (self-transfer of 1
 v0id market buy    <id> [--api]               buy (pay the seller the price; id prefix ok)
 v0id market delist <id> [--api]               take down your own listing
 
-v0id msg     <to> <text…> [--burn <n>] [--fee <n>] [--api]   send an on-chain message to an address (no transfer; burns $V0ID into the void; --burn default 5)
+v0id msg     <to> <text…> [--burn <n>] [--fee <n>] [-e] [--api]   send an on-chain message (no transfer; burns $V0ID into the void; --burn default 5; -e = end-to-end encrypt)
 v0id inbox   [address] [--sent] [--api]       view your inbox (messages sent to you; --sent shows your outbox)
 v0id newcomers [--api]                        newcomers found this session (new node online / new address first seen on-chain)
 
@@ -211,6 +211,14 @@ $v inbox --sent --api http://127.0.0.1:7001 # see what you've sent
 
 Total burned across the network = the void address's balance, shown as "Burned 🔥" in `v0id info` and atop the dashboard
 (the ledger stays conserved: the burn just moves into a forever-unspendable address).
+
+**🔒 End-to-end encrypted DMs.** Add `-e` so only the recipient can read it (encrypted to their pubkey via x25519 ECDH + XChaCha20-Poly1305; the ciphertext goes on-chain as `ENC|…` gibberish to everyone else; the sender can also decrypt their own via ECDH). Only the **body** is encrypted — sender/recipient/time/burn stay public.
+
+```bash
+$v msg 0x… "a secret only you can read 🤫" -e --api http://127.0.0.1:7001   # end-to-end encrypted
+```
+
+> Encrypted DMs raise `MAX_MEMO` from 128 to 512 (to fit the ciphertext) — a **soft fork** (old nodes reject blocks with >128-char memos), so the whole network must upgrade together; but it's not hashed and does not reset the chain.
 
 **Newcomer discovery.** A running node prints a live `🆕` line when either kind of "newcomer" appears; also queryable via
 `v0id newcomers` / the dashboard "Newcomers" panel:

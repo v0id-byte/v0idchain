@@ -286,6 +286,15 @@ $v inbox --sent --name node1     # node1 sees what it sent
 
 Burn more to flex / deflate harder: `--burn 50`. Total burned across the network: "Burned 🔥" in `v0id info` or atop the dashboard.
 
+**🔒 Encrypted DMs**: add `-e` so only the recipient can read it (ciphertext on-chain as `ENC|…`; you, the sender, can also decrypt your own):
+
+```bash
+$v msg 0x<node2-addr> "a secret only you can read 🤫" -e --name node1
+$v inbox --name node2     # node2 auto-decrypts to plaintext + 🔒
+```
+
+> Encryption raises the memo cap from 128 to 512 (to fit ciphertext) — a soft fork, so upgrade all nodes together; no chain reset.
+
 **Newcomer discovery.** A running node prints a live `🆕` line for two kinds of "newcomer"; also via `v0id newcomers` / the dashboard "Newcomers" panel:
 
 - **New node online** (P2P layer): when a new machine connects and announces its address in the handshake.
