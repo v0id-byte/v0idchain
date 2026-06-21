@@ -97,6 +97,7 @@ export class V0idNode {
     this.p2p = new P2P({
       advertiseUrl: opts.advertise,
       maxPeers: opts.maxPeers,
+      peersFile: opts.dataDir + '/peers.json',
       handlers: {
         getLatest: () => this.bc.latest,
         getChain: () => this.bc.chain,

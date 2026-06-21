@@ -1,4 +1,5 @@
 // P2P 网络：WebSocket 全双工，区块/交易广播，peer gossip 自动发现，断线自动重连。
+import { readFileSync, writeFileSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { Block, Transaction } from '@v0idchain/core';
 
@@ -27,6 +28,7 @@ export interface P2POptions {
   handlers: P2PHandlers;
   advertiseUrl?: string; // 对外广播的本节点地址（公网/局域网）；缺省用 ws://127.0.0.1:<port>
   maxPeers?: number;
+  peersFile?: string;   // peers.json 路径；有则启动时加载、每 60s + stop 时写回
 }
 
 interface PeerMeta {
@@ -92,11 +94,13 @@ export class P2P {
   private pinnedUrls = new Set<string>();
   /** 正在/已经拨号的地址，避免重复连接 */
   private dialedUrls = new Set<string>();
+  private readonly peersFile?: string;
 
   constructor(opts: P2POptions) {
     this.handlers = opts.handlers;
     this.maxPeers = opts.maxPeers ?? 8;
     this.advertise = opts.advertiseUrl;
+    this.peersFile = opts.peersFile;
   }
 
   private get selfUrl(): string {
@@ -107,8 +111,11 @@ export class P2P {
     this.port = port;
     this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD });
     this.wss.on('connection', (ws) => this.setupSocket(ws));
+    this.loadPeers(); // 读取上次保存的邻居表，种子挂了也能找到已知节点
     // 每 5s 尝试补连已知但未连上的节点（自愈 + 种子节点重连，掉线后快速回网）
     setInterval(() => this.reconnect(), 5_000).unref?.();
+    // 每 60s 持久化一次邻居表（Bitcoin peers.dat 同款机制）
+    setInterval(() => this.savePeers(), 60_000).unref?.();
   }
 
   /** 是否已经连到某个对外地址（按对方广播的 listen 判断） */
@@ -290,7 +297,28 @@ export class P2P {
   }
 
   stop(): void {
+    this.savePeers(); // 优雅退出时写一次，保住最新邻居表
     for (const ws of this.peers.keys()) ws.close();
     this.wss?.close();
+  }
+
+  // ---- peers.json 持久化（Bitcoin peers.dat 同款：重启后不依赖种子就能找到邻居）----
+  private loadPeers(): void {
+    if (!this.peersFile) return;
+    try {
+      const data = JSON.parse(readFileSync(this.peersFile, 'utf8'));
+      if (Array.isArray(data)) {
+        for (const url of data) if (typeof url === 'string') this.addKnown(url);
+      }
+    } catch { /* 文件不存在或格式错误，静默忽略 */ }
+  }
+
+  private savePeers(): void {
+    if (!this.peersFile) return;
+    try {
+      // 只存公网可路由地址（过滤掉自身、环回、私网），重启后才能真正连上
+      const urls = [...this.knownUrls].filter((u) => u !== this.selfUrl && isPublicWsUrl(u));
+      writeFileSync(this.peersFile, JSON.stringify(urls), 'utf8');
+    } catch { /* 磁盘写失败静默忽略，不能因此崩节点 */ }
   }
 }
