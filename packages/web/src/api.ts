@@ -9,8 +9,35 @@ export interface Tx {
   nonce: number;
   timestamp: number;
   memo: string;
+  burn?: number; // 销毁进虚空的 $V0ID（链上消息用；普通转账省略=0）
   signature: string;
   txid: string;
+}
+
+/** 链上消息（amount 0 + burn>0 + memo 正文） */
+export interface ChainMessage {
+  txid: string;
+  from: string;
+  to: string;
+  text: string;
+  burn: number;
+  timestamp: number;
+  height: number;
+}
+
+export interface Messages {
+  address: string;
+  received: ChainMessage[];
+  sent: ChainMessage[];
+}
+
+/** 新成员事件：本次会话首见的对等节点 / 首次上链的地址 */
+export interface Newcomer {
+  kind: 'peer' | 'address';
+  address: string;
+  at: number;
+  listen?: string;
+  height?: number;
 }
 
 export interface Block {
@@ -46,8 +73,11 @@ export interface Info {
   mempool: number;
   difficulty: number;
   minFee?: number; // 最低手续费（gas）
+  messageBurn?: number; // 发消息默认销毁额
+  burned?: number; // 🔥 全网已烧进虚空的 $V0ID 总额
   peers: number;
   peerList: { url?: string; address?: string }[];
+  newcomers?: number; // 本次会话发现的新成员数
   syncing?: boolean;
 }
 
@@ -86,7 +116,7 @@ export function addressHistory(chain: Block[], address: string): { balance: numb
   for (const b of chain) {
     for (const tx of b.transactions) {
       if (tx.to === address) balance += tx.amount;
-      if (tx.from === address) balance -= tx.amount + tx.fee; // 发送方还要扣手续费
+      if (tx.from === address) balance -= tx.amount + tx.fee + (tx.burn ?? 0); // 发送方还要扣手续费与销毁额
       if (tx.to === address || tx.from === address) history.push({ tx, blockIndex: b.index });
     }
   }

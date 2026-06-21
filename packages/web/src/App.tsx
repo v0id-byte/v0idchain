@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef } from './api';
+import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer } from './api';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
 const ago = (ts: number) => {
@@ -18,6 +18,8 @@ export default function App() {
   const [chain, setChain] = useState<Block[]>([]);
   const [mempool, setMempool] = useState<Tx[]>([]);
   const [market, setMarket] = useState<Listing[]>([]);
+  const [messages, setMessages] = useState<Messages | null>(null);
+  const [newcomers, setNewcomers] = useState<Newcomer[]>([]);
   const [up, setUp] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const apiRef = useRef(api);
@@ -26,16 +28,20 @@ export default function App() {
   const poll = useCallback(async () => {
     const base = apiRef.current;
     try {
-      const [i, c, m, mk] = await Promise.all([
+      const [i, c, m, mk, msg, nc] = await Promise.all([
         getJSON<Info>(base, '/info'),
         getJSON<Block[]>(base, '/chain'),
         getJSON<Tx[]>(base, '/mempool'),
         getJSON<Listing[]>(base, '/market'),
+        getJSON<Messages>(base, '/messages'),
+        getJSON<Newcomer[]>(base, '/newcomers'),
       ]);
       setInfo(i);
       setChain(c);
       setMempool(m);
       setMarket(mk);
+      setMessages(msg);
+      setNewcomers(nc);
       setUp(true);
     } catch {
       setUp(false);
@@ -100,6 +106,7 @@ export default function App() {
         <Chip k="区块数" v={info ? String(info.blocks) : '—'} />
         <Chip k="难度 (bit)" v={info ? String(info.difficulty) : '—'} />
         <Chip k="对等节点" v={info ? String(info.peers) : '—'} />
+        <Chip k="已销毁 🔥" v={info ? String(info.burned ?? 0) : '—'} />
       </div>
 
       <Explorer chain={chain} me={me} />
@@ -109,6 +116,19 @@ export default function App() {
       <div className="cols">
         <Actions api={api} token={token} me={me} minFee={info?.minFee ?? 1} onDone={poll} />
         <Mempool mempool={mempool} me={me} />
+      </div>
+
+      <div className="cols">
+        <Messaging
+          api={api}
+          token={token}
+          me={me}
+          minFee={info?.minFee ?? 1}
+          defaultBurn={info?.messageBurn ?? 5}
+          messages={messages}
+          onDone={poll}
+        />
+        <Newcomers newcomers={newcomers} />
       </div>
 
       <div className="panel" style={{ background: 'transparent', border: 'none', padding: 0 }}>
@@ -180,10 +200,13 @@ function TxRow({ tx, me, block }: { tx: Tx; me: string; block?: number }) {
         {short(tx.to)}
         {tx.to === me && <span className="tag me">给我</span>}
         {block !== undefined && <span className="tag blk">#{block}</span>}
+        {(tx.burn ?? 0) > 0 && <span className="tag me">✉️ 消息</span>}
         {tx.memo && <span className="memo">“{tx.memo}”</span>}
         {!isCoinbase(tx) && tx.fee > 0 && <span className="tag diff">手续费 {tx.fee}</span>}
       </span>
-      <span className={`amt ${tx.to === me ? 'in' : ''}`}>{tx.amount} $V0ID</span>
+      <span className={`amt ${tx.to === me ? 'in' : ''}`}>
+        {(tx.burn ?? 0) > 0 ? `🔥 ${tx.burn} $V0ID` : `${tx.amount} $V0ID`}
+      </span>
     </div>
   );
 }
@@ -314,6 +337,117 @@ function Mempool({ mempool, me }: { mempool: Tx[]; me: string }) {
       {mempool.length === 0 && <div className="empty">空空如也</div>}
       {mempool.map((tx) => (
         <TxRow key={tx.txid} tx={tx} me={me} />
+      ))}
+    </div>
+  );
+}
+
+function Messaging({
+  api,
+  token,
+  me,
+  minFee,
+  defaultBurn,
+  messages,
+  onDone,
+}: {
+  api: string;
+  token: string;
+  me: string;
+  minFee: number;
+  defaultBurn: number;
+  messages: Messages | null;
+  onDone: () => void;
+}) {
+  const [to, setTo] = useState('');
+  const [text, setText] = useState('');
+  const [burn, setBurn] = useState(String(defaultBurn));
+  const [tab, setTab] = useState<'in' | 'out'>('in');
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState<Banner>(null);
+
+  const send = async () => {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const r = await postJSON<{ txid: string }>(api, '/message', { to: to.trim(), text, burn: Number(burn), fee: minFee }, token);
+      setBanner({ kind: 'ok', text: `已广播 · 烧 ${burn} 🔥 · txid ${r.txid.slice(0, 20)}…` });
+      setTo('');
+      setText('');
+      setBurn(String(defaultBurn));
+      onDone();
+    } catch (e) {
+      setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const list = messages ? (tab === 'in' ? messages.received : messages.sent) : [];
+
+  return (
+    <div className="panel">
+      <h2>链上消息 ✉️</h2>
+      <div className="field">
+        <label>收件人地址</label>
+        <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="0x… (64 hex)" spellCheck={false} />
+      </div>
+      <div className="row2">
+        <div className="field" style={{ flex: 2 }}>
+          <label>消息正文（≤128 字，明文上链）</label>
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="在链上给 TA 留句话…" maxLength={128} />
+        </div>
+        <div className="field">
+          <label>烧 🔥（销毁，≥1）</label>
+          <input value={burn} onChange={(e) => setBurn(e.target.value)} placeholder={String(defaultBurn)} inputMode="numeric" />
+        </div>
+      </div>
+      <div className="btns">
+        <button disabled={busy || !to || !text} onClick={send}>
+          发送（烧 {burn || 0} $V0ID + {minFee} gas）
+        </button>
+      </div>
+      {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+
+      <div className="tabs" style={{ marginTop: 14 }}>
+        <span className={`linklike ${tab === 'in' ? 'on' : ''}`} onClick={() => setTab('in')}>
+          收件箱 {messages ? `(${messages.received.length})` : ''}
+        </span>
+        {'　'}
+        <span className={`linklike ${tab === 'out' ? 'on' : ''}`} onClick={() => setTab('out')}>
+          发件箱 {messages ? `(${messages.sent.length})` : ''}
+        </span>
+      </div>
+      {list.length === 0 && <div className="empty">（暂无消息）</div>}
+      {list.map((m) => (
+        <div className="txrow" key={m.txid}>
+          <span className="who">
+            {tab === 'in' ? `← ${short(m.from)}` : `→ ${short(m.to)}`}
+            <span className="tag blk">#{m.height}</span>
+            <span className="memo">“{m.text}”</span>
+          </span>
+          <span className="amt">🔥 {m.burn}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Newcomers({ newcomers }: { newcomers: Newcomer[] }) {
+  return (
+    <div className="panel">
+      <h2>新成员 🆕 · {newcomers.length}</h2>
+      {newcomers.length === 0 && <div className="empty">本次会话还没发现新节点 / 新地址</div>}
+      {newcomers.map((n, i) => (
+        <div className="txrow" key={n.address + n.at + i}>
+          <span className="who">
+            <span className={`tag ${n.kind === 'peer' ? 'diff' : 'me'}`}>{n.kind === 'peer' ? '新节点' : '新地址'}</span>
+            {short(n.address)}
+            {n.kind === 'peer' && n.listen && <span className="memo">{n.listen}</span>}
+            {n.kind === 'address' && n.height !== undefined && <span className="tag blk">#{n.height}</span>}
+          </span>
+          <span className="amt">{ago(n.at)}</span>
+        </div>
       ))}
     </div>
   );
