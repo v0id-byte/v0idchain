@@ -256,3 +256,11 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - [x] Phase 7 — **marketplace**: buy/sell goods & services with `$V0ID` (built on memos, no consensus change)
 - [x] Phase 8 — **security hardening**: most-work consensus + future-timestamp bound (anti difficulty-suppression double-spend) · **checkpoints** (freeze history vs deep reorg) · API token auth · P2P private-address filter / pinned-FIFO `knownUrls` · WS size cap · mempool cap · `0600` key/token files
 - [x] Phase 9 — **fees (gas)**: transfers pay a fee, paid to the including miner (folded into coinbase, consensus-pinned `reward + fees`) · min-fee + **highest-fee-first** packing (fee-market seed) · treasury address rotation
+
+---
+
+## Acknowledgements & open-source notices
+
+v0idChain stands on the shoulders of giants — it depends on [`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) / [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) (Paul Miller, MIT) for signatures & hashing, [`ws`](https://github.com/websockets/ws) (MIT) for P2P, [`commander`](https://github.com/tj/commander.js) (MIT) for the CLI, and [`react`](https://react.dev) / [`vite`](https://vite.dev) / [`tsx`](https://github.com/privatenumber/tsx) (MIT) / [`typescript`](https://www.typescriptlang.org) (Apache-2.0) for the dashboard & toolchain. Its design draws on the [Bitcoin whitepaper](https://bitcoin.org/bitcoin.pdf), [RFC 8032 (Ed25519)](https://www.rfc-editor.org/rfc/rfc8032), and [FIPS 180-4 (SHA-256)](https://csrc.nist.gov/pubs/fips/180-4/upd1/final) (**design only — no source copied**).
+
+> Full versions, copyrights and licenses: **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**. This repo **vendors no third-party source** (deps are installed via pnpm; `node_modules/` is gitignored).

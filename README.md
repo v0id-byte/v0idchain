@@ -256,3 +256,11 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 - [x] Phase 7 — **集市**：用 `$V0ID` 买卖商品/服务（建在 memo 之上，不改共识）
 - [x] Phase 8 — **安全加固**：最大工作量共识 + 未来时间戳上限（防压难度双花）· **checkpoint 冻结历史**（挡深度 reorg）· API 令牌鉴权 · P2P 私网过滤 / `knownUrls` 置顶 FIFO · WS 大小上限 · mempool 上限 · 私钥/令牌文件 `0600`
 - [x] Phase 9 — **手续费（gas）**：转账付费、费归打包矿工（计入 coinbase，共识钉死 `奖励+费`）· 最低费 + **高者优先**打包（手续费市场雏形）· 央行地址轮换
+
+---
+
+## 致谢 & 开源声明
+
+v0idChain 站在巨人的肩膀上 —— 依赖这些开源库：[`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) / [`@noble/hashes`](https://github.com/paulmillr/noble-hashes)（Paul Miller，MIT）做签名与哈希、[`ws`](https://github.com/websockets/ws)（MIT）做 P2P、[`commander`](https://github.com/tj/commander.js)（MIT）做 CLI，以及 [`react`](https://react.dev) / [`vite`](https://vite.dev) / [`tsx`](https://github.com/privatenumber/tsx)（MIT）/ [`typescript`](https://www.typescriptlang.org)（Apache-2.0）做仪表盘与工具链。设计上参考了 [Bitcoin 白皮书](https://bitcoin.org/bitcoin.pdf)、[RFC 8032（Ed25519）](https://www.rfc-editor.org/rfc/rfc8032)、[FIPS 180-4（SHA-256）](https://csrc.nist.gov/pubs/fips/180-4/upd1/final)（**仅借鉴设计、未拷贝源码**）。
+
+> 完整的版本、版权与许可证清单见 **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**。本仓库**不内嵌任何第三方源码**（依赖经 pnpm 安装、`node_modules/` 已 gitignore）。
