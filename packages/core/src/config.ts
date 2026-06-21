@@ -25,6 +25,18 @@ export const RETARGET_INTERVAL = 8;
  */
 export const MAX_FUTURE_DRIFT_MS = 120_000;
 
+/**
+ * 检查点（checkpoint）：硬编码的 `{ 高度, 该高度区块 hash }`。链在这些高度的区块 hash 必须吻合，
+ * 否则整链判为非法；`replaceChain` 也拒绝任何回滚到最新 checkpoint 之前的 reorg。
+ * 作用：把 checkpoint 之前的历史**冻结**——即便攻击者凑出更大累计工作量也改不动旧账，
+ * 大幅抬高深度 reorg / ≥51% 攻击成本（低算力 PoW 链的固有软肋，同 Bitcoin Core 早期做法）。
+ * 默认空。运营者应**定期**从规范链取一个已被充分确认（后面又压了很多块）的高度，
+ * 用 `v0id checkpoint <height>` 生成下面这种条目并提交（**所有节点必须一致**；填错会让本地链无法通过校验）。
+ */
+export const CHECKPOINTS: { index: number; hash: string }[] = [
+  // 例：{ index: 1000, hash: '0000abcd…' },
+];
+
 /** 交易备注最大长度（字符） */
 export const MAX_MEMO = 128;
 

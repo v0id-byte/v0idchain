@@ -190,6 +190,22 @@ apiOpt(program.command('connect'))
     console.log(c.green('已发起连接'), url);
   });
 
+apiOpt(program.command('checkpoint'))
+  .argument('[height]', '要冻结的高度（默认最新链顶）')
+  .description('打印某高度的 checkpoint 条目，粘贴进 config.ts 的 CHECKPOINTS（冻结历史、抬高深度 reorg 成本）')
+  .action(async (height, o) => {
+    const chain = (await api(o, 'GET', '/chain')) as any[];
+    const top = chain.length - 1;
+    const h = height === undefined ? top : Number(height);
+    if (!Number.isInteger(h) || h < 0 || h > top) {
+      console.error(c.red(`高度无效：当前链顶为 ${top}`));
+      process.exit(1);
+    }
+    console.log(c.bold('粘贴进 config.ts 的 CHECKPOINTS（所有节点须一致）：'));
+    console.log(c.green(`  { index: ${h}, hash: '${chain[h].hash}' },`));
+    console.log(c.dim('提示：选一个已被充分确认（后面又压了很多块）的高度。'));
+  });
+
 // ---- market 集市（用 $V0ID 买卖商品/服务） ----
 const market = program.command('market').description('集市：用 $V0ID 买卖商品/服务');
 apiOpt(market.command('list'))

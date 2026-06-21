@@ -4,6 +4,7 @@ import {
   Wallet,
   createTransaction,
   verifyTransaction,
+  violatesCheckpoint,
   merkleRoot,
   expectedDifficulty,
   parseMarket,
@@ -177,6 +178,12 @@ check(
   '更长+更高工作量但含未来时间戳的 fork 被 replaceChain 拒（时间戳上限挡住压难度双花）',
   attackRes.replaced === false && (attackRes.error ?? '').includes('未来'),
 );
+
+console.log(`\n— 共识：checkpoint（冻结历史，挡深度 reorg / 抬高 ≥51% 成本）—`);
+check('匹配的 checkpoint：不报冲突', violatesCheckpoint(honestW.chain, [{ index: 2, hash: honestW.chain[2].hash }]) === null);
+check('被篡改的 checkpoint 高度：检出冲突', violatesCheckpoint(honestW.chain, [{ index: 2, hash: '0'.repeat(64) }])?.index === 2);
+check('链未到 checkpoint 高度：不报冲突（仍在同步）', violatesCheckpoint(honestW.chain, [{ index: 999, hash: '0'.repeat(64) }]) === null);
+check('默认空 CHECKPOINTS：不影响正常链校验', Blockchain.validateChain(honestW.chain).ok);
 
 console.log(`\n— 集市：上架 → 购买 → 撤单 —`);
 const mk = new Blockchain();

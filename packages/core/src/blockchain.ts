@@ -19,6 +19,7 @@ import {
   RETARGET_INTERVAL,
   MAX_MEMPOOL,
   MAX_FUTURE_DRIFT_MS,
+  CHECKPOINTS,
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
 
@@ -56,6 +57,20 @@ export function expectedDifficulty(chain: Block[], index: number): number {
   // 每差一倍调 1 bit（log2），钳制单次 ±2；太快→加难度，太慢→减难度
   const delta = actual <= 0 ? 2 : Math.max(-2, Math.min(2, Math.round(Math.log2(expected / actual))));
   return Math.max(MIN_DIFFICULTY, Math.min(MAX_DIFFICULTY, prev.difficulty + delta));
+}
+
+/**
+ * 链是否与某个 checkpoint 冲突：达到该高度却 hash 不符则返回冲突的 checkpoint，否则 null。
+ * 链尚未到达某 checkpoint 高度（仍在同步）时不算冲突。
+ */
+export function violatesCheckpoint(
+  chain: Block[],
+  checkpoints: { index: number; hash: string }[] = CHECKPOINTS,
+): { index: number; hash: string } | null {
+  for (const cp of checkpoints) {
+    if (chain.length > cp.index && chain[cp.index].hash !== cp.hash) return cp;
+  }
+  return null;
 }
 
 export interface ChainState {
@@ -215,6 +230,13 @@ export class Blockchain {
     if (Blockchain.chainWork(incoming) <= Blockchain.chainWork(this.chain)) {
       return { ok: true, replaced: false };
     }
+    // 深度 reorg 防线：本链已越过的 checkpoint 不容被回滚——incoming 必须也达到这些高度。
+    // （validateChain 另保证 incoming 在它达到的 checkpoint 高度上 hash 吻合。）
+    for (const cp of CHECKPOINTS) {
+      if (this.height >= cp.index && incoming.length <= cp.index) {
+        return { ok: false, replaced: false, error: `拒绝越过 checkpoint #${cp.index} 的 reorg` };
+      }
+    }
     const v = Blockchain.validateChain(incoming);
     if (!v.ok) return { ok: false, replaced: false, error: v.error };
     this.chain = incoming;
@@ -243,6 +265,9 @@ export class Blockchain {
     if (chain[0].hash !== g.hash || calcBlockHash(chain[0]) !== g.hash) {
       return { ok: false, error: '创世块不一致' };
     }
+    // checkpoint：达到某硬编码高度的区块 hash 必须吻合（冻结历史，挡深度 reorg）
+    const badCp = violatesCheckpoint(chain);
+    if (badCp) return { ok: false, error: `#${badCp.index} 与 checkpoint 不一致` };
 
     const balances = new Map<string, number>();
     const nonces = new Map<string, number>();
