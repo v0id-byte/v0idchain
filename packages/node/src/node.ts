@@ -6,6 +6,7 @@ import {
   Block,
   Transaction,
   SYMBOL,
+  MIN_FEE,
   createTransaction,
   loadOrCreateWallet,
   loadChain,
@@ -75,9 +76,9 @@ export class V0idNode {
   }
 
   // ---- 钱包动作 ----
-  /** 本节点发起转账：算好 nonce、签名、进池、广播 */
-  send(to: string, amount: number, memo = ''): { ok: boolean; tx?: Transaction; error?: string } {
-    return this.submit(this.wallet, to, amount, memo);
+  /** 本节点发起转账：算好 nonce、签名、进池、广播。fee = 手续费（gas），默认最低 MIN_FEE。 */
+  send(to: string, amount: number, memo = '', fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
+    return this.submit(this.wallet, to, amount, memo, fee);
   }
 
   private submit(
@@ -85,10 +86,11 @@ export class V0idNode {
     to: string,
     amount: number,
     memo: string,
+    fee: number,
   ): { ok: boolean; tx?: Transaction; error?: string } {
     const pending = this.bc.mempool.filter((t) => t.from === wallet.address).length;
     const nonce = this.bc.nonceOf(wallet.address) + pending;
-    const tx = createTransaction(wallet, to, amount, nonce, memo);
+    const tx = createTransaction(wallet, to, amount, nonce, memo, fee);
     const r = this.bc.addTransaction(tx);
     if (!r.ok) return { ok: false, error: r.error };
     this.markSeen(tx.txid);
@@ -98,11 +100,11 @@ export class V0idNode {
   }
 
   // ---- 集市（基于转账+memo，不改共识）----
-  /** 上架：自转 1 币，memo 记商品。需先有 ≥1 余额，且上架交易被挖进区块后才会出现在集市。 */
+  /** 上架：自转 1 币（带最低手续费），memo 记商品。需 ≥ 1+手续费 余额，且上架交易被挖进区块后才会出现在集市。 */
   marketSell(price: number, title: string): { ok: boolean; tx?: Transaction; error?: string } {
     const r = makeListing(price, title);
     if (!r.ok) return { ok: false, error: r.error };
-    return this.submit(this.wallet, this.wallet.address, 1, r.memo!);
+    return this.submit(this.wallet, this.wallet.address, 1, r.memo!, MIN_FEE);
   }
 
   /** 在链上按 id 或唯一前缀找一件商品 */
@@ -121,7 +123,7 @@ export class V0idNode {
     if (l.delisted) return { ok: false, error: '该商品已下架' };
     if (l.sold) return { ok: false, error: '该商品已售出' };
     if (l.seller === this.wallet.address) return { ok: false, error: '不能买自己的商品（可用 delist 撤单）' };
-    return this.submit(this.wallet, l.seller, l.price, `${BUY_PREFIX}${l.id}`);
+    return this.submit(this.wallet, l.seller, l.price, `${BUY_PREFIX}${l.id}`, MIN_FEE);
   }
 
   /** 撤单：卖家本人发 DEL memo */
@@ -129,7 +131,7 @@ export class V0idNode {
     const f = this.findListing(id);
     if (!f.listing) return { ok: false, error: f.error };
     if (f.listing.seller !== this.wallet.address) return { ok: false, error: '只能撤自己的单' };
-    return this.submit(this.wallet, this.wallet.address, 1, `${DEL_PREFIX}${f.listing.id}`);
+    return this.submit(this.wallet, this.wallet.address, 1, `${DEL_PREFIX}${f.listing.id}`, MIN_FEE);
   }
 
   /** 全部商品（标注 mine = 是否本节点上架） */
@@ -250,6 +252,7 @@ export class V0idNode {
       balance: this.bc.balanceOf(this.wallet.address),
       mempool: this.bc.mempool.length,
       difficulty: this.bc.tipDifficulty(),
+      minFee: MIN_FEE, // 最低手续费（gas），供 CLI/仪表盘提示与表单默认值
       peers: this.p2p.peerCount(),
       peerList: this.p2p.peerList(),
       syncing: this.syncing, // true = 正在等连接/同步，暂未挖矿

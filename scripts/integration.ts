@@ -34,8 +34,8 @@ await waitFor(() => node1.p2p.peerCount() === 1 && node2.p2p.peerCount() === 1);
 check(`双向握手完成（${Date.now() - t0}ms）`, node1.p2p.peerCount() === 1 && node2.p2p.peerCount() === 1);
 
 console.log('\n— node1 挖矿（出币），node2 应同步 —');
-// 出块奖励为 1（见 BLOCK_REWARD），挖 10 块让 node1 攒够余额：先转 3 给 alice，
-// 后面 HTTP API 测试还会再 send 5，需保证 node1 始终有余额，否则 /send 会 400。
+// 出块奖励为 1（见 BLOCK_REWARD），挖 10 块让 node1 攒够余额：先转 3 给 alice（+手续费1），
+// 后面 HTTP API 还会再 send 5（+手续费1），需保证 node1 始终有余额，否则 /send 会 400。
 for (let i = 0; i < 10; i++) await node1.mineOnce();
 await waitFor(() => node2.bc.height === node1.bc.height);
 check('node2 链高追平 node1', node2.bc.height === node1.bc.height && node1.bc.height === 10);
@@ -48,7 +48,9 @@ check('交易广播到 node2 的交易池', node2.bc.mempool.length === 1);
 await node2.mineOnce(); // 由 node2 打包
 await waitFor(() => node1.bc.height === node2.bc.height);
 check('node1 同步了 node2 出的块', node1.bc.height === node2.bc.height);
-check('两节点都认 alice 余额 = 3', node1.bc.balanceOf(alice.address) === 3 && node2.bc.balanceOf(alice.address) === 3);
+check('两节点都认 alice 余额 = 3（实收金额，手续费另计）', node1.bc.balanceOf(alice.address) === 3 && node2.bc.balanceOf(alice.address) === 3);
+check('发送方 node1 被扣 金额+手续费（10 - 3 - 1 = 6）', node1.bc.balanceOf(node1.wallet.address) === 6);
+check('打包者 node2 收得 出块奖励+手续费（= 2）', node2.bc.balanceOf(node2.wallet.address) === 2);
 check('两节点链顶一致', node1.bc.latest.hash === node2.bc.latest.hash);
 
 console.log('\n— 迟到节点 node3 接入，应自动追上整条链 —');

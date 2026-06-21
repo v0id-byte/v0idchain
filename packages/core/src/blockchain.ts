@@ -9,6 +9,8 @@ import {
 } from './transaction.js';
 import {
   BLOCK_REWARD,
+  MIN_FEE,
+  MAX_BLOCK_TXS,
   NULL_ADDRESS,
   GENESIS_TIMESTAMP,
   GENESIS_PREMINE_ADDRESS,
@@ -115,10 +117,10 @@ export class Blockchain {
     for (const block of chain) {
       for (const tx of block.transactions) {
         if (!isCoinbase(tx)) {
-          credit(tx.from, -tx.amount);
+          credit(tx.from, -(tx.amount + tx.fee)); // 发送方付 金额 + 手续费
           nonces.set(tx.from, (nonces.get(tx.from) ?? 0) + 1);
         }
-        credit(tx.to, tx.amount);
+        credit(tx.to, tx.amount); // 收款方实收金额；手续费经 coinbase.amount 归矿工，全链守恒
       }
     }
     return { balances, nonces };
@@ -138,8 +140,9 @@ export class Blockchain {
   addTransaction(tx: Transaction): { ok: boolean; error?: string } {
     if (isCoinbase(tx)) return { ok: false, error: 'coinbase 不能进入交易池' };
     if (this.mempool.length >= MAX_MEMPOOL) return { ok: false, error: '交易池已满' };
-    // 先单独判金额，给出明确报错（否则非整数会被 verifyTransaction 当成“签名无效”，误导用户）
+    // 先单独判金额/手续费，给出明确报错（否则非整数/费太低会被 verifyTransaction 笼统当成“签名无效”，误导用户）
     if (!Number.isInteger(tx.amount) || tx.amount <= 0) return { ok: false, error: '金额必须是正整数' };
+    if (!Number.isInteger(tx.fee) || tx.fee < MIN_FEE) return { ok: false, error: `手续费至少 ${MIN_FEE}（gas）` };
     if (!verifyTransaction(tx)) return { ok: false, error: '签名无效或备注超长' };
     if (!isValidAddress(tx.to) || tx.to === NULL_ADDRESS) {
       return { ok: false, error: '收款地址格式无效' }; // 防止打钱给畸形/空地址导致永久销毁
@@ -152,27 +155,44 @@ export class Blockchain {
     if (tx.nonce !== expectedNonce) {
       return { ok: false, error: `nonce 错误：期望 ${expectedNonce}，收到 ${tx.nonce}` };
     }
-    const pendingOut = pending.reduce((s, t) => s + t.amount, 0);
+    // 占用额 = 金额 + 手续费（含池中本地址其它待发交易），都要先扣住，避免连环超支
+    const pendingOut = pending.reduce((s, t) => s + t.amount + t.fee, 0);
+    const need = tx.amount + tx.fee;
     const available = (balances.get(tx.from) ?? 0) - pendingOut;
-    if (tx.amount > available) {
-      return { ok: false, error: `余额不足：可用 ${available}，需要 ${tx.amount}` };
+    if (need > available) {
+      return { ok: false, error: `余额不足：可用 ${available}，需要 ${need}（含手续费 ${tx.fee}）` };
     }
     this.mempool.push(tx);
     return { ok: true };
   }
 
-  /** 从 mempool 顺序挑出能干净应用到当前链顶的交易（保证打出的块必然合法） */
+  /**
+   * 从 mempool 挑出能干净应用到当前链顶的交易（保证打出的块必然合法）。
+   * 手续费市场：按 fee 从高到低排序（txid 兜底决定性）；多趟扫描，让先入的低 nonce 交易解锁
+   * 同一发送方的后续 nonce；最多挑 MAX_BLOCK_TXS 笔 —— 拥堵时给得多的先上链。
+   */
   private selectMempoolTxs(): Transaction[] {
     const { balances, nonces } = this.computeState();
+    const queue: (Transaction | undefined)[] = [...this.mempool].sort(
+      (a, b) => b.fee - a.fee || (a.txid < b.txid ? -1 : 1),
+    );
     const selected: Transaction[] = [];
-    for (const tx of this.mempool) {
-      const bal = balances.get(tx.from) ?? 0;
-      const expected = nonces.get(tx.from) ?? 0;
-      if (tx.nonce === expected && tx.amount <= bal && verifyTransaction(tx)) {
-        selected.push(tx);
-        balances.set(tx.from, bal - tx.amount);
-        balances.set(tx.to, (balances.get(tx.to) ?? 0) + tx.amount);
-        nonces.set(tx.from, expected + 1);
+    let progressed = true;
+    while (progressed && selected.length < MAX_BLOCK_TXS) {
+      progressed = false;
+      for (let i = 0; i < queue.length && selected.length < MAX_BLOCK_TXS; i++) {
+        const tx = queue[i];
+        if (!tx) continue;
+        const bal = balances.get(tx.from) ?? 0;
+        const expected = nonces.get(tx.from) ?? 0;
+        if (tx.nonce === expected && tx.amount + tx.fee <= bal && verifyTransaction(tx)) {
+          selected.push(tx);
+          balances.set(tx.from, bal - tx.amount - tx.fee);
+          balances.set(tx.to, (balances.get(tx.to) ?? 0) + tx.amount);
+          nonces.set(tx.from, expected + 1);
+          queue[i] = undefined;
+          progressed = true;
+        }
       }
     }
     return selected;
@@ -182,7 +202,9 @@ export class Blockchain {
   /** 打包 coinbase + mempool 交易，按自适应难度做 PoW，成功则上链。返回新块或 null（被打断）。 */
   async mine(minerAddress: string, shouldStop?: () => boolean): Promise<Block | null> {
     const index = this.height + 1;
-    const transactions = [createCoinbase(minerAddress, index), ...this.selectMempoolTxs()];
+    const picked = this.selectMempoolTxs();
+    const fees = picked.reduce((s, t) => s + t.fee, 0); // 本块手续费总额，并入 coinbase 归矿工
+    const transactions = [createCoinbase(minerAddress, index, fees), ...picked];
     // 时间戳不能早于链顶（校验要求单调不减）
     const timestamp = Math.max(Date.now(), this.latest.timestamp);
     const template: Omit<Block, 'hash' | 'nonce'> = {
@@ -301,7 +323,11 @@ export class Blockchain {
         const cb = b.transactions[0];
         if (!cb || !isCoinbase(cb)) return { ok: false, error: `#${i} 缺少 coinbase` };
         if (cb.to !== b.miner) return { ok: false, error: `#${i} coinbase 收款与矿工不符` };
-        if (cb.amount !== BLOCK_REWARD) return { ok: false, error: `#${i} 区块奖励金额错误` };
+        // coinbase 金额 = 出块奖励 + 本块所有普通交易的手续费之和；多一分少一分都判非法 → 杜绝矿工凭空多发
+        const blockFees = b.transactions.slice(1).reduce((s, t) => s + t.fee, 0);
+        if (cb.amount !== BLOCK_REWARD + blockFees) {
+          return { ok: false, error: `#${i} 区块奖励金额错误（应为 出块奖励 ${BLOCK_REWARD} + 手续费 ${blockFees}）` };
+        }
         if (b.transactions.slice(1).some(isCoinbase)) return { ok: false, error: `#${i} 多个 coinbase` };
       }
 
@@ -315,15 +341,15 @@ export class Blockchain {
           credit(tx.to, tx.amount);
           continue;
         }
-        if (!verifyTransaction(tx)) return { ok: false, error: `#${i} 交易签名无效` };
+        if (!verifyTransaction(tx)) return { ok: false, error: `#${i} 交易签名无效或手续费过低` };
         const expected = nonces.get(tx.from) ?? 0;
         if (tx.nonce !== expected) {
           return { ok: false, error: `#${i} nonce 错误（${tx.from.slice(0, 10)}… 期望 ${expected}）` };
         }
         const bal = balances.get(tx.from) ?? 0;
-        if (tx.amount > bal) return { ok: false, error: `#${i} 余额不足（双花/超额）` };
-        credit(tx.from, -tx.amount);
-        credit(tx.to, tx.amount);
+        if (tx.amount + tx.fee > bal) return { ok: false, error: `#${i} 余额不足（双花/超额，含手续费）` };
+        credit(tx.from, -(tx.amount + tx.fee)); // 扣 金额 + 手续费
+        credit(tx.to, tx.amount); // 收款方实收金额；手续费已计入 coinbase 归矿工
         nonces.set(tx.from, expected + 1);
       }
     }

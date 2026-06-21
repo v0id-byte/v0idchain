@@ -4,6 +4,7 @@ import {
   Wallet,
   createTransaction,
   verifyTransaction,
+  isCoinbase,
   violatesCheckpoint,
   merkleRoot,
   expectedDifficulty,
@@ -16,6 +17,7 @@ import {
   GENESIS_PREMINE,
   GENESIS_PREMINE_ADDRESS,
   BLOCK_REWARD,
+  MIN_FEE,
   GENESIS_DIFFICULTY,
   MAX_FUTURE_DRIFT_MS,
   MAX_MEMO,
@@ -44,12 +46,13 @@ await bc.mine(bob.address);
 check(`链高 = 2`, bc.height === 2);
 check(`bob 余额 = 2×奖励 = ${2 * BLOCK_REWARD}`, bc.balanceOf(bob.address) === 2 * BLOCK_REWARD);
 
-console.log(`\n— bob → alice 转 1（用挖来的币，零手续费）—`);
-const t1 = createTransaction(bob, alice.address, 1, bc.nonceOf(bob.address));
+console.log(`\n— bob → alice 转 1（用挖来的币，付手续费 ${MIN_FEE}）—`);
+const t1 = createTransaction(bob, alice.address, 1, bc.nonceOf(bob.address)); // 默认手续费 = MIN_FEE
 check(`交易进池`, bc.addTransaction(t1).ok);
-await bc.mine(bob.address); // bob 打包，再得一份奖励
-check(`alice 余额 = 1`, bc.balanceOf(alice.address) === 1);
-check(`bob 余额 = 2 - 1 + 奖励 = ${2 - 1 + BLOCK_REWARD}`, bc.balanceOf(bob.address) === 2 - 1 + BLOCK_REWARD);
+await bc.mine(bob.address); // bob 打包：拿 出块奖励 + 这笔的手续费
+check(`alice 余额 = 1（实收金额，不含费）`, bc.balanceOf(alice.address) === 1);
+// bob：2(初始) - 1(给alice) - 1(手续费) + (出块奖励 + 手续费) = 2（手续费付给自己又作为矿工赚回）
+check(`bob 余额 = 2`, bc.balanceOf(bob.address) === 2 - 1 - MIN_FEE + (BLOCK_REWARD + MIN_FEE));
 check(`交易池已清空`, bc.mempool.length === 0);
 
 console.log(`\n— 防重放：重复广播同一笔已花交易 —`);
@@ -104,7 +107,8 @@ check('打款到空地址(销毁)被拒', !freshBc.addTransaction(createTransact
 
 console.log(`\n— 进阶功能：交易备注 memo —`);
 const memoBc = new Blockchain();
-await memoBc.mine(bob.address); // bob 拿到 1 个奖励
+await memoBc.mine(bob.address);
+await memoBc.mine(bob.address); // bob 拿到 2（够付 1 转账 + 1 手续费）
 const tm = createTransaction(bob, alice.address, 1, memoBc.nonceOf(bob.address), '午饭钱 🍜');
 check('带 memo 的交易进池', memoBc.addTransaction(tm).ok);
 await memoBc.mine(bob.address);
@@ -115,11 +119,12 @@ check('emoji memo 按码点计数（128 个 emoji 通过）', verifyTransaction(
 console.log(`\n— 进阶功能：Merkle 根 —`);
 const mkBc = new Blockchain();
 await mkBc.mine(bob.address);
+await mkBc.mine(bob.address); // bob 拿到 2（够付 1 转账 + 1 手续费）
 mkBc.addTransaction(createTransaction(bob, alice.address, 1, mkBc.nonceOf(bob.address)));
 await mkBc.mine(bob.address);
 check('正常链 merkleRoot 校验通过', Blockchain.validateChain(mkBc.chain).ok);
 const tamperMk = JSON.parse(JSON.stringify(mkBc.chain));
-tamperMk[2].merkleRoot = merkleRoot(['fake']); // 篡改 merkleRoot
+tamperMk[3].merkleRoot = merkleRoot(['fake']); // 篡改最新块（含转账）的 merkleRoot
 check('篡改 merkleRoot 被拒', !Blockchain.validateChain(tamperMk).ok);
 
 console.log(`\n— 进阶功能：自适应难度 —`);
@@ -185,11 +190,50 @@ check('被篡改的 checkpoint 高度：检出冲突', violatesCheckpoint(honest
 check('链未到 checkpoint 高度：不报冲突（仍在同步）', violatesCheckpoint(honestW.chain, [{ index: 999, hash: '0'.repeat(64) }]) === null);
 check('默认空 CHECKPOINTS：不影响正常链校验', Blockchain.validateChain(honestW.chain).ok);
 
-console.log(`\n— 集市：上架 → 购买 → 撤单 —`);
+console.log(`\n— gas/手续费：归矿工、计入余额、最低费、防篡改、高者优先 —`);
+const g = new Blockchain();
+await g.mine(alice.address);
+await g.mine(alice.address); // alice 2
+const carol = Wallet.generate();
+const gtx = createTransaction(alice, bob.address, 1, g.nonceOf(alice.address), '', MIN_FEE);
+check('带手续费交易进池', g.addTransaction(gtx).ok);
+await g.mine(carol.address); // carol 打包这笔（手续费应归 carol，而非创世/任何第三方）
+check('收款方实收 = 金额（不含手续费）', g.balanceOf(bob.address) === 1);
+check('发送方实扣 = 金额 + 手续费', g.balanceOf(alice.address) === 2 - 1 - MIN_FEE);
+check(`矿工实得 = 出块奖励 + 手续费 = ${BLOCK_REWARD + MIN_FEE}`, g.balanceOf(carol.address) === BLOCK_REWARD + MIN_FEE);
+const supply = (b: Blockchain) => [...b.computeState().balances.values()].reduce((s, v) => s + v, 0);
+check('全链守恒：总额 = 预挖 + 链高×出块奖励（手续费只搬运、不增发）', supply(g) === GENESIS_PREMINE + g.height * BLOCK_REWARD);
+// 最低手续费：零手续费交易必须被拒（verifyTransaction 与 mempool 两道都拦）
+const zeroFee = createTransaction(alice, bob.address, 1, 0, '', 0);
+check('零手续费交易：verifyTransaction 拒绝', !verifyTransaction(zeroFee));
+check('零手续费交易：mempool 拒绝', !new Blockchain().addTransaction(zeroFee).ok);
+// 防篡改：偷改手续费（不重签）→ txid 不再匹配内容 → 校验失败
+check('偷改手续费 → txid 校验失败', !verifyTransaction({ ...gtx, fee: gtx.fee + 5 }));
+// coinbase 自身不得带手续费
+const cbFee = JSON.parse(JSON.stringify(g.chain));
+cbFee[1].transactions[0].fee = 3;
+check('coinbase 带非零手续费的链被拒', !Blockchain.validateChain(cbFee).ok);
+// 矿工虚报 coinbase 金额（凭空多印）→ 校验失败（金额必须 = 出块奖励 + 实际手续费）
+const inflate = JSON.parse(JSON.stringify(g.chain));
+inflate[1].transactions[0].amount = 999;
+check('矿工虚报 coinbase 金额（偷印）被拒', !Blockchain.validateChain(inflate).ok);
+// 手续费市场：同一块内，高手续费交易排在低手续费之前（高者优先打包）
+const fm = new Blockchain();
+await fm.mine(alice.address);
+await fm.mine(alice.address); // alice 2（付 低费交易 1+1）
+const carol2 = Wallet.generate();
+for (let i = 0; i < 3; i++) await fm.mine(carol2.address); // carol2 3（付 高费交易 1+2）
+fm.addTransaction(createTransaction(alice, bob.address, 1, fm.nonceOf(alice.address), 'low', 1)); // 低费先进池
+fm.addTransaction(createTransaction(carol2, bob.address, 1, fm.nonceOf(carol2.address), 'high', 2)); // 高费后进池
+await fm.mine(bob.address);
+const packed = fm.latest.transactions.filter((t) => !isCoinbase(t));
+check('高手续费交易被排在低手续费之前（高者优先）', packed[0]?.memo === 'high' && packed[1]?.memo === 'low');
+
+console.log(`\n— 集市：上架 → 购买 → 撤单（每次操作付 ${MIN_FEE} 手续费）—`);
 const mk = new Blockchain();
-await mk.mine(alice.address); // alice 挖到 1
+for (let i = 0; i < 4; i++) await mk.mine(alice.address); // alice 挖到 4（够付多次上架/撤单的自转 + 手续费）
 mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(1, '复习笔记')));
-await mk.mine(bob.address); // bob 挖到 1，并打包上架
+await mk.mine(bob.address); // bob 打包上架（拿 出块奖励 + 手续费）
 let listings = parseMarket(mk.chain);
 check('集市解析出 1 件在售', listings.length === 1 && listings[0].price === 1 && listings[0].title === '复习笔记' && !listings[0].sold);
 const lid = listings[0].id;
@@ -197,7 +241,8 @@ mk.addTransaction(createTransaction(bob, alice.address, 1, mk.nonceOf(bob.addres
 await mk.mine(bob.address);
 listings = parseMarket(mk.chain);
 check('购买后标记已售 + 买家正确', listings[0].sold && listings[0].soldBy === bob.address);
-check('卖家 alice 收到货款（1挖矿 + 1售货 = 2）', mk.balanceOf(alice.address) === 2);
+// alice：挖矿 4 - 上架手续费 1 + 售货 1 = 4（自转本金回到自己，只净付手续费）
+check('卖家 alice 余额 = 4', mk.balanceOf(alice.address) === 4);
 // 第二件：上架后撤单
 mk.addTransaction(createTransaction(alice, alice.address, 1, mk.nonceOf(alice.address), buildListMemo(5, '废品')));
 await mk.mine(bob.address);

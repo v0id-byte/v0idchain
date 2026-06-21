@@ -41,25 +41,39 @@ export const CHECKPOINTS: { index: number; hash: string }[] = [
 export const MAX_MEMO = 128;
 
 /**
- * mempool 容量上限：待打包交易池最多缓存多少笔。零手续费链没有 fee 市场来给 spam 定价，
- * 故用一个硬上限兜底内存（spam 仍受“nonce 顺序 + 余额充足”约束，本就要花真币）。
+ * mempool 容量上限：待打包交易池最多缓存多少笔。手续费已给 spam 定了价（每笔至少花 MIN_FEE），
+ * 这里再加一道硬上限兜底内存（spam 仍受“nonce 顺序 + 余额充足 + 手续费”三重约束，本就要花真币）。
  */
 export const MAX_MEMPOOL = 5_000;
 
-/** 每挖出一个区块，矿工获得的奖励（coinbase 新币）。零手续费，矿工只赚这个。 */
+/** 每挖出一个区块，矿工获得的**出块奖励**（coinbase 新币）。矿工实得 = 此奖励 + 本块所有交易的手续费。 */
 export const BLOCK_REWARD = 1;
+
+/**
+ * 最低手续费（gas）：每笔普通转账必须 ≥ 此值，付给打包它的矿工。杜绝零手续费的免费 spam。
+ * coinbase / 创世交易的手续费恒为 0（它们不付费，反而是手续费的收款方）。
+ */
+export const MIN_FEE = 1;
+
+/**
+ * 单个区块最多打包多少笔**普通**交易（不含 coinbase）。这是矿工侧的打包策略（非共识强校验）：
+ * mempool 拥堵时，矿工按手续费从高到低挑、挑满即止 —— 给得多的先上链，形成真实的手续费竞价市场。
+ * 取一个较宽的值：日常教学几乎不触顶，又足以在压测时演示“高手续费优先”。
+ */
+export const MAX_BLOCK_TXS = 50;
 
 /** 创世预挖额：给下面的“央行”地址发一笔启动币（其余的币全靠挖矿产生）。 */
 export const GENESIS_PREMINE = 1_000;
 
 /**
  * 创世预挖收款地址（“央行” / treasury）。
- * 这是**地址 = 公钥**，公开安全；对应**私钥只存所有者本机**（`.data/treasury/wallet.json`），
+ * 这是**地址 = 公钥**，公开安全；对应**私钥只存所有者本机**（`.data/treasury/wallet.json`，0600），
  * 绝不进仓库。谁持有该私钥，谁就能用普通 `send` 分发这 1000 启动币。
  * 想换成你自己的地址：跑一次 `wallet new` 拿到地址填到这里即可（各节点必须一致）。
+ * 注：此地址已于加 gas 时轮换过一次（旧地址的私钥曾在明文环境出现，弃用）。
  */
 export const GENESIS_PREMINE_ADDRESS =
-  '0xbf52e7a3d361042a0bb1f00b1d28fb9af42a0d170c8cd6e8868f531a44f6a74d';
+  '0xd63300cb79b682979a5c62bad419a2a1147da9be4111736d52c636523a20cefb';
 
 /** 固定创世时间戳 —— 所有节点必须一致，保证各自算出的创世 hash 相同 */
 export const GENESIS_TIMESTAMP = 1_700_000_000_000;

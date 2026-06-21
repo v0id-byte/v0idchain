@@ -107,7 +107,7 @@ export default function App() {
       <Marketplace market={market} api={api} token={token} onDone={poll} />
 
       <div className="cols">
-        <Actions api={api} token={token} me={me} onDone={poll} />
+        <Actions api={api} token={token} me={me} minFee={info?.minFee ?? 1} onDone={poll} />
         <Mempool mempool={mempool} me={me} />
       </div>
 
@@ -121,7 +121,7 @@ export default function App() {
         </div>
       </div>
 
-      <div className="foot">v0idChain · 手搓区块链 · 零 gas · 零手续费 · 每 1.5s 刷新</div>
+      <div className="foot">v0idChain · 手搓区块链 · PoW 挖矿出币 · 手续费给矿工 · 每 1.5s 刷新</div>
     </div>
   );
 }
@@ -181,6 +181,7 @@ function TxRow({ tx, me, block }: { tx: Tx; me: string; block?: number }) {
         {tx.to === me && <span className="tag me">给我</span>}
         {block !== undefined && <span className="tag blk">#{block}</span>}
         {tx.memo && <span className="memo">“{tx.memo}”</span>}
+        {!isCoinbase(tx) && tx.fee > 0 && <span className="tag diff">手续费 {tx.fee}</span>}
       </span>
       <span className={`amt ${tx.to === me ? 'in' : ''}`}>{tx.amount} $V0ID</span>
     </div>
@@ -242,9 +243,10 @@ function Explorer({ chain, me }: { chain: Block[]; me: string }) {
   );
 }
 
-function Actions({ api, token, me, onDone }: { api: string; token: string; me: string; onDone: () => void }) {
+function Actions({ api, token, me, minFee, onDone }: { api: string; token: string; me: string; minFee: number; onDone: () => void }) {
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
+  const [fee, setFee] = useState(String(minFee));
   const [memo, setMemo] = useState('');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
@@ -253,10 +255,11 @@ function Actions({ api, token, me, onDone }: { api: string; token: string; me: s
     setBusy(true);
     setBanner(null);
     try {
-      const r = await postJSON<{ txid: string }>(api, '/send', { to: to.trim(), amount: Number(amount), memo }, token);
+      const r = await postJSON<{ txid: string }>(api, '/send', { to: to.trim(), amount: Number(amount), fee: Number(fee), memo }, token);
       setBanner({ kind: 'ok', text: `已广播 · txid ${r.txid.slice(0, 24)}…` });
       setTo('');
       setAmount('');
+      setFee(String(minFee));
       setMemo('');
       onDone();
     } catch (e) {
@@ -277,6 +280,10 @@ function Actions({ api, token, me, onDone }: { api: string; token: string; me: s
         <div className="field">
           <label>金额（正整数）</label>
           <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="100" inputMode="numeric" />
+        </div>
+        <div className="field">
+          <label>手续费 / gas（给矿工，≥{minFee}）</label>
+          <input value={fee} onChange={(e) => setFee(e.target.value)} placeholder={String(minFee)} inputMode="numeric" />
         </div>
       </div>
       <div className="field">
@@ -401,6 +408,7 @@ function Marketplace({ market, api, token, onDone }: { market: Listing[]; api: s
 
 function BlockCard({ b, me, open, onToggle }: { b: Block; me: string; open: boolean; onToggle: () => void }) {
   const reward = b.transactions.filter(isCoinbase).reduce((s, t) => s + t.amount, 0);
+  const fees = b.transactions.filter((t) => !isCoinbase(t)).reduce((s, t) => s + (t.fee ?? 0), 0);
   return (
     <div className="block" onClick={onToggle}>
       <div className="head">
@@ -421,6 +429,7 @@ function BlockCard({ b, me, open, onToggle }: { b: Block; me: string; open: bool
           <div className="kv">merkleRoot: {b.merkleRoot}</div>
           <div className="kv">
             nonce: {b.nonce}　难度: {b.difficulty} bit　奖励/预挖: {reward} $V0ID
+            {fees > 0 ? `（含手续费 ${fees}）` : ''}
           </div>
           <div style={{ marginTop: 8 }}>
             {b.transactions.map((tx) => (

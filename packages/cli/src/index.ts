@@ -12,6 +12,7 @@ import {
   loadApiToken,
   bytesToHex,
   SYMBOL,
+  MIN_FEE,
   GENESIS_PREMINE_ADDRESS,
 } from '@v0idchain/core';
 
@@ -53,7 +54,7 @@ async function api(o: any, method: string, path: string, body?: unknown): Promis
 }
 
 const program = new Command();
-program.name('v0id').description('v0idChain CLI —— 手搓区块链 $V0ID（零 gas / 零手续费）').version('0.1.0');
+program.name('v0id').description('v0idChain CLI —— 手搓区块链 $V0ID（PoW 挖矿出币 · 转账带手续费/gas 给矿工）').version('0.1.0');
 
 // ---- start ----
 program
@@ -141,6 +142,7 @@ apiOpt(program.command('info'))
     console.log(c.bold('链高 '), `${r.height}（${r.blocks} 个区块）`);
     console.log(c.bold('交易池'), `${r.mempool} 笔待打包`);
     console.log(c.bold('难度 '), r.difficulty);
+    if (r.minFee !== undefined) console.log(c.bold('手续费'), `≥ ${r.minFee}（gas，给矿工）`);
     console.log(c.bold('对等 '), `${r.peers} 个节点`);
     for (const p of r.peerList) console.log('   ', p.url ?? '?', p.address ? c.dim(`(${short(p.address)})`) : '');
   });
@@ -159,10 +161,11 @@ apiOpt(program.command('send'))
   .argument('<to>', '收款地址')
   .argument('<amount>', '金额')
   .option('--memo <text>', '附带一段备注（上链可查）', '')
-  .description('转账（零手续费）')
+  .option('--fee <n>', `手续费（gas，给打包矿工，至少 ${MIN_FEE}；给多了打包更优先）`, String(MIN_FEE))
+  .description('转账（需付 金额 + 手续费/gas）')
   .action(async (to, amount, o) => {
-    const r = await api(o,'POST', '/send', { to, amount: Number(amount), memo: o.memo });
-    console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid);
+    const r = await api(o,'POST', '/send', { to, amount: Number(amount), memo: o.memo, fee: Number(o.fee) });
+    console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${Number(o.fee)}`));
   });
 
 apiOpt(program.command('mine'))

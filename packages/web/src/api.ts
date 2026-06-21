@@ -5,6 +5,7 @@ export interface Tx {
   from: string;
   to: string;
   amount: number;
+  fee: number; // 手续费（gas）：发送方在 amount 之外额外支付，归打包矿工
   nonce: number;
   timestamp: number;
   memo: string;
@@ -44,6 +45,7 @@ export interface Info {
   balance: number;
   mempool: number;
   difficulty: number;
+  minFee?: number; // 最低手续费（gas）
   peers: number;
   peerList: { url?: string; address?: string }[];
   syncing?: boolean;
@@ -84,7 +86,7 @@ export function addressHistory(chain: Block[], address: string): { balance: numb
   for (const b of chain) {
     for (const tx of b.transactions) {
       if (tx.to === address) balance += tx.amount;
-      if (tx.from === address) balance -= tx.amount;
+      if (tx.from === address) balance -= tx.amount + tx.fee; // 发送方还要扣手续费
       if (tx.to === address || tx.from === address) history.push({ tx, blockIndex: b.index });
     }
   }
