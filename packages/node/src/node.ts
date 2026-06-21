@@ -7,16 +7,32 @@ import {
   Transaction,
   SYMBOL,
   MIN_FEE,
+  MESSAGE_BURN,
+  NULL_ADDRESS,
   createTransaction,
+  createMessage,
   loadOrCreateWallet,
   loadChain,
   saveChain,
   parseMarket,
+  parseMessages,
+  collectAddresses,
   makeListing,
   BUY_PREFIX,
   DEL_PREFIX,
 } from '@v0idchain/core';
 import { P2P } from './p2p.js';
+
+const short = (addr: string) => (addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr);
+
+/** 新成员事件：本次会话内首次见到的对等节点，或首次出现在链上的地址 */
+export interface Newcomer {
+  kind: 'peer' | 'address';
+  address: string;
+  at: number; // 发现时刻（本地时间戳）
+  listen?: string; // kind=peer：对方对外 ws 地址
+  height?: number; // kind=address：首次出现的区块高度
+}
 
 export interface NodeOptions {
   dataDir: string;
@@ -24,6 +40,7 @@ export interface NodeOptions {
   advertise?: string;
   peers?: string[];
   maxPeers?: number;
+  onNotice?: (msg: string) => void; // 有新成员/事件时即时回调（CLI 传 console.log → 运行中实时打印）
 }
 
 export class V0idNode {
@@ -42,6 +59,13 @@ export class V0idNode {
   private initialSyncDone = false; // 初始同步是否完成
   private syncing = false; // 当前是否在“等同步”而暂不挖矿（给状态行/仪表盘看）
 
+  // ---- 新人发现：新节点上线 + 新地址首次上链 ----
+  private seenPeers = new Set<string>(); // 本次会话已见过的对等节点地址（去重）
+  private knownAddresses = new Set<string>(); // 已在链上出现过的地址（启动时按现有链播种，不刷屏历史）
+  private lastScanHeight = 0; // 已扫描到的链高（增量检测新地址）
+  private newcomers: Newcomer[] = []; // 最近的新成员（环形，最新在前）
+  private static readonly MAX_NEWCOMERS = 100;
+
   /** 记下一个已见 txid，超上限就淘汰最早的（Set 保持插入序） */
   private markSeen(txid: string): void {
     this.seenTx.add(txid);
@@ -55,6 +79,9 @@ export class V0idNode {
     this.opts = opts;
     this.wallet = loadOrCreateWallet(opts.dataDir);
     this.bc = loadChain(opts.dataDir);
+    // 启动时把现有链里的地址全部记为“已知”，并把扫描指针对齐链顶 —— 之后只对新涌现的地址报“新人”，不刷屏历史
+    this.knownAddresses = collectAddresses(this.bc.chain);
+    this.lastScanHeight = this.bc.height;
     this.p2p = new P2P({
       advertiseUrl: opts.advertise,
       maxPeers: opts.maxPeers,
@@ -65,6 +92,7 @@ export class V0idNode {
         getAddress: () => this.wallet.address,
         onBlocks: (blocks, from) => this.onBlocks(blocks, from),
         onTx: (tx, from) => this.onTx(tx, from),
+        onPeer: (address, listen) => this.onPeer(address, listen),
       },
     });
   }
@@ -79,6 +107,79 @@ export class V0idNode {
   /** 本节点发起转账：算好 nonce、签名、进池、广播。fee = 手续费（gas），默认最低 MIN_FEE。 */
   send(to: string, amount: number, memo = '', fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
     return this.submit(this.wallet, to, amount, memo, fee);
+  }
+
+  /** 给某地址发一条链上消息：不转币、烧 burn 个 $V0ID 进虚空、付 fee 给矿工。算好 nonce、签名、进池、广播。 */
+  message(
+    to: string,
+    text: string,
+    burn = MESSAGE_BURN,
+    fee = MIN_FEE,
+  ): { ok: boolean; tx?: Transaction; error?: string } {
+    const pending = this.bc.mempool.filter((t) => t.from === this.wallet.address).length;
+    const nonce = this.bc.nonceOf(this.wallet.address) + pending;
+    const tx = createMessage(this.wallet, to, text, nonce, burn, fee);
+    const r = this.bc.addTransaction(tx);
+    if (!r.ok) return { ok: false, error: r.error };
+    this.markSeen(tx.txid);
+    this.p2p.broadcast({ type: 'TX', tx });
+    this.persist();
+    return { ok: true, tx };
+  }
+
+  /** 某地址的消息：received = 发给它的、sent = 它发出的（默认查本节点自己）。只含已上链的消息。 */
+  messages(address = this.wallet.address) {
+    const all = parseMessages(this.bc.chain);
+    return {
+      address,
+      received: all.filter((m) => m.to === address),
+      sent: all.filter((m) => m.from === address),
+    };
+  }
+
+  // ---- 新人发现 ----
+  private notice(msg: string): void {
+    this.opts.onNotice?.(msg);
+  }
+
+  private pushNewcomer(n: Newcomer): void {
+    this.newcomers.unshift(n);
+    if (this.newcomers.length > V0idNode.MAX_NEWCOMERS) this.newcomers.length = V0idNode.MAX_NEWCOMERS;
+  }
+
+  /** 最近的新成员（最新在前），供 API / 仪表盘查看 */
+  recentNewcomers(): Newcomer[] {
+    return this.newcomers;
+  }
+
+  /** P2P 学到一个对等节点地址：本次会话首见即记为“新节点上线” */
+  private onPeer(address: string, listen: string): void {
+    if (!address || address === this.wallet.address || this.seenPeers.has(address)) return;
+    this.seenPeers.add(address);
+    this.notice(`🆕 新节点上线 ${short(address)} via ${listen}`);
+    this.pushNewcomer({ kind: 'peer', address, listen, at: Date.now() });
+  }
+
+  /** 链增长后扫描新区块，发现“首次上链”的地址（增量；遇到回滚则静默重建已知集，避免刷屏） */
+  private detectNewAddresses(): void {
+    const h = this.bc.height;
+    if (h <= this.lastScanHeight) {
+      // 链未增长或发生回滚（reorg 变短）：静默把已知集与现有链对齐，不报“新人”
+      if (h < this.lastScanHeight) this.knownAddresses = collectAddresses(this.bc.chain);
+      this.lastScanHeight = h;
+      return;
+    }
+    for (let i = this.lastScanHeight + 1; i <= h; i++) {
+      for (const tx of this.bc.chain[i].transactions) {
+        for (const addr of [tx.from, tx.to]) {
+          if (addr === NULL_ADDRESS || this.knownAddresses.has(addr)) continue;
+          this.knownAddresses.add(addr);
+          this.notice(`🆕 新地址首次上链 ${short(addr)} @ #${i}`);
+          this.pushNewcomer({ kind: 'address', address: addr, height: i, at: Date.now() });
+        }
+      }
+    }
+    this.lastScanHeight = h;
   }
 
   private submit(
@@ -236,6 +337,7 @@ export class V0idNode {
   // ---- 杂项 ----
   private onChainChanged(): void {
     this.epoch++;
+    this.detectNewAddresses(); // 链一变就看有没有新地址首次上链
     this.persist();
   }
 
@@ -253,8 +355,11 @@ export class V0idNode {
       mempool: this.bc.mempool.length,
       difficulty: this.bc.tipDifficulty(),
       minFee: MIN_FEE, // 最低手续费（gas），供 CLI/仪表盘提示与表单默认值
+      messageBurn: MESSAGE_BURN, // 发消息默认销毁额，供表单默认值
+      burned: this.bc.balanceOf(NULL_ADDRESS), // 🔥 全网已烧进虚空的 $V0ID 总额
       peers: this.p2p.peerCount(),
       peerList: this.p2p.peerList(),
+      newcomers: this.newcomers.length, // 本次会话发现的新成员数
       syncing: this.syncing, // true = 正在等连接/同步，暂未挖矿
     };
   }

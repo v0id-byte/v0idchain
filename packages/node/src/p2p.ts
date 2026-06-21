@@ -20,6 +20,7 @@ export interface P2PHandlers {
   getAddress(): string;
   onBlocks(blocks: Block[], from: WebSocket): void;
   onTx(tx: Transaction, from: WebSocket): void;
+  onPeer?(address: string, listen: string): void; // HELLO 学到对方地址时回调（上层据此发现“新节点上线”）
 }
 
 export interface P2POptions {
@@ -238,6 +239,7 @@ export class P2P {
           meta.address = msg.address;
           meta.listen = msg.listen;
           this.peers.set(ws, meta);
+          this.handlers.onPeer?.(msg.address, msg.listen); // 上层据此发现“新节点上线”（自行去重）
           if (isPublicWsUrl(msg.listen)) this.addKnown(msg.listen); // gossip 学来的 listen：仅记公网地址
           if (msg.height > this.handlers.getHeight()) this.send(ws, { type: 'QUERY_ALL' });
           break;

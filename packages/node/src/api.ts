@@ -61,6 +61,12 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             return json(200, node.p2p.peerList());
           case '/market':
             return json(200, node.market());
+          case '/messages': {
+            const address = url.searchParams.get('address') || node.wallet.address;
+            return json(200, node.messages(address));
+          }
+          case '/newcomers':
+            return json(200, node.recentNewcomers());
           case '/balance': {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
@@ -80,6 +86,15 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             if (!isValidAddress(String(body.to))) return json(400, { error: '收款地址格式无效' });
             const fee = body.fee === undefined ? MIN_FEE : Number(body.fee); // 不填则用最低手续费
             const r = node.send(String(body.to), Number(body.amount), String(body.memo ?? ''), fee);
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/message': {
+            if (!isValidAddress(String(body.to))) return json(400, { error: '收件地址格式无效' });
+            const text = String(body.text ?? '');
+            if (!text) return json(400, { error: '消息正文不能为空' });
+            const burn = body.burn === undefined ? undefined : Number(body.burn);
+            const fee = body.fee === undefined ? undefined : Number(body.fee);
+            const r = node.message(String(body.to), text, burn, fee);
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/mine': {
