@@ -122,7 +122,10 @@ export async function postJSON<T>(base: string, path: string, body: unknown, tok
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}) as any);
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('需要 API 令牌 — 请将节点数据目录（.data/<节点名>/api.token）的内容粘贴到右上角「API 令牌」输入框');
+    throw new Error(data.error || res.statusText);
+  }
   return data as T;
 }
 
