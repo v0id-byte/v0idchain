@@ -424,6 +424,29 @@ export class V0idNode {
     }
   }
 
+  /**
+   * 按 txid 查这笔交易的确认状态（只读，供客户端轮询“处理中 → 已到账”）：
+   *   confirmed = 已被打包进区块（附区块高度 / hash）
+   *   pending   = 还在交易池里等矿工打包
+   *   unknown   = 本节点没见过（广播还没扩散到，或 txid 写错）
+   * 从链顶往回找——刚发出的交易通常在最近的区块。
+   */
+  txStatus(txid: string): {
+    txid: string;
+    status: 'confirmed' | 'pending' | 'unknown';
+    height?: number;
+    blockHash?: string;
+  } {
+    for (let i = this.bc.chain.length - 1; i >= 0; i--) {
+      const blk = this.bc.chain[i];
+      if (blk.transactions.some((t) => t.txid === txid)) {
+        return { txid, status: 'confirmed', height: blk.index, blockHash: blk.hash };
+      }
+    }
+    if (this.bc.mempool.some((t) => t.txid === txid)) return { txid, status: 'pending' };
+    return { txid, status: 'unknown' };
+  }
+
   // ---- 杂项 ----
   private onChainChanged(): void {
     this.epoch++;

@@ -54,6 +54,29 @@ async function api(o: any, method: string, path: string, body?: unknown): Promis
   return data;
 }
 
+/**
+ * 广播一笔交易后，轮询节点的 GET /tx?txid= 等它被矿工打包进区块——把抽象的“一个区块确认”
+ * 变成看得见的“处理中 → 已到账”。给超时上限，没人挖矿时也不会卡死。
+ */
+async function waitConfirm(o: any, txid: string, timeoutMs = 25000): Promise<void> {
+  console.log(c.dim('  ⏳ 已广播，正在等矿工打包，通常几秒…'));
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 1500));
+    let st: any;
+    try {
+      st = await api(o, 'GET', `/tx?txid=${encodeURIComponent(txid)}`);
+    } catch {
+      continue; // 节点临时抖动，下一轮再试
+    }
+    if (st.status === 'confirmed') {
+      console.log(c.green(`  ✅ 已到账（区块 #${st.height}）`));
+      return;
+    }
+  }
+  console.log(c.yellow('  ⏳ 还没被打包——确认网络里有矿工在挖（本地可 `v0id mine`），稍后 `v0id info` 再看。'));
+}
+
 const program = new Command();
 program.name('v0id').description('v0idChain CLI —— 手搓区块链 $V0ID（PoW 挖矿出币 · 转账带手续费/gas 给矿工）').version('0.1.0');
 
@@ -136,6 +159,9 @@ const apiOpt = (cmd: Command) =>
     .option('--name <name>', '节点名（用于定位 api.token）', 'node')
     .option('--data-dir <dir>', '数据目录（默认 ./.data/<name>）');
 
+// 会广播一笔交易的“写命令”：在 apiOpt 之外再带 --no-wait（默认广播后轮询等待打包确认）
+const txCmd = (cmd: Command) => apiOpt(cmd).option('--no-wait', '广播后不等待打包确认，立即返回 txid');
+
 apiOpt(program.command('info'))
   .description('查看节点状态')
   .action(async (o) => {
@@ -176,7 +202,7 @@ apiOpt(program.command('balance'))
     console.log(c.bold(`${r.balance} ${SYMBOL}`));
   });
 
-apiOpt(program.command('send'))
+txCmd(program.command('send'))
   .argument('<to>', '收款地址')
   .argument('<amount>', '金额')
   .option('--memo <text>', '附带一段备注（上链可查）', '')
@@ -185,9 +211,10 @@ apiOpt(program.command('send'))
   .action(async (to, amount, o) => {
     const r = await api(o,'POST', '/send', { to, amount: Number(amount), memo: o.memo, fee: Number(o.fee) });
     console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${Number(o.fee)}`));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 
-apiOpt(program.command('msg'))
+txCmd(program.command('msg'))
   .argument('<to>', '收件人地址')
   .argument('<text...>', '消息正文')
   .option('--burn <n>', `烧进虚空的 $V0ID（永久销毁；默认 ${MESSAGE_BURN}，越多越壕）`, String(MESSAGE_BURN))
@@ -199,7 +226,8 @@ apiOpt(program.command('msg'))
     const r = await api(o, 'POST', '/message', { to, text: text.join(' '), burn, fee: Number(o.fee), encrypt: !!o.encrypt });
     const lock = o.encrypt ? c.cyan(' 🔒加密') : '';
     console.log(c.green('✉️  消息已广播') + lock, c.dim('txid='), r.txid, c.dim(`🔥烧=${burn} 手续费=${Number(o.fee)}`));
-    console.log(c.dim('（等一个区块确认后，对方 `v0id inbox` 即可看到）'));
+    console.log(c.dim('（打包确认后，对方 `v0id inbox` 即可看到）'));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 
 apiOpt(program.command('inbox'))
@@ -281,37 +309,41 @@ apiOpt(market.command('list'))
       console.log(`      ${c.dim('卖家 ' + short(l.seller) + '  id ' + l.id.slice(0, 12) + '…')}`);
     }
   });
-apiOpt(market.command('sell'))
+txCmd(market.command('sell'))
   .argument('<price>', '价格（正整数 $V0ID）')
   .argument('<title...>', '商品/服务标题')
   .description('上架一件商品（需 ≥1 余额；上架交易被挖进区块后才出现）')
   .action(async (price, title, o) => {
     const r = await api(o,'POST', '/market/sell', { price: Number(price), title: title.join(' ') });
-    console.log(c.green('🏷  已上架'), c.dim('txid='), r.txid, c.dim('（等一个区块确认后可见）'));
+    console.log(c.green('🏷  已上架'), c.dim('txid='), r.txid, c.dim('（打包确认后可见）'));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
-apiOpt(market.command('buy'))
+txCmd(market.command('buy'))
   .argument('<id>', '商品 id（上架 txid，可只填前若干位则用 list 查全）')
   .description('购买商品（付标价给卖家）')
   .action(async (id, o) => {
     const r = await api(o,'POST', '/market/buy', { id });
     console.log(c.green('🛒 已下单付款'), c.dim('txid='), r.txid);
+    if (o.wait) await waitConfirm(o, r.txid);
   });
-apiOpt(market.command('delist'))
+txCmd(market.command('delist'))
   .argument('<id>', '商品 id')
   .description('撤下自己的商品')
   .action(async (id, o) => {
     const r = await api(o,'POST', '/market/delist', { id });
     console.log(c.green('已撤单'), c.dim('txid='), r.txid);
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 
 // ---- name 昵称（全网唯一抢注，先到先得） ----
 const name = program.command('name').description('链上昵称：全网唯一抢注，先到先得');
-apiOpt(name.command('claim'))
+txCmd(name.command('claim'))
   .argument('<name>', '想抢的昵称（1~20 位 小写字母/数字/_/-）')
   .description('抢注一个昵称（自转 1 币 + memo；需 ≥2 余额；挖进区块后生效）')
   .action(async (n, o) => {
     const r = await api(o, 'POST', '/name/claim', { name: n });
-    console.log(c.green('🪪 已提交抢注'), c.dim('txid='), r.txid, c.dim('（等一个区块确认；先到先得）'));
+    console.log(c.green('🪪 已提交抢注'), c.dim('txid='), r.txid, c.dim('（打包确认后生效；先到先得）'));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 apiOpt(name.command('list'))
   .description('看已注册的昵称')
@@ -341,14 +373,15 @@ apiOpt(name.command('of'))
 
 // ---- red 抢红包 ----
 const red = program.command('red').description('链上抢红包：发红包(锁币)→大家抢(拼手气)→过期退回');
-apiOpt(red.command('send'))
+txCmd(red.command('send'))
   .argument('<total>', '红包总额（$V0ID 正整数）')
   .argument('<count>', '份数（≥1，且 ≤ 总额）')
   .option('--equal', '均分（默认拼手气随机）', false)
   .description('发一个红包（需 ≥ 总额+手续费 余额；挖进区块后可被抢）')
   .action(async (total, count, o) => {
     const r = await api(o, 'POST', '/redpacket', { total: Number(total), count: Number(count), mode: o.equal ? 'e' : 'r' });
-    console.log(c.green('🧧 红包已发出'), c.dim('txid='), r.txid, c.dim(`（这就是红包 id；等一个区块确认后大家可 grab）`));
+    console.log(c.green('🧧 红包已发出'), c.dim('txid='), r.txid, c.dim(`（这就是红包 id；打包确认后大家可 grab）`));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 apiOpt(red.command('list'))
   .description('看红包（在抢/已抢完/已退款）')
@@ -364,19 +397,21 @@ apiOpt(red.command('list'))
       console.log(`      ${c.dim('id ' + p.id.slice(0, 12) + '…  发起 ' + short(p.creator) + '  #' + p.createHeight)}`);
     }
   });
-apiOpt(red.command('grab'))
+txCmd(red.command('grab'))
   .argument('<id>', '红包 id（发红包的 txid，可填前缀）')
   .description('抢红包（拼手气份额由共识按区块 hash 派发）')
   .action(async (id, o) => {
     const r = await api(o, 'POST', '/redpacket/grab', { id });
-    console.log(c.green('🧧 已出手抢'), c.dim('txid='), r.txid, c.dim('（挖进区块后看余额到账多少）'));
+    console.log(c.green('🧧 已出手抢'), c.dim('txid='), r.txid, c.dim('（打包确认后看余额到账多少）'));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
-apiOpt(red.command('refund'))
+txCmd(red.command('refund'))
   .argument('<id>', '红包 id（仅发起人、过期后可退）')
   .description('过期后取回没抢完的剩余')
   .action(async (id, o) => {
     const r = await api(o, 'POST', '/redpacket/refund', { id });
     console.log(c.green('↩️  已申请退款'), c.dim('txid='), r.txid);
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 
 // ---- wallet（直接读数据目录，不需要节点在跑） ----

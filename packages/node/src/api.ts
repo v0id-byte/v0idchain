@@ -75,6 +75,12 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
           }
+          case '/tx': {
+            // 按 txid 查确认状态（只读、无需令牌）：客户端轮询“处理中 → 已到账”。
+            const txid = url.searchParams.get('txid') || '';
+            if (!txid) return json(400, { error: '缺少 txid 参数' });
+            return json(200, node.txStatus(txid));
+          }
         }
       }
 

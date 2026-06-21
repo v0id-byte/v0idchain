@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
+import { getJSON, postJSON, isCoinbase, search, findTx, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
 // 模块级显示名缓存（每次轮询更新）；disp(地址) → 有昵称显示 @名字，否则缩写地址
@@ -13,6 +13,33 @@ const ago = (ts: number) => {
 };
 
 type Banner = { kind: 'ok' | 'err'; text: string } | null;
+
+// 刚发出的交易的确认状态：pending（等矿工打包）→ confirmed（已进区块 #N）。
+// chain 每 1.5s 轮询刷新，这笔 txid 一旦出现在某个区块里就翻成“已到账”。
+type Pending = { txid: string; height?: number };
+
+function usePending(chain: Block[]): [Pending | null, (txid: string) => void] {
+  const [pending, setPending] = useState<Pending | null>(null);
+  useEffect(() => {
+    if (!pending || pending.height !== undefined) return;
+    const ref = findTx(chain, pending.txid);
+    if (ref) setPending({ txid: pending.txid, height: ref.blockIndex });
+  }, [chain, pending]);
+  return [pending, (txid: string) => setPending({ txid })];
+}
+
+function PendingBadge({ pending }: { pending: Pending | null }) {
+  if (!pending) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      {pending.height === undefined ? (
+        <span className="tag diff">⏳ 处理中 · 等矿工打包…</span>
+      ) : (
+        <span className="tag me">✅ 已到账 · 区块 #{pending.height}</span>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   const [api, setApi] = useState(() => localStorage.getItem('v0id-api') || 'http://127.0.0.1:7001');
@@ -121,12 +148,12 @@ export default function App() {
 
       <Explorer chain={chain} me={me} />
 
-      <RedPackets packets={redPackets} api={api} token={token} onDone={poll} />
+      <RedPackets packets={redPackets} chain={chain} api={api} token={token} onDone={poll} />
 
-      <Marketplace market={market} api={api} token={token} onDone={poll} />
+      <Marketplace market={market} chain={chain} api={api} token={token} onDone={poll} />
 
       <div className="cols">
-        <Actions api={api} token={token} me={me} minFee={info?.minFee ?? 1} onDone={poll} />
+        <Actions api={api} token={token} me={me} chain={chain} minFee={info?.minFee ?? 1} onDone={poll} />
         <Mempool mempool={mempool} me={me} />
       </div>
 
@@ -135,6 +162,7 @@ export default function App() {
           api={api}
           token={token}
           me={me}
+          chain={chain}
           minFee={info?.minFee ?? 1}
           defaultBurn={info?.messageBurn ?? 5}
           messages={messages}
@@ -310,13 +338,14 @@ function Explorer({ chain, me }: { chain: Block[]; me: string }) {
   );
 }
 
-function Actions({ api, token, me, minFee, onDone }: { api: string; token: string; me: string; minFee: number; onDone: () => void }) {
+function Actions({ api, token, me, chain, minFee, onDone }: { api: string; token: string; me: string; chain: Block[]; minFee: number; onDone: () => void }) {
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [fee, setFee] = useState(String(minFee));
   const [memo, setMemo] = useState('');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
+  const [pending, track] = usePending(chain);
 
   const submit = async () => {
     setBusy(true);
@@ -324,6 +353,7 @@ function Actions({ api, token, me, minFee, onDone }: { api: string; token: strin
     try {
       const r = await postJSON<{ txid: string }>(api, '/send', { to: to.trim(), amount: Number(amount), fee: Number(fee), memo }, token);
       setBanner({ kind: 'ok', text: `已广播 · txid ${r.txid.slice(0, 24)}…` });
+      track(r.txid);
       setTo('');
       setAmount('');
       setFee(String(minFee));
@@ -370,6 +400,7 @@ function Actions({ api, token, me, minFee, onDone }: { api: string; token: strin
         </div>
       )}
       {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+      <PendingBadge pending={pending} />
     </div>
   );
 }
@@ -390,6 +421,7 @@ function Messaging({
   api,
   token,
   me,
+  chain,
   minFee,
   defaultBurn,
   messages,
@@ -398,6 +430,7 @@ function Messaging({
   api: string;
   token: string;
   me: string;
+  chain: Block[];
   minFee: number;
   defaultBurn: number;
   messages: Messages | null;
@@ -410,6 +443,7 @@ function Messaging({
   const [tab, setTab] = useState<'in' | 'out'>('in');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
+  const [pending, track] = usePending(chain);
 
   const send = async () => {
     setBusy(true);
@@ -417,6 +451,7 @@ function Messaging({
     try {
       const r = await postJSON<{ txid: string }>(api, '/message', { to: to.trim(), text, burn: Number(burn), fee: minFee, encrypt: enc }, token);
       setBanner({ kind: 'ok', text: `已广播${enc ? ' 🔒加密' : ''} · 烧 ${burn} 🔥 · txid ${r.txid.slice(0, 20)}…` });
+      track(r.txid);
       setTo('');
       setText('');
       setBurn(String(defaultBurn));
@@ -457,6 +492,7 @@ function Messaging({
         </label>
       </div>
       {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+      <PendingBadge pending={pending} />
 
       <div className="tabs" style={{ marginTop: 14 }}>
         <span className={`linklike ${tab === 'in' ? 'on' : ''}`} onClick={() => setTab('in')}>
@@ -503,30 +539,35 @@ function Newcomers({ newcomers }: { newcomers: Newcomer[] }) {
   );
 }
 
-function RedPackets({ packets, api, token, onDone }: { packets: RedPacket[]; api: string; token: string; onDone: () => void }) {
+function RedPackets({ packets, chain, api, token, onDone }: { packets: RedPacket[]; chain: Block[]; api: string; token: string; onDone: () => void }) {
   const [total, setTotal] = useState('');
   const [count, setCount] = useState('');
   const [equal, setEqual] = useState(false);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
+  const [pending, track] = usePending(chain);
 
-  const act = async (path: string, body: unknown, okMsg: string) => {
+  const act = async (path: string, body: unknown, okMsg: string): Promise<boolean> => {
     setBusy(true);
     setBanner(null);
     try {
-      await postJSON(api, path, body, token);
+      const r = await postJSON<{ txid: string }>(api, path, body, token);
       setBanner({ kind: 'ok', text: okMsg });
+      track(r.txid);
       onDone();
+      return true;
     } catch (e) {
       setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      return false;
     } finally {
       setBusy(false);
     }
   };
   const send = async () => {
-    await act('/redpacket', { total: Number(total), count: Number(count), mode: equal ? 'e' : 'r' }, '🧧 已发出（等一个区块确认后可抢）');
-    setTotal('');
-    setCount('');
+    if (await act('/redpacket', { total: Number(total), count: Number(count), mode: equal ? 'e' : 'r' }, '🧧 已发出（打包确认后可抢）')) {
+      setTotal('');
+      setCount('');
+    }
   };
 
   const open = packets.filter((p) => !p.done);
@@ -555,6 +596,7 @@ function RedPackets({ packets, api, token, onDone }: { packets: RedPacket[]; api
         </label>
       </div>
       {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+      <PendingBadge pending={pending} />
 
       <div className="mkt-grid">
         {open.length === 0 && <div className="empty">还没有红包，发一个吧 🧧</div>}
@@ -596,18 +638,20 @@ function RedPackets({ packets, api, token, onDone }: { packets: RedPacket[]; api
   );
 }
 
-function Marketplace({ market, api, token, onDone }: { market: Listing[]; api: string; token: string; onDone: () => void }) {
+function Marketplace({ market, chain, api, token, onDone }: { market: Listing[]; chain: Block[]; api: string; token: string; onDone: () => void }) {
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
+  const [pending, track] = usePending(chain);
 
   const act = async (path: string, body: unknown, okMsg: string) => {
     setBusy(true);
     setBanner(null);
     try {
-      await postJSON(api, path, body, token);
+      const r = await postJSON<{ txid: string }>(api, path, body, token);
       setBanner({ kind: 'ok', text: okMsg });
+      track(r.txid);
       onDone();
       return true;
     } catch (e) {
@@ -619,7 +663,7 @@ function Marketplace({ market, api, token, onDone }: { market: Listing[]; api: s
   };
 
   const sell = async () => {
-    if (await act('/market/sell', { price: Number(price), title: title.trim() }, '已上架（等一个区块确认后显示）')) {
+    if (await act('/market/sell', { price: Number(price), title: title.trim() }, '已上架（打包确认后显示）')) {
       setTitle('');
       setPrice('');
     }
@@ -647,6 +691,7 @@ function Marketplace({ market, api, token, onDone }: { market: Listing[]; api: s
         </button>
       </div>
       {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+      <PendingBadge pending={pending} />
 
       <div className="mkt-grid">
         {active.length === 0 && <div className="empty">还没有人上架，来当第一个卖家吧</div>}
