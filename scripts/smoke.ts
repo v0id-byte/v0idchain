@@ -17,6 +17,12 @@ import {
   encryptMemo,
   decryptMemo,
   isEncryptedMemo,
+  makeRedPacket,
+  parseRedPackets,
+  computeShare,
+  redSeed,
+  RED_ESCROW_ADDRESS,
+  RED_EXPIRY,
   buildListMemo,
   BUY_PREFIX,
   DEL_PREFIX,
@@ -368,6 +374,82 @@ check('链上 NAME|treasury 自转不被注册（保留名防冒充）', parseNa
 nm.addTransaction(createMessage(alice, alice.address, 'NAME|ghost', nm.nonceOf(alice.address)));
 await nm.mine(bob.address);
 check('自发消息携 NAME memo 不注册（须自转非消息）', parseNames(nm.chain).nameToOwner.has('ghost') === false);
+
+console.log(`\n— 链上抢红包：发→抢(拼手气)→分配守恒→防重复/越权→过期退款 —`);
+const rp = new Blockchain();
+const C = Wallet.generate();
+const D = Wallet.generate();
+for (let i = 0; i < 11; i++) await rp.mine(alice.address); // alice 攒够 发红包(10)+手续费
+for (let i = 0; i < 2; i++) await rp.mine(bob.address);
+for (let i = 0; i < 2; i++) await rp.mine(C.address);
+for (let i = 0; i < 2; i++) await rp.mine(D.address);
+const aBefore = rp.balanceOf(alice.address);
+check('makeRedPacket 合法', makeRedPacket(10, 3, 'r').ok);
+check('makeRedPacket 总额<份数被拒', !makeRedPacket(2, 3, 'r').ok);
+const redTx = createTransaction(alice, RED_ESCROW_ADDRESS, 10, rp.nonceOf(alice.address), makeRedPacket(10, 3, 'r').memo!, 1);
+check('发红包进池（转给托管地址）', rp.addTransaction(redTx).ok);
+await rp.mine(bob.address);
+const redId = redTx.txid;
+check('发起人被扣 总额+手续费', rp.balanceOf(alice.address) === aBefore - 10 - 1);
+check('总额锁进托管地址', rp.balanceOf(RED_ESCROW_ADDRESS) === 10);
+check('红包池开着：剩余 10 / 3 份', rp.computeState().pools.get(redId)?.remaining === 10 && rp.computeState().pools.get(redId)?.remainingCount === 3);
+check('发起人不能抢自己的红包', !rp.addTransaction(createTransaction(alice, alice.address, 0, rp.nonceOf(alice.address), 'CLAIM|' + redId, 1)).ok);
+check('领取金额必须为 0', !rp.addTransaction(createTransaction(bob, bob.address, 5, rp.nonceOf(bob.address), 'CLAIM|' + redId, 1)).ok);
+check('链上发红包 总额<份数 被拒', !rp.addTransaction(createTransaction(alice, RED_ESCROW_ADDRESS, 2, rp.nonceOf(alice.address), 'RED|3|r', 1)).ok);
+check('普通转账打到托管地址被拒（非红包）', !rp.addTransaction(createTransaction(alice, RED_ESCROW_ADDRESS, 1, rp.nonceOf(alice.address), 'hi', 1)).ok);
+// bob 抢
+const bBefore = rp.balanceOf(bob.address);
+const claimB = createTransaction(bob, bob.address, 0, rp.nonceOf(bob.address), 'CLAIM|' + redId, 1);
+check('bob 抢红包进池', rp.addTransaction(claimB).ok);
+await rp.mine(C.address);
+const shareB = computeShare(10, 3, 'r', redSeed(rp.latest.hash, claimB.txid));
+check('bob 收到拼手气份额（=确定性公式值，≥1）', shareB >= 1 && rp.balanceOf(bob.address) === bBefore - 1 + shareB);
+check('bob 不能重复抢', !rp.addTransaction(createTransaction(bob, bob.address, 0, rp.nonceOf(bob.address), 'CLAIM|' + redId, 1)).ok);
+// C 抢
+const cBefore = rp.balanceOf(C.address);
+const claimC = createTransaction(C, C.address, 0, rp.nonceOf(C.address), 'CLAIM|' + redId, 1);
+rp.addTransaction(claimC);
+await rp.mine(D.address);
+const shareC = computeShare(10 - shareB, 2, 'r', redSeed(rp.latest.hash, claimC.txid));
+check('C 收到份额', rp.balanceOf(C.address) === cBefore - 1 + shareC);
+// D 抢（第三＝最后一份，拿走剩余）
+const dBefore = rp.balanceOf(D.address);
+const claimD = createTransaction(D, D.address, 0, rp.nonceOf(D.address), 'CLAIM|' + redId, 1);
+rp.addTransaction(claimD);
+await rp.mine(bob.address);
+const shareD = 10 - shareB - shareC;
+check('D（最后一份）拿走剩余', rp.balanceOf(D.address) === dBefore - 1 + shareD);
+check('三份相加 == 总额（全部派完）', shareB + shareC + shareD === 10);
+check('红包抢完：剩余 0 份、托管清零', rp.computeState().pools.get(redId)?.remainingCount === 0 && rp.balanceOf(RED_ESCROW_ADDRESS) === 0);
+check('抢完后再抢被拒', !rp.addTransaction(createTransaction(C, C.address, 0, rp.nonceOf(C.address), 'CLAIM|' + redId, 1)).ok);
+const rpSupply = [...rp.computeState().balances.values()].reduce((s, v) => s + v, 0);
+check('全链守恒（含托管/虚空）== 预挖 + 链高×奖励', rpSupply === GENESIS_PREMINE + rp.height * BLOCK_REWARD);
+check('含红包的链整链校验通过', Blockchain.validateChain(rp.chain).ok);
+const view = parseRedPackets(rp.chain).find((v) => v.id === redId)!;
+check('只读视图与共识一致（3 领取/已完成/份额和=总额）', view.claims.length === 3 && view.done && view.claims.reduce((s, c) => s + c.amount, 0) === 10);
+
+console.log(`\n— 红包过期退款（未过期拒、过期退回发起人）—`);
+const rf = new Blockchain();
+for (let i = 0; i < 8; i++) await rf.mine(alice.address); // alice 攒够 发红包(6)+手续费
+for (let i = 0; i < 2; i++) await rf.mine(bob.address);
+const refundRed = createTransaction(alice, RED_ESCROW_ADDRESS, 6, rf.nonceOf(alice.address), makeRedPacket(6, 3, 'r').memo!, 1);
+rf.addTransaction(refundRed);
+await rf.mine(bob.address);
+const rid = refundRed.txid;
+const aBal2 = rf.balanceOf(alice.address);
+check('未过期退款被拒', !rf.addTransaction(createTransaction(alice, alice.address, 0, rf.nonceOf(alice.address), 'REFUND|' + rid, 1)).ok);
+const claimRf = createTransaction(bob, bob.address, 0, rf.nonceOf(bob.address), 'CLAIM|' + rid, 1);
+check('bob 抢一份进池', rf.addTransaction(claimRf).ok);
+await rf.mine(bob.address);
+const sB = computeShare(6, 3, 'r', redSeed(rf.latest.hash, claimRf.txid));
+for (let i = 0; i < RED_EXPIRY + 1; i++) await rf.mine(bob.address); // 挖过期
+const refundTx = createTransaction(alice, alice.address, 0, rf.nonceOf(alice.address), 'REFUND|' + rid, 1);
+check('过期后退款进池', rf.addTransaction(refundTx).ok);
+await rf.mine(bob.address);
+check('发起人取回剩余（6 - 已领 - 退款费）', rf.balanceOf(alice.address) === aBal2 - 1 + (6 - sB));
+check('退款后该红包托管清零', rf.computeState().pools.get(rid)?.remaining === 0);
+check('退款后再抢被拒', !rf.addTransaction(createTransaction(C, C.address, 0, rf.nonceOf(C.address), 'CLAIM|' + rid, 1)).ok);
+check('退款链整链校验通过', Blockchain.validateChain(rf.chain).ok);
 
 console.log(`\n余额总览：`);
 console.log(`  央行预挖 ${bc.balanceOf(GENESIS_PREMINE_ADDRESS)} ${SYMBOL}`);
