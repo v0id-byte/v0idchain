@@ -140,9 +140,9 @@ struct RedPacketsView: View {
         let label: String
         let color: Color
         if p.refunded {
-            label = "已退款"; color = Color.secondary
+            label = "已退款"; color = Color.gray
         } else if p.done {
-            label = "已抢完"; color = Color.secondary
+            label = "已抢完"; color = Color.gray
         } else {
             label = "进行中"; color = Color.green
         }
