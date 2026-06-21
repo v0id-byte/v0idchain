@@ -13,6 +13,7 @@ import {
   bytesToHex,
   SYMBOL,
   MIN_FEE,
+  MESSAGE_BURN,
   GENESIS_PREMINE_ADDRESS,
 } from '@v0idchain/core';
 
@@ -81,6 +82,8 @@ program
       p2pPort: Number(o.p2pPort),
       advertise: o.advertise,
       peers,
+      // 有新节点上线 / 新地址首次上链时，实时打一行（运行中的节点窗口直接可见）
+      onNotice: (m) => console.log(`  ${c.cyan(m)}`),
     });
     node.start();
     const apiToken = loadOrCreateApiToken(dataDir);
@@ -143,8 +146,24 @@ apiOpt(program.command('info'))
     console.log(c.bold('交易池'), `${r.mempool} 笔待打包`);
     console.log(c.bold('难度 '), r.difficulty);
     if (r.minFee !== undefined) console.log(c.bold('手续费'), `≥ ${r.minFee}（gas，给矿工）`);
+    if (r.burned !== undefined) console.log(c.bold('已销毁'), `🔥 ${r.burned} ${SYMBOL}（发消息烧进虚空）`);
     console.log(c.bold('对等 '), `${r.peers} 个节点`);
     for (const p of r.peerList) console.log('   ', p.url ?? '?', p.address ? c.dim(`(${short(p.address)})`) : '');
+  });
+
+apiOpt(program.command('newcomers'))
+  .description('查看本次会话发现的新成员（新节点上线 / 新地址首次上链）')
+  .action(async (o) => {
+    const r = (await api(o, 'GET', '/newcomers')) as any[];
+    if (!r.length) return console.log(c.dim('（暂无新成员）'));
+    for (const n of r) {
+      const when = c.dim(new Date(n.at).toLocaleString());
+      if (n.kind === 'peer') {
+        console.log(`${c.cyan('🆕 新节点')} ${short(n.address)} ${c.dim('via ' + (n.listen ?? '?'))}  ${when}`);
+      } else {
+        console.log(`${c.green('🆕 新地址')} ${short(n.address)} ${c.dim('@ #' + n.height)}  ${when}`);
+      }
+    }
   });
 
 apiOpt(program.command('balance'))
@@ -166,6 +185,37 @@ apiOpt(program.command('send'))
   .action(async (to, amount, o) => {
     const r = await api(o,'POST', '/send', { to, amount: Number(amount), memo: o.memo, fee: Number(o.fee) });
     console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${Number(o.fee)}`));
+  });
+
+apiOpt(program.command('msg'))
+  .argument('<to>', '收件人地址')
+  .argument('<text...>', '消息正文')
+  .option('--burn <n>', `烧进虚空的 $V0ID（永久销毁；默认 ${MESSAGE_BURN}，越多越壕）`, String(MESSAGE_BURN))
+  .option('--fee <n>', `手续费（gas，给打包矿工，至少 ${MIN_FEE}）`, String(MIN_FEE))
+  .description('给一个地址发链上消息（不转币，烧掉一点 $V0ID）')
+  .action(async (to, text, o) => {
+    const burn = Number(o.burn);
+    const r = await api(o, 'POST', '/message', { to, text: text.join(' '), burn, fee: Number(o.fee) });
+    console.log(c.green('✉️  消息已广播'), c.dim('txid='), r.txid, c.dim(`🔥烧=${burn} 手续费=${Number(o.fee)}`));
+    console.log(c.dim('（等一个区块确认后，对方 `v0id inbox` 即可看到）'));
+  });
+
+apiOpt(program.command('inbox'))
+  .argument('[address]', '要查看的地址（默认本节点自己）')
+  .option('--sent', '改看发件箱（自己发出的消息）', false)
+  .description('查看链上消息收件箱（发给你的消息）')
+  .action(async (address, o) => {
+    const path = address ? `/messages?address=${encodeURIComponent(address)}` : '/messages';
+    const r = await api(o, 'GET', path);
+    const list = o.sent ? r.sent : r.received;
+    const label = o.sent ? '发件箱' : '收件箱';
+    console.log(c.dim(`${short(r.address)} 的${label}`));
+    if (!list.length) return console.log(c.dim('（暂无消息）'));
+    for (const m of list) {
+      const who = o.sent ? `→ ${short(m.to)}` : `← ${short(m.from)}`;
+      const when = c.dim(new Date(m.timestamp).toLocaleString());
+      console.log(`${c.cyan(who)}  ${c.bold(m.text)}  ${c.dim(`🔥${m.burn} #${m.height}`)}  ${when}`);
+    }
   });
 
 apiOpt(program.command('mine'))
