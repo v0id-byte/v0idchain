@@ -34,7 +34,11 @@ export const MAX_FUTURE_DRIFT_MS = 120_000;
  * 用 `v0id checkpoint <height>` 生成下面这种条目并提交（**所有节点必须一致**；填错会让本地链无法通过校验）。
  */
 export const CHECKPOINTS: { index: number; hash: string }[] = [
-  // 例：{ index: 1000, hash: '0000abcd…' },
+  // 取自公网种子 mc.void1211.com 规范链（2026-06-21，链高 ~425；均深度确认 125+ 块）。
+  // 冻结前 300 块历史：任何回滚到此前的 reorg（即便工作量更大）一律被拒。
+  { index: 100, hash: '000002609afc7fd7b80a86708bff3ad16f50e8a7215650e3d103e69433193a4c' },
+  { index: 200, hash: '0000048d00342b94b4b15c12500e47f002cb5b0726ccc1a9746cb5f3d6b89e28' },
+  { index: 300, hash: '000001e93ce2e77f98a07ec6a0688c3534458a8e8eca2977349aaeb73fa73d06' },
 ];
 
 /** 交易备注最大长度（字符） */
