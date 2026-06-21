@@ -6,6 +6,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case wallet = "钱包"
     case send = "转账"
     case messages = "消息"
+    case redPackets = "红包"
     case explorer = "逛链"
     case settings = "设置"
     var id: String { rawValue }
@@ -14,6 +15,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .wallet: return "wallet.pass"
         case .send: return "paperplane"
         case .messages: return "envelope"
+        case .redPackets: return "gift"
         case .explorer: return "cube.transparent"
         case .settings: return "gearshape"
         }
@@ -45,6 +47,7 @@ struct ContentView: View {
         case .wallet: WalletView()
         case .send: SendView()
         case .messages: MessagesView()
+        case .redPackets: RedPacketsView()
         case .explorer: ExplorerView()
         case .settings: SettingsView()
         }

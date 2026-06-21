@@ -29,6 +29,30 @@ public struct ChainMessage: Identifiable, Equatable {
     public var id: String { txid }
 }
 
+/// 红包里的一条领取记录。
+public struct RedPacketClaim: Identifiable, Equatable {
+    public let who: String
+    public let amount: Int
+    public let height: Int
+    public var id: String { who }
+}
+
+/// 链上红包只读视图（扫链重放，与共识同源）。
+public struct RedPacketView: Identifiable, Equatable {
+    public let id: String
+    public let creator: String
+    public let total: Int
+    public let count: Int
+    public let mode: String        // "r" = 拼手气, "e" = 均分
+    public var remaining: Int
+    public var remainingCount: Int
+    public let createHeight: Int
+    public var claims: [RedPacketClaim]
+    public var refunded: Bool
+    public var done: Bool
+    public var isRandom: Bool { mode == "r" }
+}
+
 /// 浏览器里一条交易的引用（带其所在区块高度）。
 public struct TxRef: Identifiable, Equatable {
     public let tx: Transaction
@@ -151,6 +175,71 @@ public enum Chain {
         }
         if let b = findBlock(chain, q) { return .block(b) }
         return .none
+    }
+
+    // ---- 红包（对应 packages/core/src/redpacket.ts）----
+
+    /// 拼手气份额计算（全整数，与共识同源）。
+    static func computeShare(remaining: Int, remainingCount: Int, mode: String, seedHex: String) -> Int {
+        if remainingCount <= 1 { return remaining }
+        if mode == "e" { return remaining / remainingCount }
+        let maxShare = remaining - (remainingCount - 1)
+        let upper = max(1, min((2 * remaining) / remainingCount, maxShare))
+        let seed = Int(UInt64(String(seedHex.prefix(12)), radix: 16) ?? 0)
+        return 1 + (seed % upper)
+    }
+
+    /// 扫整条链还原所有红包及其领取记录（只读展示，最新在前）。
+    public static func parseRedPackets(_ chain: [Block]) -> [RedPacketView] {
+        var pools = [String: RedPacketView]()
+        for b in chain {
+            for tx in b.transactions {
+                let m = tx.memo
+                if m.isEmpty { continue }
+                // 发红包
+                if tx.to == Config.redEscrowAddress && m.hasPrefix(Config.redPrefix) {
+                    let rest = String(m.dropFirst(Config.redPrefix.count))
+                    let parts = rest.split(separator: "|", maxSplits: 1)
+                    guard parts.count == 2,
+                          let count = Int(parts[0]),
+                          count >= 1, count <= Config.maxRedCount,
+                          (parts[1] == "r" || parts[1] == "e"),
+                          tx.amount >= count else { continue }
+                    pools[tx.txid] = RedPacketView(
+                        id: tx.txid, creator: tx.from,
+                        total: tx.amount, count: count, mode: String(parts[1]),
+                        remaining: tx.amount, remainingCount: count,
+                        createHeight: b.index, claims: [], refunded: false, done: false)
+                    continue
+                }
+                // 抢红包
+                if m.hasPrefix(Config.claimPrefix) {
+                    let claimId = String(m.dropFirst(Config.claimPrefix.count))
+                    guard claimId.count == 64, claimId.allSatisfy({ $0.isHexDigit }),
+                          var p = pools[claimId],
+                          !p.done, p.remainingCount > 0,
+                          tx.from != p.creator,
+                          !p.claims.contains(where: { $0.who == tx.from }) else { continue }
+                    let seed = Crypto.sha256Hex(b.hash + tx.txid)
+                    let share = computeShare(remaining: p.remaining, remainingCount: p.remainingCount, mode: p.mode, seedHex: seed)
+                    p.claims.append(RedPacketClaim(who: tx.from, amount: share, height: b.index))
+                    p.remaining -= share
+                    p.remainingCount -= 1
+                    if p.remainingCount == 0 { p.done = true }
+                    pools[claimId] = p
+                    continue
+                }
+                // 退款
+                if m.hasPrefix(Config.refundPrefix) {
+                    let refundId = String(m.dropFirst(Config.refundPrefix.count))
+                    guard var p = pools[refundId],
+                          !p.done, tx.from == p.creator, p.remaining > 0 else { continue }
+                    p.refunded = true; p.remaining = 0; p.remainingCount = 0; p.done = true
+                    pools[refundId] = p
+                }
+            }
+        }
+        return pools.values.sorted { $0.createHeight > $1.createHeight }
     }
 
     // ---- 可选：轻量完整性自检（不含难度重定向引擎，保持简单可靠）----

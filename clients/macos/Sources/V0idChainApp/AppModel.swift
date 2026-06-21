@@ -193,6 +193,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ---- 红包 ----
+    var redPackets: [RedPacketView] { Chain.parseRedPackets(chain) }
+
+    func sendRedPacket(total: Int, count: Int, isRandom: Bool) {
+        guard let w = wallet else { lastError = "请先创建或登录钱包"; return }
+        guard count >= 1, count <= Config.maxRedCount else { lastError = "份数需 1~\(Config.maxRedCount)"; return }
+        guard total >= count else { lastError = "总额需 ≥ 份数（每份至少 1）：\(total) < \(count)"; return }
+        guard total + Config.minFee <= available else { lastError = "余额不足：可用 \(available)，需要 \(total + Config.minFee)"; return }
+        let memo = "\(Config.redPrefix)\(count)|\(isRandom ? "r" : "e")"
+        do {
+            let tx = try TxBuilder.transfer(wallet: w, to: Config.redEscrowAddress, amount: total, nonce: nextNonce, memo: memo, fee: Config.minFee)
+            pending.append(tx)
+            broadcast(tx, notice: "已广播红包 \(total) \(Config.symbol) / \(count) 份（等矿工打包）")
+        } catch { lastError = error.localizedDescription }
+    }
+
+    func claimRedPacket(id: String) {
+        guard let w = wallet else { lastError = "请先创建或登录钱包"; return }
+        zeroAmountOp(wallet: w, memo: "\(Config.claimPrefix)\(id)", notice: "已广播抢红包（等矿工打包）")
+    }
+
+    func refundRedPacket(id: String) {
+        guard let w = wallet else { lastError = "请先创建或登录钱包"; return }
+        zeroAmountOp(wallet: w, memo: "\(Config.refundPrefix)\(id)", notice: "已广播退款（等矿工打包）")
+    }
+
+    private func zeroAmountOp(wallet: Wallet, memo: String, notice: String) {
+        guard Config.minFee <= available else { lastError = "余额不足：手续费需 \(Config.minFee)"; return }
+        do {
+            let ts = TxBuilder.nowMillis()
+            let n = nextNonce
+            let tid = TxBuilder.txid(from: wallet.address, to: wallet.address, amount: 0,
+                                     fee: Config.minFee, nonce: n, timestamp: ts, memo: memo, burn: nil)
+            let sig = try wallet.sign(txidHex: tid)
+            let tx = Transaction(from: wallet.address, to: wallet.address, amount: 0,
+                                 fee: Config.minFee, nonce: n, timestamp: ts, memo: memo,
+                                 burn: nil, signature: sig, txid: tid)
+            pending.append(tx)
+            broadcast(tx, notice: notice)
+        } catch { lastError = error.localizedDescription }
+    }
+
     // ---- 浏览器 ----
     func search(_ q: String) -> SearchResult { Chain.search(chain, q) }
 

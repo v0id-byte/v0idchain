@@ -30,4 +30,13 @@ public enum Config {
     public static let bootstrapNodes: [String] = [defaultSeed]
     /// 同时保持的最大连接数（连上一批 → 整链只向其一拉、交易广播给全部、掉线自动补）。
     public static let maxPeers = 6
+
+    // ---- 红包（必须与 packages/core/src/config.ts 对齐）----
+    /// 红包托管地址：发红包时 to = 此地址，托管由共识控制。
+    public static let redEscrowAddress = "0x" + String(repeating: "0", count: 63) + "1"
+    public static let redPrefix = "RED|"
+    public static let claimPrefix = "CLAIM|"
+    public static let refundPrefix = "REFUND|"
+    public static let maxRedCount = 100
+    public static let redExpiry = 10
 }
