@@ -88,6 +88,8 @@ export class P2P {
 
   /** 当前已连接的 socket → 元信息 */
   private peers = new Map<WebSocket, PeerMeta>();
+  /** 分块同步缓冲：对等节点把大链拆片发来时，在这里攒齐再交给上层 */
+  private chunkBuffers = new Map<WebSocket, { blocks: Block[]; total: number }>();
   /** 听说过的对外地址（用于发现 + 重连） */
   private knownUrls = new Set<string>();
   /** 运营者显式提供的种子（--peers / 本地 /connect）：永不被 gossip 淘汰，且允许私网/环回地址 */
@@ -211,6 +213,7 @@ export class P2P {
 
   private cleanup(ws: WebSocket, dialedUrl?: string): void {
     this.peers.delete(ws);
+    this.chunkBuffers.delete(ws); // 连接断了，清掉该连接的残留分片缓冲
     if (dialedUrl) this.dialedUrls.delete(dialedUrl); // 允许之后重连
   }
 
@@ -271,9 +274,23 @@ export class P2P {
           }
           break;
         }
-        case 'BLOCKS':
-          if (Array.isArray(msg.blocks)) this.handlers.onBlocks(msg.blocks, ws);
+        case 'BLOCKS': {
+          if (!Array.isArray(msg.blocks)) break;
+          if (typeof msg.from === 'number' && typeof msg.total === 'number') {
+            // 分块同步：对方把大链拆片发来，攒齐后再交给上层。
+            if (msg.from === 0) this.chunkBuffers.set(ws, { blocks: [], total: msg.total });
+            const buf = this.chunkBuffers.get(ws);
+            if (!buf || buf.total !== msg.total) break; // total 对不上（新一轮请求），丢弃旧片
+            buf.blocks.push(...msg.blocks);
+            if (buf.blocks.length >= buf.total) {
+              this.chunkBuffers.delete(ws);
+              this.handlers.onBlocks(buf.blocks, ws);
+            }
+          } else {
+            this.handlers.onBlocks(msg.blocks, ws);
+          }
           break;
+        }
         case 'TX':
           if (msg.tx && typeof msg.tx === 'object') this.handlers.onTx(msg.tx, ws);
           break;
