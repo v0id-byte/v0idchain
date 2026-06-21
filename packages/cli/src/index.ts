@@ -206,15 +206,17 @@ apiOpt(program.command('inbox'))
   .description('查看链上消息收件箱（发给你的消息）')
   .action(async (address, o) => {
     const path = address ? `/messages?address=${encodeURIComponent(address)}` : '/messages';
-    const r = await api(o, 'GET', path);
+    const [r, reg] = await Promise.all([api(o, 'GET', path), api(o, 'GET', '/names').catch(() => ({}))]);
+    const a2n: Record<string, string> = reg.addressToName || {};
+    const nm = (addr: string) => (a2n[addr] ? c.cyan('@' + a2n[addr]) : short(addr));
     const list = o.sent ? r.sent : r.received;
     const label = o.sent ? '发件箱' : '收件箱';
-    console.log(c.dim(`${short(r.address)} 的${label}`));
+    console.log(c.dim(`${nm(r.address)} 的${label}`));
     if (!list.length) return console.log(c.dim('（暂无消息）'));
     for (const m of list) {
-      const who = o.sent ? `→ ${short(m.to)}` : `← ${short(m.from)}`;
+      const who = o.sent ? `→ ${nm(m.to)}` : `← ${nm(m.from)}`;
       const when = c.dim(new Date(m.timestamp).toLocaleString());
-      console.log(`${c.cyan(who)}  ${c.bold(m.text)}  ${c.dim(`🔥${m.burn} #${m.height}`)}  ${when}`);
+      console.log(`${who}  ${c.bold(m.text)}  ${c.dim(`🔥${m.burn} #${m.height}`)}  ${when}`);
     }
   });
 
@@ -296,6 +298,41 @@ apiOpt(market.command('delist'))
   .action(async (id, o) => {
     const r = await api(o,'POST', '/market/delist', { id });
     console.log(c.green('已撤单'), c.dim('txid='), r.txid);
+  });
+
+// ---- name 昵称（全网唯一抢注，先到先得） ----
+const name = program.command('name').description('链上昵称：全网唯一抢注，先到先得');
+apiOpt(name.command('claim'))
+  .argument('<name>', '想抢的昵称（1~20 位 小写字母/数字/_/-）')
+  .description('抢注一个昵称（自转 1 币 + memo；需 ≥2 余额；挖进区块后生效）')
+  .action(async (n, o) => {
+    const r = await api(o, 'POST', '/name/claim', { name: n });
+    console.log(c.green('🪪 已提交抢注'), c.dim('txid='), r.txid, c.dim('（等一个区块确认；先到先得）'));
+  });
+apiOpt(name.command('list'))
+  .description('看已注册的昵称')
+  .action(async (o) => {
+    const reg = await api(o, 'GET', '/names');
+    const entries = Object.entries(reg.nameToOwner || {});
+    if (!entries.length) return console.log(c.dim('（还没有人注册昵称）'));
+    for (const [nm, owner] of entries) console.log(`  ${c.cyan('@' + nm)}  ${c.dim(short(owner as string))}`);
+  });
+apiOpt(name.command('who'))
+  .argument('<name>', '昵称')
+  .description('查某昵称属于哪个地址')
+  .action(async (n, o) => {
+    const reg = await api(o, 'GET', '/names');
+    const owner = (reg.nameToOwner || {})[String(n).trim().toLowerCase()];
+    console.log(owner ? `${c.cyan('@' + n)} → ${c.green(owner)}` : c.dim(`@${n} 还没人注册`));
+  });
+apiOpt(name.command('of'))
+  .argument('[address]', '地址（默认本节点自己）')
+  .description('查某地址的显示昵称')
+  .action(async (address, o) => {
+    const reg = await api(o, 'GET', '/names');
+    const addr = address || (await api(o, 'GET', '/info')).address;
+    const nm = (reg.addressToName || {})[addr];
+    console.log(nm ? `${c.green(short(addr))} = ${c.cyan('@' + nm)}` : c.dim(`${short(addr)} 还没注册昵称`));
   });
 
 // ---- wallet（直接读数据目录，不需要节点在跑） ----

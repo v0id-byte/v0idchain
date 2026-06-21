@@ -8,3 +8,4 @@ export * from './blockchain.js';
 export * from './storage.js';
 export * from './market.js';
 export * from './messages.js';
+export * from './names.js';

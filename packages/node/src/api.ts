@@ -67,6 +67,8 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
           }
           case '/newcomers':
             return json(200, node.recentNewcomers());
+          case '/names':
+            return json(200, node.names());
           case '/balance': {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
@@ -95,6 +97,10 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             const burn = body.burn === undefined ? undefined : Number(body.burn);
             const fee = body.fee === undefined ? undefined : Number(body.fee);
             const r = node.message(String(body.to), text, burn, fee);
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/name/claim': {
+            const r = node.claimName(String(body.name ?? ''));
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/mine': {

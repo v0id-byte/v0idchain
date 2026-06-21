@@ -16,6 +16,9 @@ import {
   saveChain,
   parseMarket,
   parseMessages,
+  parseNames,
+  registryToJSON,
+  makeNameClaim,
   collectAddresses,
   makeListing,
   BUY_PREFIX,
@@ -135,6 +138,19 @@ export class V0idNode {
       received: all.filter((m) => m.to === address),
       sent: all.filter((m) => m.from === address),
     };
+  }
+
+  // ---- 链上昵称（全网唯一抢注）----
+  /** 抢注一个昵称：自转 1 币 + memo `NAME|<名字>`（需 ≥2 余额；被挖进区块后生效）。先到先得。 */
+  claimName(name: string): { ok: boolean; tx?: Transaction; error?: string } {
+    const r = makeNameClaim(name);
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, this.wallet.address, 1, r.memo!, MIN_FEE);
+  }
+
+  /** 昵称注册表（名字↔地址），可 JSON 序列化 */
+  names() {
+    return registryToJSON(parseNames(this.bc.chain));
   }
 
   // ---- 新人发现 ----
