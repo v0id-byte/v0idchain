@@ -1,7 +1,7 @@
 // 多节点集成测试：真实 WebSocket 连接，验证区块广播、转账同步、迟到节点追链、双向出块。
-import { rmSync } from 'node:fs';
+import { rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { V0idNode, startHttpApi, isPublicWsUrl } from '../packages/node/src/index.js'; // 用 Node 25 内置的全局 WebSocket 客户端
-import { Wallet } from '../packages/core/src/index.js';
+import { Wallet, loadChain } from '../packages/core/src/index.js';
 
 const DIR = '.data/it';
 rmSync(DIR, { recursive: true, force: true });
@@ -132,6 +132,14 @@ check('拒 IPv6 环回 [::1]', isPublicWsUrl('ws://[::1]:6802') === false);
 check('拒 NAT64 [64:ff9b::127.0.0.1]', isPublicWsUrl('ws://[64:ff9b::127.0.0.1]:6802') === false);
 check('拒 RFC1918 10.x 与 169.254 元数据地址', !isPublicWsUrl('ws://10.0.0.5:6001') && !isPublicWsUrl('ws://169.254.169.254:80'));
 check('放行公网 IPv4 / 域名 / 全局单播 IPv6', isPublicWsUrl('ws://8.8.8.8:6001') && isPublicWsUrl('ws://mc.void1211.com:6001') && isPublicWsUrl('ws://[2606:4700::1]:1'));
+
+console.log('\n— 健壮性：chain.json 损坏不静默清空，而是备份后重建 —');
+const corruptDir = `${DIR}/corrupt`;
+mkdirSync(corruptDir, { recursive: true });
+writeFileSync(`${corruptDir}/chain.json`, JSON.stringify({ chain: [{ index: 0, hash: 'deadbeef', transactions: [] }], mempool: [] }));
+const recovered = loadChain(corruptDir);
+check('被篡改的 chain.json → 回退到创世（height 0）', recovered.height === 0);
+check('被篡改的 chain.json 被改名备份（未静默丢弃）', readdirSync(corruptDir).some((n) => n.startsWith('chain.json.corrupt-')));
 
 console.log(failed === 0 ? '\n🎉 集成测试全部通过\n' : `\n💥 ${failed} 项失败\n`);
 process.exit(failed === 0 ? 0 : 1);

@@ -63,7 +63,11 @@ export function loadOrCreateWallet(dataDir: string): Wallet {
   return w;
 }
 
-/** 读取链；不存在或损坏则返回全新链（仅含创世块）。 */
+/**
+ * 读取链；不存在则返回全新链。损坏/非法时**先把坏文件改名备份再重建**，绝不静默丢弃 ——
+ * 否则任何人（入侵/共享主机同用户/位翻转）改 chain.json 一个字节就能让节点重启即退回创世、
+ * 清空本地状态（央行 1000 起步），且无从恢复。备份后节点会从创世重建并联网同步回来。
+ */
 export function loadChain(dataDir: string): Blockchain {
   const f = chainPath(dataDir);
   if (existsSync(f)) {
@@ -71,8 +75,15 @@ export function loadChain(dataDir: string): Blockchain {
       const data = JSON.parse(readFileSync(f, 'utf8'));
       const bc = Blockchain.fromJSON(data);
       if (Blockchain.validateChain(bc.chain).ok) return bc;
-    } catch {
-      // 损坏 → 重建
+      throw new Error('chain.json 未通过整链校验');
+    } catch (e) {
+      const bak = `${f}.corrupt-${Date.now()}`;
+      try {
+        renameSync(f, bak);
+        console.error(`⚠️  chain.json 无法加载（${e instanceof Error ? e.message : e}），已备份到 ${bak}；将从创世重建并联网同步。`);
+      } catch {
+        console.error(`⚠️  chain.json 无法加载且备份失败：${e instanceof Error ? e.message : e}`);
+      }
     }
   }
   return new Blockchain();
