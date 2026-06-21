@@ -45,6 +45,13 @@ export const CHECKPOINTS: { index: number; hash: string }[] = [
 export const MAX_MEMO = 128;
 
 /**
+ * 链上消息默认销毁额（$V0ID）：发一条消息默认烧掉这么多币进虚空（NULL_ADDRESS，永久不可花 = 销毁）。
+ * 消息交易 = amount 0 + burn>0 + memo 正文；发送方另付最低 MIN_FEE 给打包矿工（保留矿工动力）。
+ * 这是默认值，发送时可调高（烧得更多更有仪式感、也更通缩）。
+ */
+export const MESSAGE_BURN = 5;
+
+/**
  * mempool 容量上限：待打包交易池最多缓存多少笔。手续费已给 spam 定了价（每笔至少花 MIN_FEE），
  * 这里再加一道硬上限兜底内存（spam 仍受“nonce 顺序 + 余额充足 + 手续费”三重约束，本就要花真币）。
  */

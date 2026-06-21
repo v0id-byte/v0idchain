@@ -117,10 +117,12 @@ export class Blockchain {
     for (const block of chain) {
       for (const tx of block.transactions) {
         if (!isCoinbase(tx)) {
-          credit(tx.from, -(tx.amount + tx.fee)); // 发送方付 金额 + 手续费
+          const burn = tx.burn ?? 0;
+          credit(tx.from, -(tx.amount + tx.fee + burn)); // 发送方付 金额 + 手续费 + 销毁额
+          if (burn > 0) credit(NULL_ADDRESS, burn); // 销毁额记入虚空地址：永不可花=已销毁，又让总账守恒、可查“全网已烧毁”
           nonces.set(tx.from, (nonces.get(tx.from) ?? 0) + 1);
         }
-        credit(tx.to, tx.amount); // 收款方实收金额；手续费经 coinbase.amount 归矿工，全链守恒
+        credit(tx.to, tx.amount); // 收款方实收金额（消息为 0）；手续费经 coinbase.amount 归矿工，全链守恒
       }
     }
     return { balances, nonces };
@@ -140,8 +142,11 @@ export class Blockchain {
   addTransaction(tx: Transaction): { ok: boolean; error?: string } {
     if (isCoinbase(tx)) return { ok: false, error: 'coinbase 不能进入交易池' };
     if (this.mempool.length >= MAX_MEMPOOL) return { ok: false, error: '交易池已满' };
-    // 先单独判金额/手续费，给出明确报错（否则非整数/费太低会被 verifyTransaction 笼统当成“签名无效”，误导用户）
-    if (!Number.isInteger(tx.amount) || tx.amount <= 0) return { ok: false, error: '金额必须是正整数' };
+    // 先单独判金额/销毁额/手续费，给出明确报错（否则非整数/费太低会被 verifyTransaction 笼统当成“签名无效”，误导用户）
+    const burn = tx.burn ?? 0;
+    if (!Number.isInteger(tx.amount) || tx.amount < 0) return { ok: false, error: '金额必须是非负整数' };
+    if (!Number.isInteger(burn) || burn < 0) return { ok: false, error: '销毁额必须是非负整数' };
+    if (tx.amount === 0 && burn === 0) return { ok: false, error: '空交易：转账须金额>0，消息须销毁额>0' };
     if (!Number.isInteger(tx.fee) || tx.fee < MIN_FEE) return { ok: false, error: `手续费至少 ${MIN_FEE}（gas）` };
     if (!verifyTransaction(tx)) return { ok: false, error: '签名无效或备注超长' };
     if (!isValidAddress(tx.to) || tx.to === NULL_ADDRESS) {
@@ -155,12 +160,13 @@ export class Blockchain {
     if (tx.nonce !== expectedNonce) {
       return { ok: false, error: `nonce 错误：期望 ${expectedNonce}，收到 ${tx.nonce}` };
     }
-    // 占用额 = 金额 + 手续费（含池中本地址其它待发交易），都要先扣住，避免连环超支
-    const pendingOut = pending.reduce((s, t) => s + t.amount + t.fee, 0);
-    const need = tx.amount + tx.fee;
+    // 占用额 = 金额 + 手续费 + 销毁额（含池中本地址其它待发交易），都要先扣住，避免连环超支
+    const pendingOut = pending.reduce((s, t) => s + t.amount + t.fee + (t.burn ?? 0), 0);
+    const need = tx.amount + tx.fee + burn;
     const available = (balances.get(tx.from) ?? 0) - pendingOut;
     if (need > available) {
-      return { ok: false, error: `余额不足：可用 ${available}，需要 ${need}（含手续费 ${tx.fee}）` };
+      const extra = burn > 0 ? `手续费 ${tx.fee} + 销毁 ${burn}` : `手续费 ${tx.fee}`;
+      return { ok: false, error: `余额不足：可用 ${available}，需要 ${need}（含${extra}）` };
     }
     this.mempool.push(tx);
     return { ok: true };
@@ -185,10 +191,12 @@ export class Blockchain {
         if (!tx) continue;
         const bal = balances.get(tx.from) ?? 0;
         const expected = nonces.get(tx.from) ?? 0;
-        if (tx.nonce === expected && tx.amount + tx.fee <= bal && verifyTransaction(tx)) {
+        const burn = tx.burn ?? 0;
+        if (tx.nonce === expected && tx.amount + tx.fee + burn <= bal && verifyTransaction(tx)) {
           selected.push(tx);
-          balances.set(tx.from, bal - tx.amount - tx.fee);
+          balances.set(tx.from, bal - tx.amount - tx.fee - burn);
           balances.set(tx.to, (balances.get(tx.to) ?? 0) + tx.amount);
+          if (burn > 0) balances.set(NULL_ADDRESS, (balances.get(NULL_ADDRESS) ?? 0) + burn);
           nonces.set(tx.from, expected + 1);
           queue[i] = undefined;
           progressed = true;
@@ -347,9 +355,11 @@ export class Blockchain {
           return { ok: false, error: `#${i} nonce 错误（${tx.from.slice(0, 10)}… 期望 ${expected}）` };
         }
         const bal = balances.get(tx.from) ?? 0;
-        if (tx.amount + tx.fee > bal) return { ok: false, error: `#${i} 余额不足（双花/超额，含手续费）` };
-        credit(tx.from, -(tx.amount + tx.fee)); // 扣 金额 + 手续费
-        credit(tx.to, tx.amount); // 收款方实收金额；手续费已计入 coinbase 归矿工
+        const burn = tx.burn ?? 0;
+        if (tx.amount + tx.fee + burn > bal) return { ok: false, error: `#${i} 余额不足（双花/超额，含手续费与销毁额）` };
+        credit(tx.from, -(tx.amount + tx.fee + burn)); // 扣 金额 + 手续费 + 销毁额
+        credit(tx.to, tx.amount); // 收款方实收金额（消息为 0）；手续费已计入 coinbase 归矿工
+        if (burn > 0) credit(NULL_ADDRESS, burn); // 销毁额记入虚空地址（守恒、可查全网已烧毁）
         nonces.set(tx.from, expected + 1);
       }
     }
