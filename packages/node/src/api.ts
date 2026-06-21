@@ -69,6 +69,8 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             return json(200, node.recentNewcomers());
           case '/names':
             return json(200, node.names());
+          case '/redpackets':
+            return json(200, node.redPackets());
           case '/balance': {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
@@ -101,6 +103,18 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
           }
           case '/name/claim': {
             const r = node.claimName(String(body.name ?? ''));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/redpacket': {
+            const r = node.redPacket(Number(body.total), Number(body.count), String(body.mode ?? 'r'));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/redpacket/grab': {
+            const r = node.grabRedPacket(String(body.id));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/redpacket/refund': {
+            const r = node.refundRedPacket(String(body.id));
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/mine': {

@@ -339,6 +339,46 @@ apiOpt(name.command('of'))
     console.log(nm ? `${c.green(short(addr))} = ${c.cyan('@' + nm)}` : c.dim(`${short(addr)} 还没注册昵称`));
   });
 
+// ---- red 抢红包 ----
+const red = program.command('red').description('链上抢红包：发红包(锁币)→大家抢(拼手气)→过期退回');
+apiOpt(red.command('send'))
+  .argument('<total>', '红包总额（$V0ID 正整数）')
+  .argument('<count>', '份数（≥1，且 ≤ 总额）')
+  .option('--equal', '均分（默认拼手气随机）', false)
+  .description('发一个红包（需 ≥ 总额+手续费 余额；挖进区块后可被抢）')
+  .action(async (total, count, o) => {
+    const r = await api(o, 'POST', '/redpacket', { total: Number(total), count: Number(count), mode: o.equal ? 'e' : 'r' });
+    console.log(c.green('🧧 红包已发出'), c.dim('txid='), r.txid, c.dim(`（这就是红包 id；等一个区块确认后大家可 grab）`));
+  });
+apiOpt(red.command('list'))
+  .description('看红包（在抢/已抢完/已退款）')
+  .option('--all', '连已抢完/已退款一起显示', false)
+  .action(async (o) => {
+    const all = (await api(o, 'GET', '/redpackets')) as any[];
+    const items = o.all ? all : all.filter((p) => !p.done);
+    if (!items.length) return console.log(c.dim('（暂无红包）'));
+    for (const p of items) {
+      const tag = p.refunded ? c.dim('[已退]') : p.done ? c.dim('[抢完]') : c.green('[在抢]');
+      const mine = p.mine ? c.yellow(' (我发的)') : p.grabbedByMe ? c.cyan(' (已抢)') : '';
+      console.log(`${tag} ${c.bold(`${p.total} ${SYMBOL}`)} / ${p.count} 份  剩 ${p.remaining}/${p.remainingCount}  ${p.mode === 'e' ? '均分' : '拼手气'}${mine}`);
+      console.log(`      ${c.dim('id ' + p.id.slice(0, 12) + '…  发起 ' + short(p.creator) + '  #' + p.createHeight)}`);
+    }
+  });
+apiOpt(red.command('grab'))
+  .argument('<id>', '红包 id（发红包的 txid，可填前缀）')
+  .description('抢红包（拼手气份额由共识按区块 hash 派发）')
+  .action(async (id, o) => {
+    const r = await api(o, 'POST', '/redpacket/grab', { id });
+    console.log(c.green('🧧 已出手抢'), c.dim('txid='), r.txid, c.dim('（挖进区块后看余额到账多少）'));
+  });
+apiOpt(red.command('refund'))
+  .argument('<id>', '红包 id（仅发起人、过期后可退）')
+  .description('过期后取回没抢完的剩余')
+  .action(async (id, o) => {
+    const r = await api(o, 'POST', '/redpacket/refund', { id });
+    console.log(c.green('↩️  已申请退款'), c.dim('txid='), r.txid);
+  });
+
 // ---- wallet（直接读数据目录，不需要节点在跑） ----
 const wallet = program.command('wallet').description('钱包管理');
 wallet

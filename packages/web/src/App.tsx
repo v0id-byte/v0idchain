@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry } from './api';
+import { getJSON, postJSON, isCoinbase, search, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
 // 模块级显示名缓存（每次轮询更新）；disp(地址) → 有昵称显示 @名字，否则缩写地址
@@ -24,6 +24,7 @@ export default function App() {
   const [messages, setMessages] = useState<Messages | null>(null);
   const [newcomers, setNewcomers] = useState<Newcomer[]>([]);
   const [names, setNames] = useState<NameRegistry>({ nameToOwner: {}, addressToName: {} });
+  const [redPackets, setRedPackets] = useState<RedPacket[]>([]);
   const [up, setUp] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const apiRef = useRef(api);
@@ -32,7 +33,7 @@ export default function App() {
   const poll = useCallback(async () => {
     const base = apiRef.current;
     try {
-      const [i, c, m, mk, msg, nc, nm] = await Promise.all([
+      const [i, c, m, mk, msg, nc, nm, rps] = await Promise.all([
         getJSON<Info>(base, '/info'),
         getJSON<Block[]>(base, '/chain'),
         getJSON<Tx[]>(base, '/mempool'),
@@ -40,6 +41,7 @@ export default function App() {
         getJSON<Messages>(base, '/messages'),
         getJSON<Newcomer[]>(base, '/newcomers'),
         getJSON<NameRegistry>(base, '/names'),
+        getJSON<RedPacket[]>(base, '/redpackets'),
       ]);
       setInfo(i);
       setChain(c);
@@ -49,6 +51,7 @@ export default function App() {
       setNewcomers(nc);
       NAMES = nm.addressToName || {}; // 刷新模块级显示名缓存（disp 读它）
       setNames(nm);
+      setRedPackets(rps);
       setUp(true);
     } catch {
       setUp(false);
@@ -117,6 +120,8 @@ export default function App() {
       </div>
 
       <Explorer chain={chain} me={me} />
+
+      <RedPackets packets={redPackets} api={api} token={token} onDone={poll} />
 
       <Marketplace market={market} api={api} token={token} onDone={poll} />
 
@@ -494,6 +499,99 @@ function Newcomers({ newcomers }: { newcomers: Newcomer[] }) {
           <span className="amt">{ago(n.at)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function RedPackets({ packets, api, token, onDone }: { packets: RedPacket[]; api: string; token: string; onDone: () => void }) {
+  const [total, setTotal] = useState('');
+  const [count, setCount] = useState('');
+  const [equal, setEqual] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState<Banner>(null);
+
+  const act = async (path: string, body: unknown, okMsg: string) => {
+    setBusy(true);
+    setBanner(null);
+    try {
+      await postJSON(api, path, body, token);
+      setBanner({ kind: 'ok', text: okMsg });
+      onDone();
+    } catch (e) {
+      setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async () => {
+    await act('/redpacket', { total: Number(total), count: Number(count), mode: equal ? 'e' : 'r' }, '🧧 已发出（等一个区块确认后可抢）');
+    setTotal('');
+    setCount('');
+  };
+
+  const open = packets.filter((p) => !p.done);
+  const done = packets.filter((p) => p.done);
+
+  return (
+    <div className="panel" style={{ marginBottom: 24 }}>
+      <h2>红包 🧧 · {open.length} 个在抢</h2>
+      <div className="row2">
+        <div className="field">
+          <label>总额 $V0ID</label>
+          <input value={total} onChange={(e) => setTotal(e.target.value)} placeholder="100" inputMode="numeric" />
+        </div>
+        <div className="field">
+          <label>份数（≤ 总额）</label>
+          <input value={count} onChange={(e) => setCount(e.target.value)} placeholder="10" inputMode="numeric" />
+        </div>
+      </div>
+      <div className="btns" style={{ alignItems: 'center', gap: 12 }}>
+        <button disabled={busy || !total || !count} onClick={send}>
+          发红包
+        </button>
+        <label className="linklike" style={{ fontSize: 13, userSelect: 'none' }}>
+          <input type="checkbox" checked={equal} onChange={(e) => setEqual(e.target.checked)} style={{ marginRight: 4 }} />
+          均分（默认拼手气随机）
+        </label>
+      </div>
+      {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+
+      <div className="mkt-grid">
+        {open.length === 0 && <div className="empty">还没有红包，发一个吧 🧧</div>}
+        {open.map((p) => (
+          <div className="mkt-item" key={p.id}>
+            <div className="mkt-top">
+              <span className="mkt-price">{p.total} $V0ID</span>
+              <span className="tag diff">{p.mode === 'e' ? '均分' : '拼手气'}</span>
+              {p.mine && <span className="tag me">我发的</span>}
+            </div>
+            <div className="mkt-title">剩 {p.remaining} / {p.remainingCount} 份（共 {p.count}）</div>
+            <div className="mkt-seller">发起 {disp(p.creator)} · #{p.createHeight}</div>
+            {p.mine ? (
+              <button className="ghost mini" disabled={busy} onClick={() => act('/redpacket/refund', { id: p.id }, '↩️ 已申请退款（需过期）')}>
+                退款
+              </button>
+            ) : p.grabbedByMe ? (
+              <button className="ghost mini" disabled>
+                已抢 ✓
+              </button>
+            ) : (
+              <button className="mini" disabled={busy} onClick={() => act('/redpacket/grab', { id: p.id }, '🧧 已出手抢！')}>
+                抢
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      {done.length > 0 && (
+        <div className="mkt-done">
+          {done.slice(0, 8).map((p) => (
+            <span key={p.id} className="mkt-doneitem">
+              {p.refunded ? '↩️ 已退' : '✓ 抢完'} {p.total} $V0ID/{p.count}份
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

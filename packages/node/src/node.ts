@@ -23,6 +23,11 @@ import {
   parseNames,
   registryToJSON,
   makeNameClaim,
+  parseRedPackets,
+  makeRedPacket,
+  RED_ESCROW_ADDRESS,
+  CLAIM_PREFIX,
+  REFUND_PREFIX,
   collectAddresses,
   makeListing,
   BUY_PREFIX,
@@ -177,6 +182,46 @@ export class V0idNode {
   /** 昵称注册表（名字↔地址），可 JSON 序列化 */
   names() {
     return registryToJSON(parseNames(this.bc.chain));
+  }
+
+  // ---- 链上抢红包 ----
+  /** 发红包：转给托管地址 + memo `RED|份数|模式`，锁总额、开池（需 ≥ 总额+手续费 余额；挖进区块后可抢）。 */
+  redPacket(total: number, count: number, mode = 'r', fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
+    const r = makeRedPacket(total, count, mode as 'r' | 'e');
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, RED_ESCROW_ADDRESS, r.total!, r.memo!, fee);
+  }
+
+  /** 按 id 或唯一前缀找一个红包 */
+  private findRed(idOrPrefix: string) {
+    const ms = parseRedPackets(this.bc.chain).filter((p) => p.id === idOrPrefix || p.id.startsWith(idOrPrefix));
+    if (ms.length === 0) return { error: '找不到该红包（可能还没被挖进区块）' as const };
+    if (ms.length > 1) return { error: 'id 不唯一，请填更长的前缀' as const };
+    return { red: ms[0] };
+  }
+
+  /** 抢红包：发 CLAIM 交易（amount=0），拼手气份额由共识按区块 hash 派发。 */
+  grabRedPacket(idOrPrefix: string, fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
+    const f = this.findRed(idOrPrefix);
+    if (!f.red) return { ok: false, error: f.error };
+    return this.submit(this.wallet, this.wallet.address, 0, `${CLAIM_PREFIX}${f.red.id}`, fee);
+  }
+
+  /** 退款：发起人在过期后取回剩余（发 REFUND 交易，amount=0）。 */
+  refundRedPacket(idOrPrefix: string, fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
+    const f = this.findRed(idOrPrefix);
+    if (!f.red) return { ok: false, error: f.error };
+    return this.submit(this.wallet, this.wallet.address, 0, `${REFUND_PREFIX}${f.red.id}`, fee);
+  }
+
+  /** 所有红包（标注 mine = 我发的、grabbedByMe = 我抢过） */
+  redPackets() {
+    const me = this.wallet.address;
+    return parseRedPackets(this.bc.chain).map((p) => ({
+      ...p,
+      mine: p.creator === me,
+      grabbedByMe: p.claims.some((c) => c.who === me),
+    }));
   }
 
   // ---- 新人发现 ----

@@ -39,6 +39,23 @@ export interface NameRegistry {
   addressToName: Record<string, string>;
 }
 
+/** 链上红包（托管池 + 领取记录） */
+export interface RedPacket {
+  id: string;
+  creator: string;
+  total: number;
+  count: number;
+  mode: 'r' | 'e';
+  remaining: number;
+  remainingCount: number;
+  createHeight: number;
+  claims: { who: string; amount: number; height: number }[];
+  refunded: boolean;
+  done: boolean;
+  mine: boolean;
+  grabbedByMe: boolean;
+}
+
 /** 新成员事件：本次会话首见的对等节点 / 首次上链的地址 */
 export interface Newcomer {
   kind: 'peer' | 'address';
