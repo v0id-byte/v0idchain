@@ -23,10 +23,11 @@
 
 ## 1. 准备环境（5 分钟）
 
-需要 **Node ≥ 18**（建议 20+）。本机用 Node 自带的 **corepack** 跑 pnpm，不用全局装：
+需要 **Node.js ≥ v22.13**（pnpm@9 要求此版本，低了会报错）。安装/升级方法见 [docs/RUNNING-A-NODE.md §2](docs/RUNNING-A-NODE.md#2-安装--升级-nodejs)。
 
 ```bash
-node -v                     # 确认 ≥ 18
+node -v                     # 确认 ≥ v22.13
+corepack enable             # 首次使用需开启 corepack
 git clone https://github.com/v0id-byte/v0idchain.git
 cd v0idchain
 corepack pnpm install       # 装依赖（任何 pnpm 命令都写成 corepack pnpm …）

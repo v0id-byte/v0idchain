@@ -7,7 +7,7 @@
   "type": "module",
   "description": "v0idChain —— 手搓区块链，原生代币 $V0ID。PoW 挖矿出币，转账带手续费（gas）给矿工。",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "packageManager": "pnpm@9.15.0",
   "scripts": {
