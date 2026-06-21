@@ -401,6 +401,7 @@ function Messaging({
   const [to, setTo] = useState('');
   const [text, setText] = useState('');
   const [burn, setBurn] = useState(String(defaultBurn));
+  const [enc, setEnc] = useState(false);
   const [tab, setTab] = useState<'in' | 'out'>('in');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
@@ -409,8 +410,8 @@ function Messaging({
     setBusy(true);
     setBanner(null);
     try {
-      const r = await postJSON<{ txid: string }>(api, '/message', { to: to.trim(), text, burn: Number(burn), fee: minFee }, token);
-      setBanner({ kind: 'ok', text: `已广播 · 烧 ${burn} 🔥 · txid ${r.txid.slice(0, 20)}…` });
+      const r = await postJSON<{ txid: string }>(api, '/message', { to: to.trim(), text, burn: Number(burn), fee: minFee, encrypt: enc }, token);
+      setBanner({ kind: 'ok', text: `已广播${enc ? ' 🔒加密' : ''} · 烧 ${burn} 🔥 · txid ${r.txid.slice(0, 20)}…` });
       setTo('');
       setText('');
       setBurn(String(defaultBurn));
@@ -441,10 +442,14 @@ function Messaging({
           <input value={burn} onChange={(e) => setBurn(e.target.value)} placeholder={String(defaultBurn)} inputMode="numeric" />
         </div>
       </div>
-      <div className="btns">
+      <div className="btns" style={{ alignItems: 'center', gap: 12 }}>
         <button disabled={busy || !to || !text} onClick={send}>
           发送（烧 {burn || 0} $V0ID + {minFee} gas）
         </button>
+        <label className="linklike" style={{ fontSize: 13, userSelect: 'none' }}>
+          <input type="checkbox" checked={enc} onChange={(e) => setEnc(e.target.checked)} style={{ marginRight: 4 }} />
+          🔒 加密（只有 TA 能解）
+        </label>
       </div>
       {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
 
@@ -463,7 +468,8 @@ function Messaging({
           <span className="who">
             {tab === 'in' ? `← ${disp(m.from)}` : `→ ${disp(m.to)}`}
             <span className="tag blk">#{m.height}</span>
-            <span className="memo">“{m.text}”</span>
+            {m.encrypted && <span className="tag me">🔒</span>}
+            <span className="memo">{m.locked ? '（加密内容，无法解密）' : `“${m.text}”`}</span>
           </span>
           <span className="amt">🔥 {m.burn}</span>
         </div>

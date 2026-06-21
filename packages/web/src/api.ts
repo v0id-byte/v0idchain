@@ -19,10 +19,12 @@ export interface ChainMessage {
   txid: string;
   from: string;
   to: string;
-  text: string;
+  text: string; // 加密私信若本节点能解→已是明文，否则为密文
   burn: number;
   timestamp: number;
   height: number;
+  encrypted?: boolean; // 是否端到端加密私信
+  locked?: boolean; // true=加密但本节点无法解密（查的是别人的）
 }
 
 export interface Messages {

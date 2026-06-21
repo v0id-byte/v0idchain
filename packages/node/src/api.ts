@@ -96,7 +96,7 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             if (!text) return json(400, { error: '消息正文不能为空' });
             const burn = body.burn === undefined ? undefined : Number(body.burn);
             const fee = body.fee === undefined ? undefined : Number(body.fee);
-            const r = node.message(String(body.to), text, burn, fee);
+            const r = node.message(String(body.to), text, burn, fee, Boolean(body.encrypt));
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/name/claim': {

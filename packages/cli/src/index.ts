@@ -192,11 +192,13 @@ apiOpt(program.command('msg'))
   .argument('<text...>', '消息正文')
   .option('--burn <n>', `烧进虚空的 $V0ID（永久销毁；默认 ${MESSAGE_BURN}，越多越壕）`, String(MESSAGE_BURN))
   .option('--fee <n>', `手续费（gas，给打包矿工，至少 ${MIN_FEE}）`, String(MIN_FEE))
-  .description('给一个地址发链上消息（不转币，烧掉一点 $V0ID）')
+  .option('-e, --encrypt', '端到端加密（只有收件人能解；发件人也能解自己发的）', false)
+  .description('给一个地址发链上消息（不转币，烧掉一点 $V0ID；-e 加密）')
   .action(async (to, text, o) => {
     const burn = Number(o.burn);
-    const r = await api(o, 'POST', '/message', { to, text: text.join(' '), burn, fee: Number(o.fee) });
-    console.log(c.green('✉️  消息已广播'), c.dim('txid='), r.txid, c.dim(`🔥烧=${burn} 手续费=${Number(o.fee)}`));
+    const r = await api(o, 'POST', '/message', { to, text: text.join(' '), burn, fee: Number(o.fee), encrypt: !!o.encrypt });
+    const lock = o.encrypt ? c.cyan(' 🔒加密') : '';
+    console.log(c.green('✉️  消息已广播') + lock, c.dim('txid='), r.txid, c.dim(`🔥烧=${burn} 手续费=${Number(o.fee)}`));
     console.log(c.dim('（等一个区块确认后，对方 `v0id inbox` 即可看到）'));
   });
 
@@ -216,7 +218,9 @@ apiOpt(program.command('inbox'))
     for (const m of list) {
       const who = o.sent ? `→ ${nm(m.to)}` : `← ${nm(m.from)}`;
       const when = c.dim(new Date(m.timestamp).toLocaleString());
-      console.log(`${who}  ${c.bold(m.text)}  ${c.dim(`🔥${m.burn} #${m.height}`)}  ${when}`);
+      const lock = m.encrypted ? c.cyan('🔒') + (m.locked ? c.dim('(无法解密)') : '') + ' ' : '';
+      const body = m.locked ? c.dim('（加密内容，非本人无法解密）') : c.bold(m.text);
+      console.log(`${who}  ${lock}${body}  ${c.dim(`🔥${m.burn} #${m.height}`)}  ${when}`);
     }
   });
 

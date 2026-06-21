@@ -8,7 +8,11 @@ import {
   SYMBOL,
   MIN_FEE,
   MESSAGE_BURN,
+  MAX_MEMO,
   NULL_ADDRESS,
+  encryptMemo,
+  decryptMemo,
+  isEncryptedMemo,
   createTransaction,
   createMessage,
   loadOrCreateWallet,
@@ -112,16 +116,27 @@ export class V0idNode {
     return this.submit(this.wallet, to, amount, memo, fee);
   }
 
-  /** 给某地址发一条链上消息：不转币、烧 burn 个 $V0ID 进虚空、付 fee 给矿工。算好 nonce、签名、进池、广播。 */
+  /**
+   * 给某地址发一条链上消息：不转币、烧 burn 个 $V0ID 进虚空、付 fee 给矿工。算好 nonce、签名、进池、广播。
+   * encrypt=true → 用收件人公钥端到端加密正文（只有收发双方能解），密文以 `ENC|` 上链。
+   */
   message(
     to: string,
     text: string,
     burn = MESSAGE_BURN,
     fee = MIN_FEE,
+    encrypt = false,
   ): { ok: boolean; tx?: Transaction; error?: string } {
+    let body = text;
+    if (encrypt) {
+      body = encryptMemo(text, to, this.wallet.privateKey);
+      if ([...body].length > MAX_MEMO) {
+        return { ok: false, error: `加密后超长（${[...body].length}>${MAX_MEMO}），消息太长` };
+      }
+    }
     const pending = this.bc.mempool.filter((t) => t.from === this.wallet.address).length;
     const nonce = this.bc.nonceOf(this.wallet.address) + pending;
-    const tx = createMessage(this.wallet, to, text, nonce, burn, fee);
+    const tx = createMessage(this.wallet, to, body, nonce, burn, fee);
     const r = this.bc.addTransaction(tx);
     if (!r.ok) return { ok: false, error: r.error };
     this.markSeen(tx.txid);
@@ -130,13 +145,24 @@ export class V0idNode {
     return { ok: true, tx };
   }
 
-  /** 某地址的消息：received = 发给它的、sent = 它发出的（默认查本节点自己）。只含已上链的消息。 */
+  /**
+   * 某地址的消息：received = 发给它的、sent = 它发出的（默认查本节点自己）。只含已上链的消息。
+   * 加密私信（`ENC|`）用本节点私钥尝试解密：能解（本人收/发的）→ text=明文、encrypted=true；
+   * 解不开（非本人，即查别人地址）→ 保留密文、locked=true。
+   */
   messages(address = this.wallet.address) {
+    const me = this.wallet.address;
+    const decode = (m: ReturnType<typeof parseMessages>[number]) => {
+      if (!isEncryptedMemo(m.text)) return { ...m, encrypted: false, locked: false };
+      const other = m.to === me ? m.from : m.to; // 我是收件人→对方=发件人，否则→收件人
+      const plain = decryptMemo(m.text, other, this.wallet.privateKey);
+      return { ...m, encrypted: true, locked: plain === null, text: plain ?? m.text };
+    };
     const all = parseMessages(this.bc.chain);
     return {
       address,
-      received: all.filter((m) => m.to === address),
-      sent: all.filter((m) => m.from === address),
+      received: all.filter((m) => m.to === address).map(decode),
+      sent: all.filter((m) => m.from === address).map(decode),
     };
   }
 
