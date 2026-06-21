@@ -135,18 +135,10 @@ struct RedPacketsView: View {
         .card(radius: 12, padding: 12)
     }
 
-    @ViewBuilder
     private func statusBadge(_ p: RedPacketView) -> some View {
-        let label: String
-        let color: Color
-        if p.refunded {
-            label = "已退款"; color = Color.gray
-        } else if p.done {
-            label = "已抢完"; color = Color.gray
-        } else {
-            label = "进行中"; color = Color.green
-        }
-        Text(label)
+        let label = p.refunded ? "已退款" : p.done ? "已抢完" : "进行中"
+        let color: Color = (p.done || p.refunded) ? .gray : .green
+        return Text(label)
             .font(.caption2)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(color.opacity(0.15), in: Capsule())
@@ -155,12 +147,10 @@ struct RedPacketsView: View {
 
     @ViewBuilder
     private func actionButton(_ p: RedPacketView) -> some View {
-        let myAddress = model.address ?? ""
-        let alreadyClaimed = p.claims.contains(where: { $0.who == myAddress })
-        if p.creator == myAddress {
+        if p.creator == (model.address ?? "") {
             Button("退款") { model.refundRedPacket(id: p.id) }
                 .controlSize(.small).buttonStyle(.bordered)
-        } else if !alreadyClaimed {
+        } else if !p.claims.contains(where: { $0.who == (model.address ?? "") }) {
             Button("抢红包") { model.claimRedPacket(id: p.id) }
                 .controlSize(.small).buttonStyle(.borderedProminent)
         }
