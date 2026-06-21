@@ -9,12 +9,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$HERE/../V0idKit"
 OUT="$(mktemp -d)/v0id-selfcheck"
 
+# 编译整个 V0idKit 源码（含 Config / Encryption / Names / Market / RedPacket / ChainState 等新功能），
+# 这样 SelfCheck 既验密钥/规范化序列化/txid/签名，也验端到端加密私信的 §8.6 金标准向量。
 swiftc -O \
-  "$KIT/Sources/V0idKit/Hex.swift" \
-  "$KIT/Sources/V0idKit/CanonicalJSON.swift" \
-  "$KIT/Sources/V0idKit/Crypto.swift" \
-  "$KIT/Sources/V0idKit/Models.swift" \
-  "$KIT/Sources/V0idKit/Wallet.swift" \
+  "$KIT"/Sources/V0idKit/*.swift \
   "$KIT/SelfCheck/main.swift" \
   -o "$OUT"
 

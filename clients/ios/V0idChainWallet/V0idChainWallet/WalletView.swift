@@ -7,6 +7,9 @@ struct WalletView: View {
     @EnvironmentObject var node: NodeClient
     @State private var claimInput = ""
 
+    /// 我的当前显示名（没抢注过则 nil）。
+    private var myName: String? { model.address.flatMap { node.nameRegistry().name(for: $0) } }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -38,6 +41,9 @@ struct WalletView: View {
                     .font(.system(size: 48, weight: .bold, design: .rounded))
                     .contentTransition(.numericText())
                 Text("$V0ID").font(.headline).foregroundStyle(.secondary)
+            }
+            if let name = myName {
+                Text("@\(name)").font(.subheadline.weight(.medium)).foregroundStyle(.tint)
             }
             ConnectionBadge()
         }
@@ -73,7 +79,7 @@ struct WalletView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("🪪 链上昵称").font(.headline)
             HStack(spacing: 8) {
-                TextField("小写字母/数字/_/-（1~20 位）", text: $claimInput)
+                TextField(myName.map { "改名（当前 @\($0)）" } ?? "小写字母/数字/_/-（1~20 位）", text: $claimInput)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textFieldStyle(.roundedBorder)

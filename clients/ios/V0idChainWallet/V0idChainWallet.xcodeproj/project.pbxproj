@@ -16,6 +16,8 @@
 		ABCDEF0123456789ABCD000E /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCD000D /* SendView.swift */; };
 		ABCDEF0123456789ABCD0010 /* MessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCD000F /* MessagesView.swift */; };
 		ABCDEF0123456789ABCD0012 /* ExploreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCD0011 /* ExploreView.swift */; };
+		ABCDEF0123456789ABCDA001 /* MarketplaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCDA002 /* MarketplaceView.swift */; };
+		ABCDEF0123456789ABCDA003 /* RedPacketsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCDA004 /* RedPacketsView.swift */; };
 		ABCDEF0123456789ABCD0014 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCD0013 /* SettingsView.swift */; };
 		ABCDEF0123456789ABCD0016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ABCDEF0123456789ABCD0015 /* Assets.xcassets */; };
 		ABCDEF0123456789ABCD0019 /* V0idKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF0123456789ABCD002F /* V0idKit */; };
@@ -31,6 +33,8 @@
 		ABCDEF0123456789ABCD000D /* SendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendView.swift; sourceTree = "<group>"; };
 		ABCDEF0123456789ABCD000F /* MessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesView.swift; sourceTree = "<group>"; };
 		ABCDEF0123456789ABCD0011 /* ExploreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreView.swift; sourceTree = "<group>"; };
+		ABCDEF0123456789ABCDA002 /* MarketplaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarketplaceView.swift; sourceTree = "<group>"; };
+		ABCDEF0123456789ABCDA004 /* RedPacketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedPacketsView.swift; sourceTree = "<group>"; };
 		ABCDEF0123456789ABCD0013 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		ABCDEF0123456789ABCD0015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABCDEF0123456789ABCD0017 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -69,6 +73,8 @@
 				ABCDEF0123456789ABCD000D /* SendView.swift */,
 				ABCDEF0123456789ABCD000F /* MessagesView.swift */,
 				ABCDEF0123456789ABCD0011 /* ExploreView.swift */,
+				ABCDEF0123456789ABCDA002 /* MarketplaceView.swift */,
+				ABCDEF0123456789ABCDA004 /* RedPacketsView.swift */,
 				ABCDEF0123456789ABCD0013 /* SettingsView.swift */,
 				ABCDEF0123456789ABCD0015 /* Assets.xcassets */,
 				ABCDEF0123456789ABCD0017 /* Info.plist */,
@@ -168,6 +174,8 @@
 				ABCDEF0123456789ABCD000E /* SendView.swift in Sources */,
 				ABCDEF0123456789ABCD0010 /* MessagesView.swift in Sources */,
 				ABCDEF0123456789ABCD0012 /* ExploreView.swift in Sources */,
+				ABCDEF0123456789ABCDA001 /* MarketplaceView.swift in Sources */,
+				ABCDEF0123456789ABCDA003 /* RedPacketsView.swift in Sources */,
 				ABCDEF0123456789ABCD0014 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
