@@ -7,6 +7,8 @@
 
 > 自建链，验证逻辑我们自己说了算 —— 挖矿出块（拿出块奖励 + 手续费）出币，转账付手续费（gas）归打包矿工。
 
+> 📘 **第一次玩？先看 [完整教程 → TUTORIAL.md](TUTORIAL.md)** —— 从装环境到联机挖矿 / 转账 / 集市 / 钱包备份，外加**每条常用命令逐条讲解**。本 README 偏速查表与设计说明。
+
 ---
 
 ## 这是什么
@@ -264,3 +266,9 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 v0idChain 站在巨人的肩膀上 —— 依赖这些开源库：[`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) / [`@noble/hashes`](https://github.com/paulmillr/noble-hashes)（Paul Miller，MIT）做签名与哈希、[`ws`](https://github.com/websockets/ws)（MIT）做 P2P、[`commander`](https://github.com/tj/commander.js)（MIT）做 CLI，以及 [`react`](https://react.dev) / [`vite`](https://vite.dev) / [`tsx`](https://github.com/privatenumber/tsx)（MIT）/ [`typescript`](https://www.typescriptlang.org)（Apache-2.0）做仪表盘与工具链。设计上参考了 [Bitcoin 白皮书](https://bitcoin.org/bitcoin.pdf)、[RFC 8032（Ed25519）](https://www.rfc-editor.org/rfc/rfc8032)、[FIPS 180-4（SHA-256）](https://csrc.nist.gov/pubs/fips/180-4/upd1/final)（**仅借鉴设计、未拷贝源码**）。
 
 > 完整的版本、版权与许可证清单见 **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**。本仓库**不内嵌任何第三方源码**（依赖经 pnpm 安装、`node_modules/` 已 gitignore）。
+
+---
+
+## 许可证
+
+v0idChain 自身代码以 **MIT License** 开源（© 2026 v0id-byte，见 [LICENSE](LICENSE)）—— 随便用 / 改 / 分发，保留版权与许可声明即可。第三方依赖的许可见上方致谢与 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

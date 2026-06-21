@@ -7,6 +7,8 @@ Hand-written blocks / hashing / chain structure / PoW mining / ed25519 signature
 
 > Our own chain, our own validation rules — coins come from mining (block reward + fees); every transfer pays a fee (gas) to the miner that includes it.
 
+> 📘 **First time? Start with the [full tutorial → TUTORIAL.en.md](TUTORIAL.en.md)** — from setup to mining / transferring / the marketplace / wallet backup, plus **every common command explained**. This README is the cheat sheet + design notes.
+
 ---
 
 ## What's in it
@@ -264,3 +266,9 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --name me \
 v0idChain stands on the shoulders of giants — it depends on [`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) / [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) (Paul Miller, MIT) for signatures & hashing, [`ws`](https://github.com/websockets/ws) (MIT) for P2P, [`commander`](https://github.com/tj/commander.js) (MIT) for the CLI, and [`react`](https://react.dev) / [`vite`](https://vite.dev) / [`tsx`](https://github.com/privatenumber/tsx) (MIT) / [`typescript`](https://www.typescriptlang.org) (Apache-2.0) for the dashboard & toolchain. Its design draws on the [Bitcoin whitepaper](https://bitcoin.org/bitcoin.pdf), [RFC 8032 (Ed25519)](https://www.rfc-editor.org/rfc/rfc8032), and [FIPS 180-4 (SHA-256)](https://csrc.nist.gov/pubs/fips/180-4/upd1/final) (**design only — no source copied**).
 
 > Full versions, copyrights and licenses: **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**. This repo **vendors no third-party source** (deps are installed via pnpm; `node_modules/` is gitignored).
+
+---
+
+## License
+
+v0idChain's own code is released under the **MIT License** (© 2026 v0id-byte, see [LICENSE](LICENSE)) — use, modify and distribute freely, keeping the copyright and permission notice. Third-party dependency licenses are in the acknowledgements above and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
