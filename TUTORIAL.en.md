@@ -208,6 +208,17 @@ $v inbox --sent --name me                        # see what you've sent
 $v newcomers --name me     # lists "new node online" / "new address first seen" (a running node also prints 🆕 live)
 ```
 
+### `name` — on-chain nicknames (globally-unique, first-come-first-served)
+
+```bash
+$v name claim v0id-boss --name me   # claim a nickname (self-transfer + memo; first-come; wait one block)
+$v name list  --name me             # list registered nicknames
+$v name who   v0id-boss --name me   # which address owns this nickname
+$v name of    --name me             # my (or a given address's) display nickname
+```
+
+Once claimed, transfers/messages/the explorer show you as `@v0id-boss` instead of a long address. Names are 1–20 chars of lowercase letters/digits/`_`/`-`; reserved names like `treasury`/`official` are blocked. Pure memo convention — **no consensus change**.
+
 ### `wallet` — wallet management (**no running node needed**, reads the data dir)
 
 ```bash

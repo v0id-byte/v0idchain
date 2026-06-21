@@ -162,6 +162,11 @@ v0id msg     <to> <text…> [--burn <n>] [--fee <n>] [--api]   send an on-chain 
 v0id inbox   [address] [--sent] [--api]       view your inbox (messages sent to you; --sent shows your outbox)
 v0id newcomers [--api]                        newcomers found this session (new node online / new address first seen on-chain)
 
+v0id name claim <name> [--api]                claim a globally-unique nickname (first-come-first-served; self-transfer + memo)
+v0id name list  [--api]                        list registered nicknames
+v0id name who   <name> [--api]                which address owns a nickname
+v0id name of    [address] [--api]             an address's display nickname
+
 v0id wallet show   [--name|--data-dir] [--secret]   show address/pubkey (--secret reveals private key = backup)
 v0id wallet new    [--name|--data-dir]              create a new wallet
 v0id wallet import <privkey> [--name|--data-dir] [--force]   restore a wallet from a backed-up key
@@ -212,6 +217,16 @@ Total burned across the network = the void address's balance, shown as "Burned �
 
 - **New node online** (P2P layer): when a new machine connects and announces its address in the handshake.
 - **New address first seen** (economic identity): the first time an address shows up as a sender/recipient in a block.
+
+**🪪 On-chain nicknames (globally-unique, first-come-first-served).** Give an address a name; transfers/messages/the explorer then show `@name` instead of a long `0x…`. Claim = self-transfer of 1 + memo `NAME|<name>`, **first-come-first-served** (a name belongs to its first claimant). Names are 1–20 chars of lowercase letters/digits/`_`/`-`; reserved names like `treasury`/`official`/`admin` are blocked (anti-impersonation).
+
+```bash
+$v name claim v0id-boss --api http://127.0.0.1:7001   # claim (wait one block)
+$v name who  v0id-boss --api http://127.0.0.1:7002    # other nodes resolve it too → address
+$v inbox --api http://127.0.0.1:7002                  # inbox shows the sender as @v0id-boss
+```
+
+> Nicknames are a pure memo convention — **no consensus change, no soft fork**: a claim is just a valid self-transfer that old nodes accept; only clients that want to *display* names need the new code.
 
 > ⚠️ **Messaging is a soft fork.** Plain-transfer blocks validate on old & new nodes alike; but once a miner packs a message
 > transaction into a block, **nodes that haven't upgraded to this version will reject that block**. So before messaging over the

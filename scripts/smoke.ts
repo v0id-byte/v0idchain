@@ -11,6 +11,9 @@ import {
   expectedDifficulty,
   parseMarket,
   parseMessages,
+  parseNames,
+  makeNameClaim,
+  buildNameMemo,
   buildListMemo,
   BUY_PREFIX,
   DEL_PREFIX,
@@ -290,6 +293,56 @@ check('burn=0 的空消息被拒', !verifyTransaction(createMessage(bob, alice.a
 const plain = createTransaction(bob, alice.address, 1, 0, 'hi', MIN_FEE);
 check('转账显式补 burn=0 不改变 txid（哈希向后兼容，创世/checkpoint 不变）',
   ({ ...plain, burn: 0 }).txid === plain.txid && verifyTransaction({ ...plain, burn: 0 }));
+
+console.log(`\n— 链上昵称：全网唯一抢注（先到先得）+ 改名 + 自转约束 —`);
+const nm = new Blockchain();
+for (let i = 0; i < 6; i++) await nm.mine(alice.address); // alice 攒够多次自转的手续费
+for (let i = 0; i < 3; i++) await nm.mine(bob.address);
+// alice 抢注 'alice'（自转 1 + memo NAME|alice）
+nm.addTransaction(createTransaction(alice, alice.address, 1, nm.nonceOf(alice.address), buildNameMemo('alice')));
+await nm.mine(bob.address);
+let reg = parseNames(nm.chain);
+check('alice 抢到 @alice', reg.nameToOwner.get('alice') === alice.address && reg.addressToName.get(alice.address) === 'alice');
+// bob 想抢同名 'alice' → 先到先得，无效
+nm.addTransaction(createTransaction(bob, bob.address, 1, nm.nonceOf(bob.address), buildNameMemo('alice')));
+await nm.mine(alice.address);
+reg = parseNames(nm.chain);
+check('bob 抢同名 @alice 无效（先到先得仍归 alice）', reg.nameToOwner.get('alice') === alice.address);
+// bob 抢自己的 'bob'
+nm.addTransaction(createTransaction(bob, bob.address, 1, nm.nonceOf(bob.address), buildNameMemo('bob')));
+await nm.mine(alice.address);
+reg = parseNames(nm.chain);
+check('bob 抢到 @bob', reg.nameToOwner.get('bob') === bob.address && reg.addressToName.get(bob.address) === 'bob');
+// alice 改名 'queen'（显示名跟新；旧名 alice 仍永久属于 alice）
+nm.addTransaction(createTransaction(alice, alice.address, 1, nm.nonceOf(alice.address), buildNameMemo('queen')));
+await nm.mine(bob.address);
+reg = parseNames(nm.chain);
+check('alice 改名后显示名=queen，旧名 alice 仍归 alice', reg.addressToName.get(alice.address) === 'queen' && reg.nameToOwner.get('alice') === alice.address && reg.nameToOwner.get('queen') === alice.address);
+// 非自转 + NAME memo 不算抢注（alice 付给 bob 带 NAME|hacker 不应注册）
+nm.addTransaction(createTransaction(alice, bob.address, 1, nm.nonceOf(alice.address), buildNameMemo('hacker')));
+await nm.mine(bob.address);
+check('非自转的 NAME memo 不注册（必须自转）', parseNames(nm.chain).nameToOwner.has('hacker') === false);
+// 名字校验：大写/空格自动规范化为小写；超长 / 0x 开头 / 非法字符被拒
+check('大写自动规范化为小写（Alice → NAME|alice）', makeNameClaim('  Alice ').memo === buildNameMemo('alice'));
+check('非法昵称被拒（超 20 位）', !makeNameClaim('a'.repeat(21)).ok);
+check('非法昵称被拒（0x 开头）', !makeNameClaim('0xabc').ok);
+check('非法昵称被拒（含空格/非法字符）', !makeNameClaim('a b').ok);
+check('合法昵称通过（小写字母/数字/_/-）', makeNameClaim('cool_name-1').ok);
+// —— review 修复回归 ——
+for (let i = 0; i < 8; i++) await nm.mine(alice.address); // 给 alice 补额度
+// 读端规范化：链上 NAME|MixedCase（大写）应解析为 mixedcase（写端 makeNameClaim 也小写 → 写读一致，不再白付费）
+nm.addTransaction(createTransaction(alice, alice.address, 1, nm.nonceOf(alice.address), 'NAME|MixedCase'));
+await nm.mine(bob.address);
+check('读端规范化：链上 NAME|MixedCase 解析为 @mixedcase', parseNames(nm.chain).nameToOwner.get('mixedcase') === alice.address);
+// 保留名：makeNameClaim 拒绝 + 链上 NAME|treasury 自转被解析端忽略（防冒充央行/官方）
+check('保留名 treasury 抢注被拒（makeNameClaim）', !makeNameClaim('treasury').ok);
+nm.addTransaction(createTransaction(alice, alice.address, 1, nm.nonceOf(alice.address), 'NAME|treasury'));
+await nm.mine(bob.address);
+check('链上 NAME|treasury 自转不被注册（保留名防冒充）', parseNames(nm.chain).nameToOwner.has('treasury') === false);
+// 自发消息（amount0+burn）携 NAME memo 不算抢注（抢注须自转、非消息）
+nm.addTransaction(createMessage(alice, alice.address, 'NAME|ghost', nm.nonceOf(alice.address)));
+await nm.mine(bob.address);
+check('自发消息携 NAME memo 不注册（须自转非消息）', parseNames(nm.chain).nameToOwner.has('ghost') === false);
 
 console.log(`\n余额总览：`);
 console.log(`  央行预挖 ${bc.balanceOf(GENESIS_PREMINE_ADDRESS)} ${SYMBOL}`);

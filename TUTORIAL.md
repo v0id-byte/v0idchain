@@ -208,6 +208,17 @@ $v inbox --sent --name me                        # 看自己发出去的
 $v newcomers --name me     # 列出「新节点上线」「新地址首次上链」（运行中的节点也会实时打 🆕）
 ```
 
+### `name` —— 链上昵称（全网唯一抢注，先到先得）
+
+```bash
+$v name claim v0id-boss --name me   # 抢注昵称（自转 1 币 + memo；先到先得；等一个区块）
+$v name list  --name me             # 看已注册的昵称
+$v name who   v0id-boss --name me   # 这个昵称属于哪个地址
+$v name of    --name me             # 我（或指定地址）的显示昵称
+```
+
+抢到后，转账/消息/浏览器里你就显示成 `@v0id-boss` 而不是一长串地址。名字 1~20 位 小写字母/数字/`_`/`-`；`treasury`/`official` 等保留名禁注。纯 memo 约定、**不改共识**。
+
 ### `wallet` —— 钱包管理（**不需要节点在跑**，直接读数据目录）
 
 ```bash
