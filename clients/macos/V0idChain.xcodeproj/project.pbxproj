@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0E4D2D682457C73571412E93 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9751B02A5201766AC2FC36EC /* SettingsView.swift */; };
 		1E9AA160F610D3B346F2A347 /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E575DAC7C44F4BBA0EBD9CA2 /* SendView.swift */; };
+		37F652D89667BA56C577ED0B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 14884FFB8B46D61A88EB79B3 /* Assets.xcassets */; };
 		4275D8B1F29B23598F305A94 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40C9F7F8EB0B5D2F557EBA42 /* AppModel.swift */; };
 		7A7E1ABD5AE6349B77DC0B5B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2709B5DE149F8ACBAA6DFB2C /* ContentView.swift */; };
 		7DA00DF492E9C26097F2D9D5 /* MessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE82343164D2A3070F7684B8 /* MessagesView.swift */; };
@@ -23,6 +24,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		14884FFB8B46D61A88EB79B3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2709B5DE149F8ACBAA6DFB2C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V0idChainApp.swift; sourceTree = "<group>"; };
 		2E625B6A48648580F716A0F6 /* RedPacketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedPacketsView.swift; sourceTree = "<group>"; };
@@ -63,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				5E9420AFA0C2DEAA4C267D0E /* Packages */,
+				F4B536BCD68069BF9374DE39 /* Resources */,
 				471720908269CFDC76A98C2D /* Sources */,
 				A3D701010133C1FBEE8C10ED /* Products */,
 			);
@@ -103,6 +106,14 @@
 			path = V0idChainApp;
 			sourceTree = "<group>";
 		};
+		F4B536BCD68069BF9374DE39 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				14884FFB8B46D61A88EB79B3 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -111,6 +122,7 @@
 			buildConfigurationList = 56D4CD2C2BC04ACA9D235E71 /* Build configuration list for PBXNativeTarget "V0idChain" */;
 			buildPhases = (
 				A82D0FAF9DDAC7203399117B /* Sources */,
+				F540B155118495D267EEE529 /* Resources */,
 				8AB2644CEB2C5FAFD922FCE2 /* Frameworks */,
 			);
 			buildRules = (
@@ -160,6 +172,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F540B155118495D267EEE529 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				37F652D89667BA56C577ED0B /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A82D0FAF9DDAC7203399117B /* Sources */ = {

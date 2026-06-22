@@ -21,6 +21,7 @@ targets:
     platform: macOS
     sources:
       - path: Sources/V0idChainApp
+      - path: Resources
     dependencies:
       - package: V0idKit
         product: V0idKit
