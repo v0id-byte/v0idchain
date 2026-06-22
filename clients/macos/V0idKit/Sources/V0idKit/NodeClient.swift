@@ -101,9 +101,33 @@ public actor NodeClient {
     private func savePeers() {
         let urls = known.filter { url in
             guard let u = URL(string: url), let h = u.host else { return false }
-            return h != "localhost" && !h.hasPrefix("127.")
+            return !Self.isPrivateOrLocalHost(h)  // 只持久化公网地址（环回/私网/链路本地/ULA 一律排除）
         }
         UserDefaults.standard.set(Array(urls), forKey: "v0id-known-peers")
+    }
+
+    /// host 是否为环回/私网/链路本地/ULA（gossip 学来的命中则丢弃，防 LAN MITM）。
+    /// 对齐节点端 isPublicWsUrl 的「只放行全局单播」策略（packages/node/src/p2p.ts）。
+    static func isPrivateOrLocalHost(_ rawHost: String) -> Bool {
+        var host = rawHost.lowercased()
+        host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if let pct = host.firstIndex(of: "%") { host = String(host[..<pct]) }
+        if host.isEmpty || host == "localhost" { return true }
+        if host.contains(":") {
+            // IPv6：只放行全局单播 2000::/3；其余（::1 / fe80 / fc,fd / ::ffff: 等）拒
+            let firstSeg = host.hasPrefix("::") ? "0" : (host.split(separator: ":").first.map(String.init) ?? "")
+            guard let f = Int(firstSeg, radix: 16), f >= 0x2000, f <= 0x3fff else { return true }
+            return false
+        }
+        if host == "0.0.0.0" { return true }
+        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") {
+            return true
+        }
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count >= 2, let second = Int(parts[1]), (16...31).contains(second) { return true }
+        }
+        return false
     }
 
     private func fillConnections() {
@@ -220,6 +244,9 @@ public actor NodeClient {
         var added = false
         for raw in urls {
             guard let url = Self.normalize(raw) else { continue }
+            // 丢弃私网/环回/链路本地 peer：否则 LAN MITM 投递 PEERS 帧即可把自己（如 ws://10.0.0.5:6001）
+            // 注入 known 并被自动连接（此前 handlePeers 完全不过滤，仅 savePeers 持久化时才挡 localhost/127）。
+            if let h = URL(string: url)?.host, Self.isPrivateOrLocalHost(h) { continue }
             if !known.contains(url) { known.insert(url); added = true }
         }
         if added { fillConnections() }

@@ -18,7 +18,10 @@ enum Keychain {
         SecItemDelete(base as CFDictionary)
         var add = base
         add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        // ThisDeviceOnly：与 iOS 端一致——私钥绝不随 iCloud Keychain 同步、也不进加密备份/设备迁移，
+        // 兑现 README“私钥永不离开本机”的承诺（此前用 WhenUnlocked 会让 item 进入 iCloud/备份候选集）。
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        add[kSecAttrSynchronizable as String] = false  // 显式不同步（默认即 false，这里写明意图）
         SecItemAdd(add as CFDictionary, nil)
     }
 
