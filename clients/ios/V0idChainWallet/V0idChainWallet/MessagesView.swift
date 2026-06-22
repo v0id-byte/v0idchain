@@ -147,6 +147,7 @@ private struct ComposeSheet: View {
                          : "链上消息 = amount 0 + 销毁 \(burn ?? 0) + 正文。销毁的 $V0ID 进虚空永久不可花；另付手续费给矿工。")
                 }
             }
+            .withKeyboardDismiss()
             .navigationTitle(encrypt ? "发加密私信" : "发消息")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
         }

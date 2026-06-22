@@ -154,6 +154,7 @@ private struct SendRedSheet: View {
                     Text("总额转入托管地址锁定；别人用 CLAIM 抢、金额由领取所在区块 hash 确定（拼手气）或均分。抢完即结，发起人可在过期后退回剩余。")
                 }
             }
+            .withKeyboardDismiss()
             .navigationTitle("发红包")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
         }

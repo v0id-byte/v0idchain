@@ -59,6 +59,7 @@ struct SendView: View {
                     Text("可用余额 \(node.balance()) $V0ID。交易在本机用 ed25519 签名后广播到节点，约一个区块后确认。")
                 }
             }
+            .withKeyboardDismiss()
             .navigationTitle("转账")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { ConnectionBadge() } }
         }

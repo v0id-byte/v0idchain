@@ -64,6 +64,7 @@ struct SettingsView: View {
                     LabeledContent("默认烧币", value: "\(TxBuilder.messageBurn)")
                 }
             }
+            .withKeyboardDismiss()
             .navigationTitle("设置")
             .onAppear { if nodeField.isEmpty { nodeField = model.nodeURL } }
             .alert("私钥（64 hex）", isPresented: $showKey) {

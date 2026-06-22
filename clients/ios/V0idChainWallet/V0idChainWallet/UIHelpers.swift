@@ -157,3 +157,23 @@ struct ToastHost: ViewModifier {
 extension View {
     func toastHost() -> some View { modifier(ToastHost()) }
 }
+
+// MARK: - Keyboard
+
+private func resignFirstResponder() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+
+extension View {
+    /// 双保险收键盘：向下滚动收起 + 数字键盘"完成"按钮。
+    func withKeyboardDismiss() -> some View {
+        self
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { resignFirstResponder() }
+                }
+            }
+    }
+}
