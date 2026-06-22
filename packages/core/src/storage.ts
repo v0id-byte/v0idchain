@@ -78,6 +78,13 @@ export function loadOrCreateWallet(dataDir: string): Wallet {
 export function loadChain(dataDir: string): Blockchain {
   const f = chainPath(dataDir);
   if (existsSync(f)) {
+    // 兜底收紧权限：早期版本（0600 硬化之前）生成的 chain.json 仍是 0644。每次读取时回填 0600，
+    // 让“本机数据文件 0600”对存量链文件也成立（chmod 失败不致命，忽略）。
+    try {
+      chmodSync(f, 0o600);
+    } catch {
+      /* 只读介质/无权限：尽力而为 */
+    }
     try {
       const data = JSON.parse(readFileSync(f, 'utf8'));
       const bc = Blockchain.fromJSON(data);
@@ -100,7 +107,15 @@ export function saveChain(dataDir: string, bc: Blockchain): void {
   mkdirSync(dataDir, { recursive: true });
   // 原子写：先写临时文件再 rename（同盘 rename 原子），避免崩溃中途截断 chain.json
   // 导致下次 loadChain 解析失败、把整条链清回创世。
+  // 权限收紧到 0600：与 wallet.json/api.token 保持一致——链是公开账本（数据本身不机密），
+  // 但本机数据文件统一仅属主可读写，不给同机其他用户留可读副本。`mode` 关掉新建窗口，`chmod` 兜底
+  // （mode 受 umask 影响、且 rename 覆盖已存在文件时不重置权限）。
   const tmp = chainPath(dataDir) + '.tmp';
-  writeFileSync(tmp, JSON.stringify(bc.toJSON(), null, 2));
+  writeFileSync(tmp, JSON.stringify(bc.toJSON(), null, 2), { mode: 0o600 });
   renameSync(tmp, chainPath(dataDir));
+  try {
+    chmodSync(chainPath(dataDir), 0o600);
+  } catch {
+    /* 只读介质/无权限：尽力而为 */
+  }
 }

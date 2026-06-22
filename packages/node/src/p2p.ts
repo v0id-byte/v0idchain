@@ -1,5 +1,5 @@
 // P2P 网络：WebSocket 全双工，区块/交易广播，peer gossip 自动发现，断线自动重连。
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 import { verify, addressToPublicKeyHex, type Block, type Transaction } from '@v0idchain/core';
 import { type Conn, WsConn } from './transport.js';
@@ -93,6 +93,23 @@ export class P2P {
    * 注意：整链作为单条消息发送，链极长时仍会触顶 —— 彻底的做法是分片同步（教学链暂留此上限）。
    */
   private static readonly MAX_WS_PAYLOAD = 64 * 1024 * 1024;
+
+  /**
+   * 分块同步（QUERY_ALL 拆片）单连接聚合上限：chunkBuffers 最多为一条连接攒这么多块。
+   * 防 OOM：BLOCKS 分片的 `total` 是对端自报、不可信——没有上限时一个已连 peer 发
+   * `{from:0, total:1e15}` 就能让缓冲无界增长直至进程 OOM（攻击者零成本、无需私钥/PoW）。
+   * 100 万块远超教学链可见规模（当前 ~数千块、约 360×），诚实整链同步绝不触顶；真要长到逼近
+   * 这个数，运营者把常量调大即可（纯本机校验、各节点无需一致）。
+   */
+  private static readonly MAX_SYNC_BLOCKS = 1_000_000;
+
+  /**
+   * 分块同步**全局**聚合上限：所有连接的 chunkBuffers 合计不超过这么多块。
+   * 上面的 per-connection 上限只挡单连接；但 inbound 连接数本身没有上限（setupSocket 不计 maxPeers），
+   * 多条恶意 inbound 各撑一份缓冲仍会叠加把内存吃满（种子常跑在内存有限的树莓派上）。这里再加一道全局闸：
+   * 整机所有分片缓冲合计封顶在此值（~1.2GB 量级），合法同步（几个 peer × 现链 ~数千块 = 几十 MB）绝不触顶。
+   */
+  private static readonly MAX_SYNC_BLOCKS_GLOBAL = 1_200_000;
 
   /**
    * WebRTC DataChannel 整链同步的分片大小（块数）。SCTP DataChannel 安全互操作上限 16 KiB、
@@ -321,9 +338,27 @@ export class P2P {
           if (!Array.isArray(msg.blocks)) break;
           if (typeof msg.from === 'number' && typeof msg.total === 'number') {
             // 分块同步：对方把大链拆片发来，攒齐后再交给上层。
-            if (msg.from === 0) this.chunkBuffers.set(conn, { blocks: [], total: msg.total });
+            // 防 OOM（不可信输入）：开片时校验 `total` 必须是 [1, MAX_SYNC_BLOCKS] 的整数——挡住
+            // `{total:1e15}` / NaN / Infinity / 负数 这类把缓冲撑爆的恶意值；攒片时聚合长度不得超过
+            // 对端自己承诺的 total（诚实发送方永不超发），一旦超发就丢弃该连接的整个分片缓冲。
+            if (msg.from === 0) {
+              if (!Number.isInteger(msg.total) || msg.total < 1 || msg.total > P2P.MAX_SYNC_BLOCKS) break;
+              this.chunkBuffers.set(conn, { blocks: [], total: msg.total });
+            }
             const buf = this.chunkBuffers.get(conn);
             if (!buf || buf.total !== msg.total) break; // total 对不上（新一轮请求），丢弃旧片
+            if (buf.blocks.length + msg.blocks.length > buf.total) {
+              this.chunkBuffers.delete(conn); // 收到的片比承诺的多 → 异常/恶意，丢弃缓冲
+              break;
+            }
+            // 全局闸：所有连接的分片缓冲合计不得超过 MAX_SYNC_BLOCKS_GLOBAL（防多 inbound 连接叠加 OOM）。
+            // 每次重算（缓冲条目数 = 连接数，量很小，开销可忽略）。
+            let globalBuffered = 0;
+            for (const b of this.chunkBuffers.values()) globalBuffered += b.blocks.length;
+            if (globalBuffered + msg.blocks.length > P2P.MAX_SYNC_BLOCKS_GLOBAL) {
+              this.chunkBuffers.delete(conn);
+              break;
+            }
             buf.blocks.push(...msg.blocks);
             if (buf.blocks.length >= buf.total) {
               this.chunkBuffers.delete(conn);
@@ -498,6 +533,8 @@ export class P2P {
   private loadPeers(): void {
     if (!this.peersFile) return;
     try {
+      // 兜底收紧权限：早期版本生成的 peers.json 可能是 0644（与 wallet/token/chain 统一为 0600）。
+      try { chmodSync(this.peersFile, 0o600); } catch { /* 尽力而为 */ }
       const data = JSON.parse(readFileSync(this.peersFile, 'utf8'));
       if (Array.isArray(data)) {
         for (const url of data) if (typeof url === 'string') this.addKnown(url);
@@ -510,7 +547,9 @@ export class P2P {
     try {
       // 只存公网可路由地址（过滤掉自身、环回、私网），重启后才能真正连上
       const urls = [...this.knownUrls].filter((u) => u !== this.selfUrl && isPublicWsUrl(u));
-      writeFileSync(this.peersFile, JSON.stringify(urls), 'utf8');
+      // 0600：与 wallet/token/chain 统一收紧本机数据文件权限（peers.json 仅公网 URL、不机密，仍统一）。
+      writeFileSync(this.peersFile, JSON.stringify(urls), { mode: 0o600 });
+      try { chmodSync(this.peersFile, 0o600); } catch { /* 尽力而为 */ }
     } catch { /* 磁盘写失败静默忽略，不能因此崩节点 */ }
   }
 }
