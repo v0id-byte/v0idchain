@@ -104,7 +104,7 @@ struct WalletView: View {
             row("节点", node.nodeURL)
             row("链高", "\(node.height)")
             row("🔥 全网已烧毁", "\(node.totalBurned) $V0ID")
-            if let err = node.lastError {
+            if let err = node.connectionError ?? node.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
         }

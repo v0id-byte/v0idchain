@@ -14,6 +14,21 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let err = node.connectionError {
+                    Section {
+                        Label("连接失败", systemImage: "wifi.exclamationmark")
+                            .foregroundStyle(.red)
+                        Text(err)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    } header: {
+                        Text("连接诊断")
+                    } footer: {
+                        Text("请确认当前网络可访问 mc.void1211.com:6001；如开启代理/VPN，给节点域名加 DIRECT/直连规则或暂时关闭后重试。")
+                    }
+                }
+
                 Section {
                     TextField("ws://host:port", text: $nodeField, axis: .vertical)
                         .font(.system(.footnote, design: .monospaced))

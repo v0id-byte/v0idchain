@@ -94,11 +94,13 @@ extension NodeClient.Status {
 /// 顶部连接状态徽标。
 struct ConnectionBadge: View {
     @EnvironmentObject var node: NodeClient
+    private var isFailed: Bool { node.status != .connected && node.connectionError != nil }
+
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(node.status.color).frame(width: 8, height: 8)
-            Text("\(node.status.label) · 高度 \(node.height)")
-                .font(.caption).foregroundStyle(.secondary)
+            Circle().fill(isFailed ? Color.red : node.status.color).frame(width: 8, height: 8)
+            Text(isFailed ? "连接失败 · 高度 \(node.height)" : "\(node.status.label) · 高度 \(node.height)")
+                .font(.caption).foregroundStyle(isFailed ? Color.red : Color.secondary)
         }
     }
 }

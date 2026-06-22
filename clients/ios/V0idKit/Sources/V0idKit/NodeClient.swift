@@ -18,6 +18,7 @@ public final class NodeClient: ObservableObject {
     @Published public private(set) var status: Status = .disconnected
     @Published public private(set) var chain: [Block] = []
     @Published public private(set) var lastError: String?
+    @Published public private(set) var connectionError: String?
     /// 已广播、但尚未在链上出现的本地交易（用于 nonce 推进与 UI 提示）。
     @Published public private(set) var pending: [Transaction] = []
 
@@ -49,6 +50,12 @@ public final class NodeClient: ObservableObject {
         // 会被上游代理截断（握手后不到 1s 断开）。直连更可靠；如需代理出境，
         // 请在 Clash 里为节点域名加 DIRECT 规则。
         let cfg = URLSessionConfiguration.default
+#if os(iOS)
+        cfg.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
+            kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
+        ]
+#else
         cfg.connectionProxyDictionary = [
             kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
             kCFNetworkProxiesHTTPSEnable as AnyHashable: 0,
@@ -56,6 +63,7 @@ public final class NodeClient: ObservableObject {
             kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
             kCFNetworkProxiesProxyAutoDiscoveryEnable as AnyHashable: 0,
         ]
+#endif
         self.session = URLSession(configuration: cfg)
         self.backupURLs = UserDefaults.standard.stringArray(forKey: "v0id-peer-backup") ?? []
     }
@@ -86,6 +94,7 @@ public final class NodeClient: ObservableObject {
     public func connect() {
         failCount = 0
         connectURL = nodeURL
+        connectionError = nil
         doConnect()
     }
 
@@ -99,7 +108,9 @@ public final class NodeClient: ObservableObject {
         // 容错：用户没写 scheme（如 "localhost:6001"）就补 ws://；scheme 不对则报错不连。
         guard let url = Self.normalizedWebSocketURL(connectURL) else {
             status = .disconnected
-            lastError = "节点地址无效（需 ws:// 或 wss://）：\(connectURL)"
+            let message = "节点地址无效（需 ws:// 或 wss://）：\(connectURL)"
+            lastError = message
+            connectionError = message
             return
         }
         status = .connecting
@@ -201,7 +212,11 @@ public final class NodeClient: ObservableObject {
                 guard let self, gen == self.generation else { return } // 旧连接的回调直接丢弃
                 switch result {
                 case .failure(let error):
+                    let wasConnected = self.status == .connected
                     self.lastError = error.localizedDescription
+                    if !wasConnected {
+                        self.connectionError = "连接 \(self.connectURL) 失败：\(error.localizedDescription)"
+                    }
                     self.status = .disconnected
                     self.scheduleReconnect()
                 case .success(let message):
@@ -279,6 +294,7 @@ public final class NodeClient: ObservableObject {
 
     private func afterChainChanged() {
         status = .connected
+        connectionError = nil
         failCount = 0      // 成功拿到链，重置 fallback 计数
         connectURL = nodeURL
         // 已上链的 pending 交易：从待打包集合移除
