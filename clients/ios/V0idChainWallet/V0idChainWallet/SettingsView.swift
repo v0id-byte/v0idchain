@@ -39,8 +39,12 @@ struct SettingsView: View {
                         CopyableRow(label: "地址", value: address)
                     }
                     Button {
-                        revealedKey = (try? Keychain.load()).flatMap { $0 }.map { Hex.encode($0) }
-                        showKey = true
+                        // 显示私钥前先做身份验证（Face/Touch ID，回退设备密码）。
+                        BiometricGate.authenticate(reason: "验证身份以显示私钥") { ok in
+                            guard ok else { return }
+                            revealedKey = (try? Keychain.load()).flatMap { $0 }.map { Hex.encode($0) }
+                            showKey = true
+                        }
                     } label: {
                         Label("显示/备份私钥", systemImage: "key.horizontal")
                     }
@@ -63,7 +67,7 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .onAppear { if nodeField.isEmpty { nodeField = model.nodeURL } }
             .alert("私钥（64 hex）", isPresented: $showKey) {
-                Button("复制") { if let k = revealedKey { Clipboard.copy(k) } }
+                Button("复制") { if let k = revealedKey { Clipboard.copySensitive(k) } }
                 Button("关闭", role: .cancel) { revealedKey = nil }
             } message: {
                 Text(revealedKey ?? "读取失败")

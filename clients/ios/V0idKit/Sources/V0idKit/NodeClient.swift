@@ -287,13 +287,39 @@ public final class NodeClient: ObservableObject {
             guard let urlObj = Self.normalizedWebSocketURL(raw) else { continue }
             let normalized = urlObj.absoluteString
             let host = urlObj.host ?? ""
-            guard host != "localhost", !host.hasPrefix("127."),
+            // 只收公网可路由地址：环回/RFC1918 私网/链路本地/ULA 一律丢弃，防 LAN MITM 用 PEERS 帧
+            // 把自己（如 ws://10.0.0.5:6001）塞进备用池被持久化、下次冷启动自动连上（对齐节点端 isPublicWsUrl）。
+            guard !Self.isPrivateOrLocalHost(host),
                   normalized != nodeURL,
                   !backupURLs.contains(normalized) else { continue }
             backupURLs.append(normalized)
             added = true
         }
         if added { UserDefaults.standard.set(backupURLs, forKey: "v0id-peer-backup") }
+    }
+
+    /// host 是否为环回/私网/链路本地/ULA（gossip 学来的命中则丢弃）。对齐节点端 isPublicWsUrl
+    /// 的「只放行全局单播」策略（packages/node/src/p2p.ts）。
+    static func isPrivateOrLocalHost(_ rawHost: String) -> Bool {
+        var host = rawHost.lowercased()
+        host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if let pct = host.firstIndex(of: "%") { host = String(host[..<pct]) }
+        if host.isEmpty || host == "localhost" { return true }
+        if host.contains(":") {
+            // IPv6：只放行全局单播 2000::/3；其余（::1 环回 / fe80 链路本地 / fc,fd ULA / ::ffff: 映射 等）拒
+            let firstSeg = host.hasPrefix("::") ? "0" : (host.split(separator: ":").first.map(String.init) ?? "")
+            guard let f = Int(firstSeg, radix: 16), f >= 0x2000, f <= 0x3fff else { return true }
+            return false
+        }
+        if host == "0.0.0.0" { return true }
+        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") {
+            return true
+        }
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count >= 2, let second = Int(parts[1]), (16...31).contains(second) { return true }
+        }
+        return false
     }
 
     // MARK: - 钱包动作
