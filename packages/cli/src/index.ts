@@ -13,6 +13,7 @@ import {
   bytesToHex,
   SYMBOL,
   MIN_FEE,
+  minFeeFor,
   MESSAGE_BURN,
   GENESIS_PREMINE_ADDRESS,
 } from '@v0idchain/core';
@@ -206,11 +207,13 @@ txCmd(program.command('send'))
   .argument('<to>', '收款地址')
   .argument('<amount>', '金额')
   .option('--memo <text>', '附带一段备注（上链可查）', '')
-  .option('--fee <n>', `手续费（gas，给打包矿工，至少 ${MIN_FEE}；给多了打包更优先）`, String(MIN_FEE))
+  .option('--fee <n>', `手续费（gas；省略则自动算：max(${MIN_FEE}, 金额×0.1%)）`)
   .description('转账（需付 金额 + 手续费/gas）')
   .action(async (to, amount, o) => {
-    const r = await api(o,'POST', '/send', { to, amount: Number(amount), memo: o.memo, fee: Number(o.fee) });
-    console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${Number(o.fee)}`));
+    const amt = Number(amount);
+    const fee = o.fee !== undefined ? Number(o.fee) : minFeeFor(amt);
+    const r = await api(o,'POST', '/send', { to, amount: amt, memo: o.memo, fee });
+    console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${fee}`));
     if (o.wait) await waitConfirm(o, r.txid);
   });
 

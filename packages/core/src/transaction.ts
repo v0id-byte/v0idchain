@@ -7,6 +7,7 @@ import {
   GENESIS_TIMESTAMP,
   MAX_MEMO,
   MIN_FEE,
+  minFeeFor,
   MESSAGE_BURN,
   CLAIM_PREFIX,
   REFUND_PREFIX,
@@ -39,16 +40,17 @@ function payloadHash(t: TxPayload): string {
   return sha256Hex(JSON.stringify(fields));
 }
 
-/** 普通转账：由钱包签名。fee = 手续费（gas），默认最低 MIN_FEE，给多了打包更优先。 */
+/** 普通转账：由钱包签名。fee 省略时自动按比例计算（minFeeFor(amount)），给多了打包更优先。 */
 export function createTransaction(
   wallet: Wallet,
   to: string,
   amount: number,
   nonce: number,
   memo = '',
-  fee = MIN_FEE,
+  fee?: number,
 ): Transaction {
-  const base: TxPayload = { from: wallet.address, to, amount, fee, nonce, timestamp: Date.now(), memo };
+  const actualFee = fee ?? minFeeFor(amount);
+  const base: TxPayload = { from: wallet.address, to, amount, fee: actualFee, nonce, timestamp: Date.now(), memo };
   const txid = payloadHash(base);
   return { ...base, signature: sign(txid, wallet.privateKey), txid };
 }
@@ -127,6 +129,6 @@ export function verifyTransaction(t: Transaction): boolean {
   if (payloadHash(t) !== t.txid) return false; // txid 必须等于内容哈希（含 fee/burn），篡改金额/手续费/销毁额即被识破
   // coinbase / 创世：无签名，金额>0，且自身既不付手续费也不销毁（fee 与 burn 必须为 0）
   if (isCoinbase(t)) return t.fee === 0 && burn === 0 && t.amount > 0;
-  if (t.fee < MIN_FEE) return false; // 普通交易：强制最低手续费（杜绝零费 spam）
+  if (t.fee < minFeeFor(t.amount)) return false; // 普通交易：强制比例+保底手续费
   return verify(t.signature, t.txid, addressToPublicKeyHex(t.from));
 }

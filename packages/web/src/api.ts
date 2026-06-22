@@ -98,6 +98,7 @@ export interface Info {
   mempool: number;
   difficulty: number;
   minFee?: number; // 最低手续费（gas）
+  feeRateBps?: number; // 比例手续费率（基点，10000=100%）
   messageBurn?: number; // 发消息默认销毁额
   burned?: number; // 🔥 全网已烧进虚空的 $V0ID 总额
   peers: number;

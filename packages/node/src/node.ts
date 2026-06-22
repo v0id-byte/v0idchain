@@ -7,6 +7,8 @@ import {
   Transaction,
   SYMBOL,
   MIN_FEE,
+  FEE_RATE_BPS,
+  minFeeFor,
   MESSAGE_BURN,
   MAX_MEMO,
   NULL_ADDRESS,
@@ -118,9 +120,9 @@ export class V0idNode {
   }
 
   // ---- 钱包动作 ----
-  /** 本节点发起转账：算好 nonce、签名、进池、广播。fee = 手续费（gas），默认最低 MIN_FEE。 */
-  send(to: string, amount: number, memo = '', fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
-    return this.submit(this.wallet, to, amount, memo, fee);
+  /** 本节点发起转账：算好 nonce、签名、进池、广播。fee 省略时自动按比例计算（minFeeFor(amount)）。 */
+  send(to: string, amount: number, memo = '', fee?: number): { ok: boolean; tx?: Transaction; error?: string } {
+    return this.submit(this.wallet, to, amount, memo, fee ?? minFeeFor(amount));
   }
 
   /**
@@ -188,10 +190,10 @@ export class V0idNode {
 
   // ---- 链上抢红包 ----
   /** 发红包：转给托管地址 + memo `RED|份数|模式`，锁总额、开池（需 ≥ 总额+手续费 余额；挖进区块后可抢）。 */
-  redPacket(total: number, count: number, mode = 'r', fee = MIN_FEE): { ok: boolean; tx?: Transaction; error?: string } {
+  redPacket(total: number, count: number, mode = 'r', fee?: number): { ok: boolean; tx?: Transaction; error?: string } {
     const r = makeRedPacket(total, count, mode as 'r' | 'e');
     if (!r.ok) return { ok: false, error: r.error };
-    return this.submit(this.wallet, RED_ESCROW_ADDRESS, r.total!, r.memo!, fee);
+    return this.submit(this.wallet, RED_ESCROW_ADDRESS, r.total!, r.memo!, fee ?? minFeeFor(r.total!));
   }
 
   /** 按 id 或唯一前缀找一个红包 */
@@ -314,7 +316,7 @@ export class V0idNode {
     if (l.delisted) return { ok: false, error: '该商品已下架' };
     if (l.sold) return { ok: false, error: '该商品已售出' };
     if (l.seller === this.wallet.address) return { ok: false, error: '不能买自己的商品（可用 delist 撤单）' };
-    return this.submit(this.wallet, l.seller, l.price, `${BUY_PREFIX}${l.id}`, MIN_FEE);
+    return this.submit(this.wallet, l.seller, l.price, `${BUY_PREFIX}${l.id}`, minFeeFor(l.price));
   }
 
   /** 撤单：卖家本人发 DEL memo */
@@ -468,6 +470,7 @@ export class V0idNode {
       mempool: this.bc.mempool.length,
       difficulty: this.bc.tipDifficulty(),
       minFee: MIN_FEE, // 最低手续费（gas），供 CLI/仪表盘提示与表单默认值
+      feeRateBps: FEE_RATE_BPS, // 比例手续费率（基点），供客户端动态计算推荐手续费
       messageBurn: MESSAGE_BURN, // 发消息默认销毁额，供表单默认值
       burned: this.bc.balanceOf(NULL_ADDRESS), // 🔥 全网已烧进虚空的 $V0ID 总额
       peers: this.p2p.peerCount(),

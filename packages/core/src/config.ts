@@ -72,6 +72,19 @@ export const BLOCK_REWARD = 1;
 export const MIN_FEE = 1;
 
 /**
+ * 比例手续费率（基点，basis points，10000 bps = 100%）：普通转账在 MIN_FEE 保底之上，
+ * 还需 ≥ floor(amount × FEE_RATE_BPS / 10000)。10 bps = 0.1%：
+ *   转账 1000 → 最低费 1（保底），10000 → 10，100000 → 100。
+ * 属**软分叉**：大额转账 fee=1 在新版节点被拒，旧节点仍接受；全网须同步升级。
+ */
+export const FEE_RATE_BPS = 10;
+
+/** 某笔转账（amount）所需的最低手续费（整数）：max(MIN_FEE, floor(amount × FEE_RATE_BPS / 10000)) */
+export function minFeeFor(amount: number): number {
+  return Math.max(MIN_FEE, Math.floor((amount * FEE_RATE_BPS) / 10_000));
+}
+
+/**
  * 单个区块最多打包多少笔**普通**交易（不含 coinbase）。这是矿工侧的打包策略（非共识强校验）：
  * mempool 拥堵时，矿工按手续费从高到低挑、挑满即止 —— 给得多的先上链，形成真实的手续费竞价市场。
  * 取一个较宽的值：日常教学几乎不触顶，又足以在压测时演示“高手续费优先”。

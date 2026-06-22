@@ -1,7 +1,7 @@
 // 本地 HTTP 控制接口：CLI 子命令（send/balance/mine…）通过它和运行中的节点对话。
 // 用 node:http，零额外依赖。只监听 127.0.0.1。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { isValidAddress, MIN_FEE } from '@v0idchain/core';
+import { isValidAddress, minFeeFor } from '@v0idchain/core';
 import type { V0idNode } from './node.js';
 
 function readBody(req: IncomingMessage): Promise<any> {
@@ -94,8 +94,9 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
         switch (url.pathname) {
           case '/send': {
             if (!isValidAddress(String(body.to))) return json(400, { error: '收款地址格式无效' });
-            const fee = body.fee === undefined ? MIN_FEE : Number(body.fee); // 不填则用最低手续费
-            const r = node.send(String(body.to), Number(body.amount), String(body.memo ?? ''), fee);
+            const amount = Number(body.amount);
+            const fee = body.fee === undefined ? minFeeFor(amount) : Number(body.fee);
+            const r = node.send(String(body.to), amount, String(body.memo ?? ''), fee);
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/message': {

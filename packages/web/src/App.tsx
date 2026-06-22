@@ -153,7 +153,7 @@ export default function App() {
       <Marketplace market={market} chain={chain} api={api} token={token} onDone={poll} />
 
       <div className="cols">
-        <Actions api={api} token={token} me={me} chain={chain} minFee={info?.minFee ?? 1} onDone={poll} />
+        <Actions api={api} token={token} me={me} chain={chain} minFee={info?.minFee ?? 1} feeRateBps={info?.feeRateBps ?? 10} onDone={poll} />
         <Mempool mempool={mempool} me={me} />
       </div>
 
@@ -338,7 +338,7 @@ function Explorer({ chain, me }: { chain: Block[]; me: string }) {
   );
 }
 
-function Actions({ api, token, me, chain, minFee, onDone }: { api: string; token: string; me: string; chain: Block[]; minFee: number; onDone: () => void }) {
+function Actions({ api, token, me, chain, minFee, feeRateBps, onDone }: { api: string; token: string; me: string; chain: Block[]; minFee: number; feeRateBps: number; onDone: () => void }) {
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [fee, setFee] = useState(String(minFee));
@@ -346,6 +346,13 @@ function Actions({ api, token, me, chain, minFee, onDone }: { api: string; token
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
   const [pending, track] = usePending(chain);
+
+  useEffect(() => {
+    const n = Number(amount);
+    if (Number.isInteger(n) && n >= 0) {
+      setFee(String(Math.max(minFee, Math.floor((n * feeRateBps) / 10_000))));
+    }
+  }, [amount, minFee, feeRateBps]);
 
   const submit = async () => {
     setBusy(true);
@@ -356,7 +363,6 @@ function Actions({ api, token, me, chain, minFee, onDone }: { api: string; token
       track(r.txid);
       setTo('');
       setAmount('');
-      setFee(String(minFee));
       setMemo('');
       onDone();
     } catch (e) {
@@ -379,7 +385,7 @@ function Actions({ api, token, me, chain, minFee, onDone }: { api: string; token
           <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="100" inputMode="numeric" />
         </div>
         <div className="field">
-          <label>手续费 / gas（给矿工，≥{minFee}）</label>
+          <label>手续费 / gas（自动计算，≥ 金额×0.1% 保底 {minFee}）</label>
           <input value={fee} onChange={(e) => setFee(e.target.value)} placeholder={String(minFee)} inputMode="numeric" />
         </div>
       </div>

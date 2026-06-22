@@ -10,6 +10,7 @@ import {
 import {
   BLOCK_REWARD,
   MIN_FEE,
+  minFeeFor,
   MAX_BLOCK_TXS,
   NULL_ADDRESS,
   GENESIS_TIMESTAMP,
@@ -320,7 +321,8 @@ export class Blockchain {
     if (!Number.isInteger(tx.amount) || tx.amount < 0) return { ok: false, error: '金额必须是非负整数' };
     if (!Number.isInteger(burn) || burn < 0) return { ok: false, error: '销毁额必须是非负整数' };
     if (tx.amount === 0 && burn === 0 && !isZeroOp) return { ok: false, error: '空交易：转账须金额>0，消息须销毁额>0' };
-    if (!Number.isInteger(tx.fee) || tx.fee < MIN_FEE) return { ok: false, error: `手续费至少 ${MIN_FEE}（gas）` };
+    const minRequired = minFeeFor(tx.amount);
+    if (!Number.isInteger(tx.fee) || tx.fee < minRequired) return { ok: false, error: `手续费至少 ${minRequired} gas` };
     if (!verifyTransaction(tx)) return { ok: false, error: '签名无效或备注超长' };
     if (!isValidAddress(tx.to) || tx.to === NULL_ADDRESS) {
       return { ok: false, error: '收款地址格式无效' }; // 防止打钱给畸形/空地址导致永久销毁
