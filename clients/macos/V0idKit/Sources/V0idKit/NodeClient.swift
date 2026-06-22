@@ -48,7 +48,18 @@ public actor NodeClient {
         self.bootstrap = bootstrap
         self.myAddress = myAddress
         self.maxPeers = maxPeers
-        self.session = URLSession(configuration: .default)
+        // 绕过系统代理（Clash / Shadowrocket 等）：ws:// 长连接在 HTTP CONNECT 隧道里
+        // 会被上游代理截断（握手后不到 1s 断开）。直连更可靠；若你的网络需要代理出境，
+        // 请在 Clash 规则里为 mc.void1211.com 加一条 DIRECT 规则。
+        let cfg = URLSessionConfiguration.default
+        cfg.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
+            kCFNetworkProxiesHTTPSEnable as AnyHashable: 0,
+            kCFNetworkProxiesSOCKSEnable as AnyHashable: 0,
+            kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
+            kCFNetworkProxiesProxyAutoDiscoveryEnable as AnyHashable: 0,
+        ]
+        self.session = URLSession(configuration: cfg)
         var cont: AsyncStream<NodeEvent>.Continuation!
         self.events = AsyncStream { cont = $0 }
         self.continuation = cont

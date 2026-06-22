@@ -45,9 +45,17 @@ public final class NodeClient: ObservableObject {
     public init(nodeURL: String) {
         self.nodeURL = nodeURL
         self.connectURL = nodeURL
-        // 不走系统 HTTP 代理：WebSocket over proxy 容易被中间件截断或不支持。
+        // 绕过系统代理（Clash / Shadowrocket 等）：ws:// 长连接在 HTTP CONNECT 隧道里
+        // 会被上游代理截断（握手后不到 1s 断开）。直连更可靠；如需代理出境，
+        // 请在 Clash 里为节点域名加 DIRECT 规则。
         let cfg = URLSessionConfiguration.default
-        cfg.connectionProxyDictionary = [:]
+        cfg.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
+            kCFNetworkProxiesHTTPSEnable as AnyHashable: 0,
+            kCFNetworkProxiesSOCKSEnable as AnyHashable: 0,
+            kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
+            kCFNetworkProxiesProxyAutoDiscoveryEnable as AnyHashable: 0,
+        ]
         self.session = URLSession(configuration: cfg)
         self.backupURLs = UserDefaults.standard.stringArray(forKey: "v0id-peer-backup") ?? []
     }
