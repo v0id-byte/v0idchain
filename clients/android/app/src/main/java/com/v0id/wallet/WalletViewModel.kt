@@ -172,6 +172,11 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
     // ---- 节点 / 连接 ----
     fun setNodeUrl(url: String) {
         val clean = url.trim()
+        // 强制 ws:// 或 wss:// scheme：挡住把节点切到 http://attacker 或裸 host 的钓鱼（OkHttp 否则照连）。
+        if (!clean.startsWith("ws://") && !clean.startsWith("wss://")) {
+            appendLog("节点地址需以 ws:// 或 wss:// 开头：$clean")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) { vault.nodeUrl = clean }
         // 切换节点 = 重新以该节点的视角同步：清空旧链与待发交易，避免“旧链更高 → 新节点较短链被忽略”。
         pending.clear()
@@ -211,12 +216,37 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         val currentNode = _ui.value.nodeUrl
         for (url in urls) {
             val clean = url.trim()
-            if (clean.isBlank() || clean.contains("127.") || clean.contains("localhost")) continue
+            // 只收公网可路由地址：环回/RFC1918 私网/链路本地/ULA 一律丢弃，防 LAN MITM 用 PEERS 帧把自己
+            // （如 ws://10.0.0.5:6001）塞进备用池被持久化、下次冷启动自动连上（对齐节点端 isPublicWsUrl）。
+            if (clean.isBlank() || isPrivateOrLocalPeer(clean)) continue
             if (clean == currentNode || backupPeers.contains(clean)) continue
             backupPeers.add(clean)
             added = true
         }
         if (added) viewModelScope.launch(Dispatchers.IO) { vault.knownPeers = backupPeers.joinToString(",") }
+    }
+
+    /** peer URL 的 host 是否为环回/私网/链路本地/ULA（命中则丢弃）。对齐节点端 isPublicWsUrl。 */
+    private fun isPrivateOrLocalPeer(url: String): Boolean {
+        val rawHost = try { java.net.URI(url).host?.lowercase() } catch (e: Exception) { null } ?: return true
+        val host = rawHost.trim('[', ']').substringBefore('%')
+        if (host.isEmpty() || host == "localhost") return true
+        if (host.contains(":")) { // IPv6：只放行全局单播 2000::/3
+            val firstSeg = if (host.startsWith("::")) "0" else host.substringBefore(":")
+            val f = firstSeg.toIntOrNull(16) ?: return true
+            return f !in 0x2000..0x3fff
+        }
+        if (host == "0.0.0.0") return true
+        if (host.startsWith("127.") || host.startsWith("10.") ||
+            host.startsWith("192.168.") || host.startsWith("169.254.")
+        ) {
+            return true
+        }
+        if (host.startsWith("172.")) {
+            val second = host.split(".").getOrNull(1)?.toIntOrNull()
+            if (second != null && second in 16..31) return true
+        }
+        return false
     }
 
     private fun scheduleReconnect() {

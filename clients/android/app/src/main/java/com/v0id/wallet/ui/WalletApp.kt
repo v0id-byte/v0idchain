@@ -32,6 +32,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -813,9 +815,15 @@ private fun SettingsScreen(vm: WalletViewModel, ui: WalletUi) {
             }
         }
 
+        val context = LocalContext.current
         FormSection(header = "钱包", footer = "私钥存于本机 Keystore 加密存储。清除前请先备份私钥，否则资产无法找回。") {
             Box(Modifier.padding(12.dp)) {
-                OutlinedButton(onClick = { showKey = true }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = {
+                    // 显示私钥前先验身份（强生物识别 / 设备凭据）；无 FragmentActivity 或无锁屏时优雅放行。
+                    val activity = context as? FragmentActivity
+                    if (activity != null) BiometricGate.authenticate(activity, "显示私钥前请验证身份") { ok -> if (ok) showKey = true }
+                    else showKey = true
+                }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.Key, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("显示 / 备份私钥")
                 }
             }
@@ -843,8 +851,9 @@ private fun SettingsScreen(vm: WalletViewModel, ui: WalletUi) {
             title = { Text("私钥（64 hex）") },
             text = { Text(vm.privateKeyHex() ?: "读取失败", fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
             confirmButton = {
-                val clip = LocalClipboardManager.current
-                TextButton(onClick = { vm.privateKeyHex()?.let { clip.setText(AnnotatedString(it)) }; showKey = false }) { Text("复制") }
+                val context = LocalContext.current
+                // 私钥用敏感复制：API33+ 标记 EXTRA_IS_SENSITIVE + 60s 后自动清空剪贴板。
+                TextButton(onClick = { vm.privateKeyHex()?.let { copySensitiveToClipboard(context, "私钥", it) }; showKey = false }) { Text("复制") }
             },
             dismissButton = { TextButton(onClick = { showKey = false }) { Text("关闭") } },
         )
