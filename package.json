@@ -18,7 +18,8 @@
     "dev:web": "corepack pnpm --filter @v0idchain/web dev",
     "mine": "tsx packages/cli/src/index.ts start --name miner --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --mine",
     "typecheck": "corepack pnpm -r run typecheck",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "rtc:proto": "tsx scripts/rtc-proto.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

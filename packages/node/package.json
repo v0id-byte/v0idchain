@@ -16,5 +16,8 @@
   },
   "devDependencies": {
     "@types/ws": "^8.5.13"
+  },
+  "optionalDependencies": {
+    "node-datachannel": "^0.32.3"
   }
 }

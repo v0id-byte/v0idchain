@@ -94,6 +94,7 @@ program
   .option('--advertise <url>', '对外广播的本节点 ws 地址（公网/局域网才需要）')
   .option('--mine', '启动后自动挖矿', false)
   .option('--mine-interval <ms>', '出块间隔(ms)，0=连续挖、由 PoW 难度定节奏（默认）', '0')
+  .option('--webrtc', '启用 WebRTC mesh（实验性）：经种子信令打洞，与 NAT 后的对端点对点直连', false)
   .action((o) => {
     const dataDir = o.dataDir || defaultDataDir(o.name);
     const peers = [o.peers, o.bootstrap]
@@ -106,6 +107,7 @@ program
       p2pPort: Number(o.p2pPort),
       advertise: o.advertise,
       peers,
+      enableRtc: o.webrtc, // 实验性 WebRTC mesh（docs/WEBRTC-MESH-DESIGN.md）
       // 有新节点上线 / 新地址首次上链时，实时打一行（运行中的节点窗口直接可见）
       onNotice: (m) => console.log(`  ${c.cyan(m)}`),
     });
@@ -117,6 +119,7 @@ program
     console.log(`  ${c.dim('名称  ')} ${o.name}`);
     console.log(`  ${c.dim('地址  ')} ${c.green(node.wallet.address)}`);
     console.log(`  ${c.dim('P2P   ')} ${o.advertise ?? `ws://127.0.0.1:${o.p2pPort}`}`);
+    if (o.webrtc) console.log(`  ${c.dim('WebRTC')} ${c.yellow('已启用（实验性 mesh 打洞）')}`);
     console.log(`  ${c.dim('API   ')} http://127.0.0.1:${o.apiPort}`);
     console.log(`  ${c.dim('数据  ')} ${dataDir}`);
     console.log(`  ${c.dim('令牌  ')} ${join(dataDir, 'api.token')}  ${c.dim('(CLI 自动读取；仪表盘需手动粘贴)')}`);

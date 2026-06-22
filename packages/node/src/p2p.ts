@@ -1,7 +1,9 @@
 // P2P 网络：WebSocket 全双工，区块/交易广播，peer gossip 自动发现，断线自动重连。
 import { readFileSync, writeFileSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { Block, Transaction } from '@v0idchain/core';
+import { verify, addressToPublicKeyHex, type Block, type Transaction } from '@v0idchain/core';
+import { type Conn, WsConn } from './transport.js';
+import { RtcTransport, signalPayloadHex, type SignalMsg } from './rtc.js';
 
 /** 节点间消息协议 */
 export type P2PMessage =
@@ -11,7 +13,9 @@ export type P2PMessage =
   | { type: 'BLOCKS'; blocks: Block[]; from?: number; total?: number }
   | { type: 'TX'; tx: Transaction }
   | { type: 'QUERY_PEERS' }
-  | { type: 'PEERS'; peers: string[] };
+  | { type: 'PEERS'; peers: string[] }
+  | { type: 'PEER_ANNOUNCE'; address: string } // RTC 平面发现：广播某 peerId 已上线、可经我中继信令
+  | SignalMsg; // SIGNAL_OFFER / SIGNAL_ANSWER / SIGNAL_ICE（§3.3）
 
 /** 上层（节点）需要提供的回调 —— 让 p2p 不依赖 blockchain，避免循环引用 */
 export interface P2PHandlers {
@@ -19,9 +23,10 @@ export interface P2PHandlers {
   getChain(): Block[];
   getHeight(): number;
   getAddress(): string;
-  onBlocks(blocks: Block[], from: WebSocket): void;
-  onTx(tx: Transaction, from: WebSocket): void;
+  onBlocks(blocks: Block[], from: Conn): void;
+  onTx(tx: Transaction, from: Conn): void;
   onPeer?(address: string, listen: string): void; // HELLO 学到对方地址时回调（上层据此发现“新节点上线”）
+  signSignal?(payloadHex: string): string; // 用本节点 ed25519 私钥签 WebRTC 信令；提供它 + enableRtc 才启用 RTC
 }
 
 export interface P2POptions {
@@ -29,6 +34,9 @@ export interface P2POptions {
   advertiseUrl?: string; // 对外广播的本节点地址（公网/局域网）；缺省用 ws://127.0.0.1:<port>
   maxPeers?: number;
   peersFile?: string;   // peers.json 路径；有则启动时加载、每 60s + stop 时写回
+  enableRtc?: boolean;  // 本节点是否做 WebRTC 对端（需 node-datachannel + handlers.signSignal）；默认 false
+  relaySignaling?: boolean; // 是否为别人介绍对端 + 1-hop 转发 SDP/ICE（种子可只做中继、不做 RTC 对端）；默认 = enableRtc
+  serveChain?: boolean; // 是否响应 QUERY_LATEST/QUERY_ALL 供别人同步整链；默认 true（false = 纯信令中继，不服务链）
 }
 
 interface PeerMeta {
@@ -86,10 +94,17 @@ export class P2P {
    */
   private static readonly MAX_WS_PAYLOAD = 64 * 1024 * 1024;
 
-  /** 当前已连接的 socket → 元信息 */
-  private peers = new Map<WebSocket, PeerMeta>();
+  /**
+   * WebRTC DataChannel 整链同步的分片大小（块数）。SCTP DataChannel 安全互操作上限 16 KiB、
+   * >256 KiB 会被 Chromium/libwebrtc 硬关通道（docs/WEBRTC-MESH-DESIGN.md §3.5 / [V4]）。
+   * 12 块 × ~1KB/块 安全落在 16 KiB 内。仅作用于 conn.kind==='rtc' 路径；WS 路径仍用 500。
+   */
+  private static readonly CHUNK_RTC = 12;
+
+  /** 当前已连接的对等连接 → 元信息（key 是传输无关的 Conn，底层可能是 ws 或 rtc） */
+  private peers = new Map<Conn, PeerMeta>();
   /** 分块同步缓冲：对等节点把大链拆片发来时，在这里攒齐再交给上层 */
-  private chunkBuffers = new Map<WebSocket, { blocks: Block[]; total: number }>();
+  private chunkBuffers = new Map<Conn, { blocks: Block[]; total: number }>();
   /** 听说过的对外地址（用于发现 + 重连） */
   private knownUrls = new Set<string>();
   /** 运营者显式提供的种子（--peers / 本地 /connect）：永不被 gossip 淘汰，且允许私网/环回地址 */
@@ -98,11 +113,23 @@ export class P2P {
   private dialedUrls = new Set<string>();
   private readonly peersFile?: string;
 
+  // ---- WebRTC mesh（Stage 1，docs/WEBRTC-MESH-DESIGN.md）----
+  private static readonly STUN_SERVERS = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
+  private readonly enableRtc: boolean;
+  private readonly relaySignaling: boolean;
+  private readonly serveChain: boolean;
+  private rtc?: RtcTransport; // 异步加载完成后赋值；未启用/加载失败时为 undefined（节点保持 WS-only）
+  /** 信令限速：以【收到信令的连接】为键（连接身份不可伪造，防冒名顶替挤掉受害者配额） */
+  private readonly signalTimes = new Map<Conn, number[]>();
+
   constructor(opts: P2POptions) {
     this.handlers = opts.handlers;
     this.maxPeers = opts.maxPeers ?? 8;
     this.advertise = opts.advertiseUrl;
     this.peersFile = opts.peersFile;
+    this.enableRtc = opts.enableRtc ?? false;
+    this.relaySignaling = opts.relaySignaling ?? this.enableRtc; // RTC 对端默认也帮忙中继；纯中继节点单独开
+    this.serveChain = opts.serveChain ?? true;
   }
 
   private get selfUrl(): string {
@@ -126,6 +153,7 @@ export class P2P {
     setInterval(() => this.reconnect(), 5_000).unref?.();
     // 每 60s 持久化一次邻居表（Bitcoin peers.dat 同款机制）
     setInterval(() => this.savePeers(), 60_000).unref?.();
+    this.initRtc(); // 启用时异步加载 node-datachannel，让本节点也能 WebRTC 打洞
   }
 
   /** 是否已经连到某个对外地址（按对方广播的 listen 判断） */
@@ -202,30 +230,32 @@ export class P2P {
     }
   }
 
-  /** 初始化一条连接：登记、握手、收消息、清理 */
+  /** 初始化一条 WS 连接：包成 Conn、登记、握手、收消息、清理 */
   private setupSocket(ws: WebSocket, dialedUrl?: string): void {
-    this.peers.set(ws, dialedUrl ? { listen: dialedUrl } : {});
-    ws.on('message', (raw) => this.handle(ws, raw.toString()));
-    ws.on('close', () => this.cleanup(ws, dialedUrl));
-    ws.on('error', () => this.cleanup(ws, dialedUrl));
+    const conn = new WsConn(ws);
+    this.peers.set(conn, dialedUrl ? { listen: dialedUrl } : {});
+    ws.on('message', (raw) => this.handle(conn, raw.toString()));
+    ws.on('close', () => this.cleanup(conn, dialedUrl));
+    ws.on('error', () => this.cleanup(conn, dialedUrl));
     // 握手：自报家门 + 问最新块 + 问对方认识谁
-    this.send(ws, {
+    this.send(conn, {
       type: 'HELLO',
       address: this.handlers.getAddress(),
       height: this.handlers.getHeight(),
       listen: this.selfUrl,
     });
-    this.send(ws, { type: 'QUERY_LATEST' });
-    this.send(ws, { type: 'QUERY_PEERS' });
+    this.send(conn, { type: 'QUERY_LATEST' });
+    this.send(conn, { type: 'QUERY_PEERS' });
   }
 
-  private cleanup(ws: WebSocket, dialedUrl?: string): void {
-    this.peers.delete(ws);
-    this.chunkBuffers.delete(ws); // 连接断了，清掉该连接的残留分片缓冲
+  private cleanup(conn: Conn, dialedUrl?: string): void {
+    this.peers.delete(conn);
+    this.chunkBuffers.delete(conn); // 连接断了，清掉该连接的残留分片缓冲
+    this.signalTimes.delete(conn); // 清掉该连接的信令限速计数
     if (dialedUrl) this.dialedUrls.delete(dialedUrl); // 允许之后重连
   }
 
-  private handle(ws: WebSocket, raw: string): void {
+  private handle(conn: Conn, raw: string): void {
     // 来自对等节点的消息一律视为不可信：解析失败、字段类型不对、结构畸形都直接丢弃，
     // 绝不让一个畸形包打挂整个节点。
     let msg: any;
@@ -248,31 +278,36 @@ export class P2P {
           // 去重：已有另一条连到同一对外地址的连接（双方同时互拨时会发生）。
           // 用地址字典序做确定性 tie-break，保证只有一侧主动关闭，避免两边都关或都不关。
           for (const [sock, m] of this.peers) {
-            if (sock !== ws && m.listen === msg.listen) {
-              if (this.handlers.getAddress() > msg.address) ws.close();
+            if (sock !== conn && m.listen === msg.listen) {
+              if (this.handlers.getAddress() > msg.address) conn.close();
               return;
             }
           }
-          const meta = this.peers.get(ws) ?? {};
+          const meta = this.peers.get(conn) ?? {};
           meta.address = msg.address;
           meta.listen = msg.listen;
-          this.peers.set(ws, meta);
+          this.peers.set(conn, meta);
+          conn.id = msg.address; // peerId 寻址（§3.2）：供 §3.3 信令 1-hop 中继按地址定位连接
           this.handlers.onPeer?.(msg.address, msg.listen); // 上层据此发现“新节点上线”（自行去重）
+          if (this.relaySignaling) this.introducePeer(conn, msg.address); // RTC 平面：把双方互相介绍，便于打洞
           if (isPublicWsUrl(msg.listen)) this.addKnown(msg.listen); // gossip 学来的 listen：仅记公网地址
-          if (msg.height > this.handlers.getHeight()) this.send(ws, { type: 'QUERY_ALL' });
+          if (msg.height > this.handlers.getHeight()) this.send(conn, { type: 'QUERY_ALL' });
           break;
         }
         case 'QUERY_LATEST':
-          this.send(ws, { type: 'BLOCKS', blocks: [this.handlers.getLatest()] });
+          if (this.serveChain) this.send(conn, { type: 'BLOCKS', blocks: [this.handlers.getLatest()] });
           break;
         case 'QUERY_ALL': {
+          if (!this.serveChain) break; // 纯信令中继节点不提供整链同步
           const chain = this.handlers.getChain();
-          const CHUNK = 500;
-          if (chain.length <= CHUNK) {
-            this.send(ws, { type: 'BLOCKS', blocks: chain });
+          // 分片大小按传输选：WS 走 500（≈500KB，64MB 上限内）；RTC 走 CHUNK_RTC（§3.5，避开 16KiB DataChannel 上限）。
+          const CHUNK = conn.kind === 'rtc' ? P2P.CHUNK_RTC : 500;
+          // RTC 路径必须分片，绝不单条发全链（[V4]）；WS 路径保留“整链快捷”逐字节不变。
+          if (conn.kind === 'ws' && chain.length <= CHUNK) {
+            this.send(conn, { type: 'BLOCKS', blocks: chain });
           } else {
             for (let i = 0; i < chain.length; i += CHUNK) {
-              this.send(ws, {
+              this.send(conn, {
                 type: 'BLOCKS',
                 blocks: chain.slice(i, Math.min(i + CHUNK, chain.length)),
                 from: i,
@@ -286,24 +321,32 @@ export class P2P {
           if (!Array.isArray(msg.blocks)) break;
           if (typeof msg.from === 'number' && typeof msg.total === 'number') {
             // 分块同步：对方把大链拆片发来，攒齐后再交给上层。
-            if (msg.from === 0) this.chunkBuffers.set(ws, { blocks: [], total: msg.total });
-            const buf = this.chunkBuffers.get(ws);
+            if (msg.from === 0) this.chunkBuffers.set(conn, { blocks: [], total: msg.total });
+            const buf = this.chunkBuffers.get(conn);
             if (!buf || buf.total !== msg.total) break; // total 对不上（新一轮请求），丢弃旧片
             buf.blocks.push(...msg.blocks);
             if (buf.blocks.length >= buf.total) {
-              this.chunkBuffers.delete(ws);
-              this.handlers.onBlocks(buf.blocks, ws);
+              this.chunkBuffers.delete(conn);
+              this.handlers.onBlocks(buf.blocks, conn);
             }
           } else {
-            this.handlers.onBlocks(msg.blocks, ws);
+            this.handlers.onBlocks(msg.blocks, conn);
           }
           break;
         }
         case 'TX':
-          if (msg.tx && typeof msg.tx === 'object') this.handlers.onTx(msg.tx, ws);
+          if (msg.tx && typeof msg.tx === 'object') this.handlers.onTx(msg.tx, conn);
           break;
         case 'QUERY_PEERS':
-          this.send(ws, { type: 'PEERS', peers: [...this.knownUrls, this.selfUrl] });
+          this.send(conn, { type: 'PEERS', peers: [...this.knownUrls, this.selfUrl] });
+          break;
+        case 'PEER_ANNOUNCE':
+          if (typeof msg.address === 'string') this.rtc?.discover(msg.address, conn); // 仅本节点启用 RTC 时生效
+          break;
+        case 'SIGNAL_OFFER':
+        case 'SIGNAL_ANSWER':
+        case 'SIGNAL_ICE':
+          this.routeSignal(conn, msg); // 验签 + 限速 + 时窗 → 喂本地 / 1-hop 中继给目标
           break;
         case 'PEERS':
           if (Array.isArray(msg.peers)) {
@@ -316,14 +359,14 @@ export class P2P {
     }
   }
 
-  send(ws: WebSocket, msg: P2PMessage): void {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  send(conn: Conn, msg: P2PMessage): void {
+    conn.send(msg); // 序列化 + OPEN 检查下沉到各传输的 Conn 实现（WsConn/RtcConn）
   }
 
   /** 广播给所有连接（可排除来源，避免回声） */
-  broadcast(msg: P2PMessage, except?: WebSocket): void {
-    for (const ws of this.peers.keys()) {
-      if (ws !== except) this.send(ws, msg);
+  broadcast(msg: P2PMessage, except?: Conn): void {
+    for (const conn of this.peers.keys()) {
+      if (conn !== except) conn.send(msg);
     }
   }
 
@@ -331,13 +374,123 @@ export class P2P {
     return this.peers.size;
   }
 
+  /** 当前 WebRTC（rtc）对端数量；未启用/未加载 RTC 时为 0。诊断/测试用。 */
+  rtcPeerCount(): number {
+    return this.rtc?.count() ?? 0;
+  }
+
+  /** 各对端传输类型（'ws'|'rtc'）列表。诊断用。 */
+  peerKinds(): string[] {
+    return [...this.peers.keys()].map((c) => c.kind);
+  }
+
   peerList(): { url?: string; address?: string }[] {
     return [...this.peers.values()].map((m) => ({ url: m.listen, address: m.address }));
   }
 
+  // ---- WebRTC mesh（Stage 1）：信令中继 + 连接采纳 ----
+
+  /** 启动后异步加载 node-datachannel；成功则本节点能 WebRTC 打洞，失败则保持 WS-only（绝不崩）。 */
+  private initRtc(): void {
+    if (!this.enableRtc || !this.handlers.signSignal) return;
+    RtcTransport.load({
+      selfAddress: this.handlers.getAddress(),
+      iceServers: P2P.STUN_SERVERS,
+      sign: (hex) => this.handlers.signSignal!(hex),
+      sendSignal: (m, via) => this.sendSignal(m, via),
+      onOpen: (c) => this.adoptRtcConn(c),
+      onMessage: (c, raw) => this.handle(c, raw),
+      onClose: (c) => this.cleanup(c),
+      maxPeers: this.maxPeers,
+      peerCount: () => this.peers.size,
+    }).then((t) => {
+      this.rtc = t ?? undefined;
+      if (!t) console.error('⚠ WebRTC 不可用（node-datachannel 未加载）；本节点降级为 WS-only。');
+    });
+  }
+
+  /** 把新来者与已有对端互相介绍（发 PEER_ANNOUNCE），让它们据 peerId 发起 RTC 打洞（种子充当介绍人）。 */
+  private introducePeer(newConn: Conn, addr: string): void {
+    if (!addr || addr === this.handlers.getAddress()) return;
+    for (const [c, m] of this.peers) {
+      if (c === newConn) continue;
+      c.send({ type: 'PEER_ANNOUNCE', address: addr }); // 告诉其它对端：addr 上线了
+      if (m.address && m.address !== addr) newConn.send({ type: 'PEER_ANNOUNCE', address: m.address }); // 告诉新来者：谁在线
+    }
+  }
+
+  /** 把一条信令送上线：优先走学到该对端的那条连接（种子）；否则发给所有 WS 连接由其 1-hop 中继。 */
+  private sendSignal(msg: SignalMsg, via?: Conn): void {
+    if (via && this.peers.has(via) && via.isOpen()) {
+      via.send(msg);
+      return;
+    }
+    for (const conn of this.peers.keys()) if (conn.kind === 'ws') conn.send(msg);
+  }
+
+  /** DataChannel 打开 → 当作一条普通对等连接登记并握手（与 setupSocket 同款 HELLO/QUERY）。 */
+  private adoptRtcConn(conn: Conn): void {
+    if (this.peers.has(conn)) return;
+    this.peers.set(conn, { address: conn.id });
+    this.send(conn, {
+      type: 'HELLO',
+      address: this.handlers.getAddress(),
+      height: this.handlers.getHeight(),
+      listen: this.selfUrl,
+    });
+    this.send(conn, { type: 'QUERY_LATEST' });
+  }
+
+  /**
+   * 处理一条信令：验签（防伪造 offer / 放大）+ 限速 + 时窗后，喂给本地 RTC 或 1-hop 中继给目标。
+   * 跳数硬上限 1：to 不是自己就只转一次给目标连接，绝不再扩散。
+   */
+  private routeSignal(conn: Conn, msg: any): void {
+    // 既不中继、也不做 RTC 对端的默认节点：信令与它无关，连验签都不必做（省 CPU + 收紧“零行为变化”）。
+    if (!this.relaySignaling && !this.rtc) return;
+    if (
+      typeof msg.to !== 'string' ||
+      typeof msg.from !== 'string' ||
+      typeof msg.sig !== 'string' ||
+      typeof msg.ts !== 'number'
+    ) {
+      return;
+    }
+    if (!/^0x[0-9a-f]{64}$/.test(msg.from)) return; // from 必须是合法地址（= ed25519 公钥）
+    if (Math.abs(Date.now() - msg.ts) > 60_000) return; // 时窗：拒重放
+    // 限速键 = 收到信令的【连接】而非 msg.from：连接身份不可伪造，攻击者无法冒用受害者地址耗尽其配额
+    // 把受害者的合法信令在中继处挤掉；同时把每连接的验签 CPU 也封顶（验签前先挡）。
+    if (!this.signalAllowed(conn)) return;
+    if (!verify(msg.sig, signalPayloadHex(msg), addressToPublicKeyHex(msg.from))) return; // 验签
+    if (msg.to === this.handlers.getAddress()) {
+      this.rtc?.onSignal(msg as SignalMsg, conn); // 发给我的 → 喂本地 PeerConnection
+    } else if (this.relaySignaling) {
+      for (const [c, m] of this.peers) {
+        if (m.address === msg.to) {
+          c.send(msg as SignalMsg); // 1-hop 中继给目标（仅中继节点转发，绝不再扩散）
+          break;
+        }
+      }
+    }
+  }
+
+  /** 信令限速：每【连接】10s 内 ≤ 100 条（ICE trickle 会有若干 candidate，足够且能挡洪泛）。条目随连接断开清理。 */
+  private signalAllowed(conn: Conn): boolean {
+    const now = Date.now();
+    const arr = (this.signalTimes.get(conn) ?? []).filter((t) => now - t < 10_000);
+    if (arr.length >= 100) {
+      this.signalTimes.set(conn, arr);
+      return false;
+    }
+    arr.push(now);
+    this.signalTimes.set(conn, arr);
+    return true;
+  }
+
   stop(): void {
     this.savePeers(); // 优雅退出时写一次，保住最新邻居表
-    for (const ws of this.peers.keys()) ws.close();
+    this.rtc?.stop();
+    for (const conn of this.peers.keys()) conn.close();
     this.wss?.close();
   }
 

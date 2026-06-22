@@ -1,5 +1,5 @@
 // 节点：把 blockchain + 钱包 + p2p + 挖矿循环捏在一起。
-import type { WebSocket } from 'ws';
+import type { Conn } from './transport.js';
 import {
   Blockchain,
   Wallet,
@@ -16,6 +16,7 @@ import {
   encryptMemo,
   decryptMemo,
   isEncryptedMemo,
+  sign,
   createTransaction,
   createMessage,
   loadOrCreateWallet,
@@ -55,6 +56,9 @@ export interface NodeOptions {
   advertise?: string;
   peers?: string[];
   maxPeers?: number;
+  enableRtc?: boolean; // 启用 WebRTC mesh 传输（实验性，需 node-datachannel）；默认 false
+  relaySignaling?: boolean; // 只做信令中继/介绍人（种子可不做 RTC 对端）；默认 = enableRtc
+  serveChain?: boolean; // 是否服务整链同步；默认 true（false = 纯信令中继）
   onNotice?: (msg: string) => void; // 有新成员/事件时即时回调（CLI 传 console.log → 运行中实时打印）
 }
 
@@ -101,6 +105,9 @@ export class V0idNode {
       advertiseUrl: opts.advertise,
       maxPeers: opts.maxPeers,
       peersFile: opts.dataDir + '/peers.json',
+      enableRtc: opts.enableRtc,
+      relaySignaling: opts.relaySignaling,
+      serveChain: opts.serveChain,
       handlers: {
         getLatest: () => this.bc.latest,
         getChain: () => this.bc.chain,
@@ -109,6 +116,7 @@ export class V0idNode {
         onBlocks: (blocks, from) => this.onBlocks(blocks, from),
         onTx: (tx, from) => this.onTx(tx, from),
         onPeer: (address, listen) => this.onPeer(address, listen),
+        signSignal: (hex) => sign(hex, this.wallet.privateKey), // 用本节点私钥签 WebRTC 信令（§3.3）
       },
     });
   }
@@ -393,7 +401,7 @@ export class V0idNode {
   }
 
   // ---- 接收 P2P 消息 ----
-  private onBlocks(blocks: Block[], from: WebSocket): void {
+  private onBlocks(blocks: Block[], from: Conn): void {
     if (!blocks?.length) return;
     this.lastSyncAt = Date.now(); // 收到任何 BLOCKS（哪怕不比我新）都算“对方在跟我同步”
     const newLatest = blocks[blocks.length - 1];
@@ -417,7 +425,7 @@ export class V0idNode {
     }
   }
 
-  private onTx(tx: Transaction, from: WebSocket): void {
+  private onTx(tx: Transaction, from: Conn): void {
     if (this.seenTx.has(tx.txid)) return;
     if (this.bc.addTransaction(tx).ok) {
       this.markSeen(tx.txid);
