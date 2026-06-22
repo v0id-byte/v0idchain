@@ -155,7 +155,7 @@ export class P2P {
 
   start(port: number): void {
     this.port = port;
-    this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD });
+    this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD, pingInterval: 20_000 });
     // 端口被占等监听错误：给一行中文提示再退出，别甩 Node 堆栈
     this.wss.on('error', (e: NodeJS.ErrnoException) => {
       if (e.code === 'EADDRINUSE') {

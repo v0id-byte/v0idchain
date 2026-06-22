@@ -50,12 +50,6 @@ public final class NodeClient: ObservableObject {
         // 会被上游代理截断（握手后不到 1s 断开）。直连更可靠；如需代理出境，
         // 请在 Clash 里为节点域名加 DIRECT 规则。
         let cfg = URLSessionConfiguration.default
-#if os(iOS)
-        cfg.connectionProxyDictionary = [
-            kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
-            kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
-        ]
-#else
         cfg.connectionProxyDictionary = [
             kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
             kCFNetworkProxiesHTTPSEnable as AnyHashable: 0,
@@ -63,7 +57,6 @@ public final class NodeClient: ObservableObject {
             kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
             kCFNetworkProxiesProxyAutoDiscoveryEnable as AnyHashable: 0,
         ]
-#endif
         self.session = URLSession(configuration: cfg)
         self.backupURLs = UserDefaults.standard.stringArray(forKey: "v0id-peer-backup") ?? []
     }
@@ -156,11 +149,10 @@ public final class NodeClient: ObservableObject {
 
     private func startKeepAlive() {
         keepAlive?.invalidate()
-        keepAlive = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+        keepAlive = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 if self.status == .syncing {
-                    // 卡在同步中：若超过 30s 无响应则重连，否则重发 QUERY_ALL。
                     if let start = self.syncingStart, Date().timeIntervalSince(start) > 30 {
                         self.connect()
                     } else {
@@ -169,6 +161,8 @@ public final class NodeClient: ObservableObject {
                 } else {
                     self.send(.queryLatest)
                 }
+                // WS 协议层 ping：防运营商 NAT / 透明代理超时断连
+                self.task?.sendPing { _ in }
             }
         }
     }

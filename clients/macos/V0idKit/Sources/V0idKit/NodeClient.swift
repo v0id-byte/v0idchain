@@ -214,7 +214,8 @@ public actor NodeClient {
         while running && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: Self.heartbeat)
             if Task.isCancelled { return }
-            Self.rawSend(task, .queryLatest)   // 心跳：探最新块（落后才会触发整链补拉）
+            Self.rawSend(task, .queryLatest)   // 应用层心跳：探最新块（落后才会触发整链补拉）
+            task.sendPing { _ in }             // WS 协议层 ping：防运营商 NAT / 透明代理超时断连
         }
     }
 
