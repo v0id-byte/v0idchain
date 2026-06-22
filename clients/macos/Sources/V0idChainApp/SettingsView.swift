@@ -10,6 +10,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
+                if let err = model.connectionError { networkErrorCard(err) }
                 if let w = model.wallet {
                     exportCard(w)
                     switchCard
@@ -94,5 +95,28 @@ struct SettingsView: View {
 
     private func kv(_ k: String, _ v: String) -> some View {
         HStack { Text(k).foregroundStyle(.secondary); Spacer(); Text(v) }.font(.subheadline)
+    }
+
+    private func networkErrorCard(_ err: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("连接诊断", systemImage: "wifi.exclamationmark").font(.headline).foregroundStyle(.red)
+            Text(err).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Divider()
+            Text("常见原因及排查步骤：").font(.caption.weight(.medium))
+            VStack(alignment: .leading, spacing: 6) {
+                hint("1.", "在终端测试连通性：nc -zv mc.void1211.com 6001\n   成功显示 succeeded，失败说明端口被封锁（换 Wi-Fi/热点 试试）。")
+                hint("2.", "检查系统代理：系统设置 → 网络 → (你的连接) → 详细信息 → 代理\n   若有 HTTP/SOCKS 代理，WebSocket 可能无法通过；暂时关闭代理再试。")
+                hint("3.", "重启 App：关闭并重新打开 V0idChain，让它重新建立连接。")
+            }
+        }
+        .card()
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.red.opacity(0.35)))
+    }
+
+    private func hint(_ num: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(num).font(.caption.weight(.bold)).foregroundStyle(.red)
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }

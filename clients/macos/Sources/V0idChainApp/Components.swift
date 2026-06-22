@@ -105,13 +105,23 @@ struct CopyableMono: View {
 }
 
 /// 连接状态徽标：显示已连接的节点数（不暴露具体地址）。
+/// error：NodeClient 上报的连接失败原因（peerCount>0 后自动清空）。
 struct ConnectionBadge: View {
     let peers: Int
+    var error: String? = nil
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(peers > 0 ? Color.green : Color.orange).frame(width: 8, height: 8)
-            Text(peers > 0 ? "已连接 \(peers) 节点" : "连接中…")
-                .font(.callout)
+            Circle()
+                .fill(peers > 0 ? Color.green : (error == nil ? Color.orange : Color.red))
+                .frame(width: 8, height: 8)
+            if peers > 0 {
+                Text("已连接 \(peers) 节点").font(.callout)
+            } else if let err = error {
+                Text("连接失败").font(.callout)
+                    .help("原因：\(err)\n\n排查提示：\n• 检查网络是否能访问公网（port 6001）\n• 检查系统代理设置（System Settings → Network → Proxies）\n• 新 Mac 可尝试在终端运行：nc -zv mc.void1211.com 6001")
+            } else {
+                Text("连接中…").font(.callout)
+            }
         }
     }
 }

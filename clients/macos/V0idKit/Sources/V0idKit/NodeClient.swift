@@ -187,7 +187,13 @@ public actor NodeClient {
                 }
                 handle(text, from: task)
             } catch {
-                if running { disconnect(url) }   // 掉线 → 移除，maintainLoop 会补连其它节点
+                if running {
+                    // 从未连上就报错（让 UI 能显示具体原因，而非永远只说"连接中…"）。
+                    if conns[url]?.open == false {
+                        continuation.yield(.error("连接 \(url) 失败：\(error.localizedDescription)"))
+                    }
+                    disconnect(url)
+                }
                 return
             }
         }

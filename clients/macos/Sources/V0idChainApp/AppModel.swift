@@ -19,6 +19,8 @@ final class AppModel: ObservableObject {
     // ---- 用户可见提示 ----
     @Published var lastError: String?
     @Published var lastNotice: String?
+    /// 连接层持久错误（peerCount > 0 后自动清空；独立于 toast，以便一直可见）。
+    @Published private(set) var connectionError: String?
 
     /// 已广播但尚未上链的本地交易（用于算下一笔 nonce、做乐观 UI）。
     @Published private(set) var pending: [V0idKit.Transaction] = []
@@ -121,8 +123,15 @@ final class AppModel: ObservableObject {
 
     private func handle(_ ev: NodeEvent) {
         switch ev {
-        case .peers(let n): peerCount = n
-        case .error(let msg): lastError = msg
+        case .peers(let n):
+            peerCount = n
+            if n > 0 { connectionError = nil }   // 连上了 → 清除持久连接错误
+        case .error(let msg):
+            if peerCount == 0 {
+                connectionError = msg   // 还没连上 → 持久显示，不走会消失的 toast
+            } else {
+                lastError = msg         // 已连接时的错误（广播失败等）→ toast
+            }
         case .chain(let blocks):
             chain = blocks
             state = Chain.computeState(blocks)

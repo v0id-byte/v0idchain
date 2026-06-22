@@ -59,7 +59,7 @@ struct ContentView: View {
     // 全宽状态条：连接节点数 / 链高 / 已销毁。液态玻璃材质、横向铺满、间距充足。
     private var statusBar: some View {
         HStack(spacing: 14) {
-            ConnectionBadge(peers: model.peerCount)
+            ConnectionBadge(peers: model.peerCount, error: model.connectionError)
             statusChip(icon: "cube", "链高 \(model.height)")
             statusChip(icon: "flame", "已销毁 \(model.burned) \(Config.symbol)")
             Spacer()

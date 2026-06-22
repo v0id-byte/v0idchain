@@ -13,11 +13,11 @@
 		7A7E1ABD5AE6349B77DC0B5B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2709B5DE149F8ACBAA6DFB2C /* ContentView.swift */; };
 		7DA00DF492E9C26097F2D9D5 /* MessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE82343164D2A3070F7684B8 /* MessagesView.swift */; };
 		902F830FB5124AB63816A456 /* V0idKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6720AB33C27F464A2C78A031 /* V0idKit */; };
+		ADB9F5A7051238F8DB066B03 /* RedPacketsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E625B6A48648580F716A0F6 /* RedPacketsView.swift */; };
 		AED0CAB32E526CE8A6AC7934 /* V0idChainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */; };
 		B1E4E70282F45B79F6901468 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 773FCD25CE78262B15335250 /* Components.swift */; };
 		CC37F5614DEC587C8999AC6B /* WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75BE38B04FB09F0CD84C6A17 /* WalletView.swift */; };
-		A1B2C3D4E5F600000000A001 /* MarketplaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000A002 /* MarketplaceView.swift */; };
-		A1B2C3D4E5F600000000A003 /* RedPacketsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000A004 /* RedPacketsView.swift */; };
+		D5D5C12A32DCDC49E772525D /* MarketplaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA45693D2B876A758A89838E /* MarketplaceView.swift */; };
 		E59C3E044F115250B7990CFB /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */; };
 		EDD6617D138B9209A5159472 /* ExplorerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A923C49BD5A8D723534070F5 /* ExplorerView.swift */; };
 /* End PBXBuildFile section */
@@ -25,15 +25,15 @@
 /* Begin PBXFileReference section */
 		2709B5DE149F8ACBAA6DFB2C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V0idChainApp.swift; sourceTree = "<group>"; };
+		2E625B6A48648580F716A0F6 /* RedPacketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedPacketsView.swift; sourceTree = "<group>"; };
 		40C9F7F8EB0B5D2F557EBA42 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		75BE38B04FB09F0CD84C6A17 /* WalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletView.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F600000000A002 /* MarketplaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarketplaceView.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F600000000A004 /* RedPacketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedPacketsView.swift; sourceTree = "<group>"; };
 		773FCD25CE78262B15335250 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		799B6F4C035111BD6A0AA7C6 /* V0idChain.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = V0idChain.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9751B02A5201766AC2FC36EC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
 		A923C49BD5A8D723534070F5 /* ExplorerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExplorerView.swift; sourceTree = "<group>"; };
+		BA45693D2B876A758A89838E /* MarketplaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarketplaceView.swift; sourceTree = "<group>"; };
 		C3C325F1287312761C28DA4D /* V0idKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = V0idKit; path = V0idKit; sourceTree = SOURCE_ROOT; };
 		E575DAC7C44F4BBA0EBD9CA2 /* SendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendView.swift; sourceTree = "<group>"; };
 		FE82343164D2A3070F7684B8 /* MessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesView.swift; sourceTree = "<group>"; };
@@ -92,11 +92,11 @@
 				2709B5DE149F8ACBAA6DFB2C /* ContentView.swift */,
 				A923C49BD5A8D723534070F5 /* ExplorerView.swift */,
 				A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */,
+				BA45693D2B876A758A89838E /* MarketplaceView.swift */,
 				FE82343164D2A3070F7684B8 /* MessagesView.swift */,
+				2E625B6A48648580F716A0F6 /* RedPacketsView.swift */,
 				E575DAC7C44F4BBA0EBD9CA2 /* SendView.swift */,
 				9751B02A5201766AC2FC36EC /* SettingsView.swift */,
-				A1B2C3D4E5F600000000A002 /* MarketplaceView.swift */,
-				A1B2C3D4E5F600000000A004 /* RedPacketsView.swift */,
 				284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */,
 				75BE38B04FB09F0CD84C6A17 /* WalletView.swift */,
 			);
@@ -171,11 +171,11 @@
 				7A7E1ABD5AE6349B77DC0B5B /* ContentView.swift in Sources */,
 				EDD6617D138B9209A5159472 /* ExplorerView.swift in Sources */,
 				E59C3E044F115250B7990CFB /* Keychain.swift in Sources */,
+				D5D5C12A32DCDC49E772525D /* MarketplaceView.swift in Sources */,
 				7DA00DF492E9C26097F2D9D5 /* MessagesView.swift in Sources */,
+				ADB9F5A7051238F8DB066B03 /* RedPacketsView.swift in Sources */,
 				1E9AA160F610D3B346F2A347 /* SendView.swift in Sources */,
 				0E4D2D682457C73571412E93 /* SettingsView.swift in Sources */,
-				A1B2C3D4E5F600000000A001 /* MarketplaceView.swift in Sources */,
-				A1B2C3D4E5F600000000A003 /* RedPacketsView.swift in Sources */,
 				AED0CAB32E526CE8A6AC7934 /* V0idChainApp.swift in Sources */,
 				CC37F5614DEC587C8999AC6B /* WalletView.swift in Sources */,
 			);
@@ -309,7 +309,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -319,7 +319,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.v0idchain.macos;
 				PRODUCT_NAME = V0idChain;
 				SDKROOT = macosx;
@@ -333,7 +333,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -343,7 +343,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.v0idchain.macos;
 				PRODUCT_NAME = V0idChain;
 				SDKROOT = macosx;

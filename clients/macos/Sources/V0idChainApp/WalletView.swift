@@ -43,7 +43,7 @@ struct WalletView: View {
                 Text("可用 \(model.available) · 待发占用 \(model.pendingOut)")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ConnectionBadge(peers: model.peerCount).foregroundStyle(.secondary)
+            ConnectionBadge(peers: model.peerCount, error: model.connectionError).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 28)
