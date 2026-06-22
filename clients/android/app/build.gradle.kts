@@ -54,15 +54,19 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     // —— 共识关键：RFC8032 ed25519（纯 Java，低层 crypto API，不注册 JCE Provider 避免与系统 BC 冲突）
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    // 1.81：跟进最新稳定线做版本卫生（1.78.1 已含 CVE-2024-30171 修复、且本项目只用底层 ed25519/x25519/
+    // chacha 原语、不触达 ASN.1/TLS 路径——属常规升级而非安全必需）。
+    implementation("org.bouncycastle:bcprov-jdk18on:1.81")
     // WebSocket
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // 私钥加密存储（主密钥在 Android Keystore，落地用 AES-256-GCM 加密）
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // 生物识别门限（显示/备份私钥前验身份）。BiometricPrompt 需要 FragmentActivity（见 MainActivity）。
+    implementation("androidx.biometric:biometric:1.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // 金标准向量自检：纯 JVM 单测（无需模拟器），core 仅依赖 BouncyCastle + java.security
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.81")
 }

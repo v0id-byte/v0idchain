@@ -56,8 +56,14 @@ public struct Wallet: Equatable {
     /// 随机生成一个新钱包。
     public static func generate() -> Wallet {
         let key = Curve25519.Signing.PrivateKey()
-        // rawRepresentation 即 32 字节种子；再走 init(seed:) 统一派生路径
-        return try! Wallet(seed: key.rawRepresentation)
+        // rawRepresentation 即 32 字节种子；再走 init(seed:) 统一派生路径。
+        // CryptoKit 刚生成的 key 必然是合法 32 字节，init(seed:) 不会抛错；用 do/catch 取代 try!，
+        // 避免强制解包崩溃语义，并在理论上不可达的失败处给出清晰诊断（对齐 Android 的安全构造）。
+        do {
+            return try Wallet(seed: key.rawRepresentation)
+        } catch {
+            fatalError("unreachable: CryptoKit 生成的 32 字节种子未通过 Wallet(seed:) 校验：\(error)")
+        }
     }
 
     public var privateKeyHex: String { Hex.encode(privateKey) }

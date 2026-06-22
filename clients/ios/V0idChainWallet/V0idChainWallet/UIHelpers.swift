@@ -1,7 +1,27 @@
-// 通用 UI 小工具：地址缩写、复制、连接状态徽标、toast 浮层。
+// 通用 UI 小工具：地址缩写、复制、连接状态徽标、toast 浮层、生物识别门限。
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
+import LocalAuthentication
 import V0idKit
+
+/// 生物识别门限：敏感操作（显示/备份私钥）前要求设备主人验证（Face/Touch ID，失败回退设备密码）。
+/// - 用 .deviceOwnerAuthentication（生物识别 OR 密码），没录入 Face/Touch ID 也能用；
+/// - 设备没设密码时优雅放行（不把教学钱包用户锁死）；completion 一律主线程回调（驱动 SwiftUI）。
+/// - 操作层门限，不改 Keychain item 访问控制（item 级门限的主线程死锁/锁死风险留作上设备实测后续，审计 F04）。
+enum BiometricGate {
+    static func authenticate(reason: String, completion: @escaping (Bool) -> Void) {
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
+            DispatchQueue.main.async { completion(true) } // 无可用验证手段（未设密码）→ 放行
+            return
+        }
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
+            DispatchQueue.main.async { completion(success) }
+        }
+    }
+}
 
 extension String {
     /// 地址缩写：0x1234…abcd
@@ -13,6 +33,18 @@ extension String {
 
 enum Clipboard {
     static func copy(_ s: String) { UIPasteboard.general.string = s }
+
+    /// 敏感内容（私钥）复制：60s 自动过期 + 仅本机（不参与 Handoff / 通用剪贴板），
+    /// 缩短私钥停留在系统剪贴板、被其他 App 读取的窗口。普通地址/txid 仍走 `copy`（不过期，方便粘贴）。
+    static func copySensitive(_ s: String, ttl: TimeInterval = 60) {
+        UIPasteboard.general.setItems(
+            [[UTType.utf8PlainText.identifier: s]],
+            options: [
+                .localOnly: true,
+                .expirationDate: Date(timeIntervalSinceNow: ttl),
+            ]
+        )
+    }
 }
 
 extension String {

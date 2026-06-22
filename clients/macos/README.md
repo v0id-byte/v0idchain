@@ -140,7 +140,7 @@ ed25519 用 **CryptoKit `Curve25519.Signing`**（私钥 = 32 字节 `rawRepresen
 无 SPV，需拉**全链**（现 ~700KB-1MB）重放自算：`balance[from] -= amount+fee+burn`、`burn>0` 记入 `NULL_ADDRESS`、`nonce[from]+=1`、`balance[to]+=amount`。下一笔 nonce = 链上 nonce + 本地已广播未打包的待发笔数。
 
 ### Keychain
-私钥以 generic password 存于 `com.v0idchain.macos`，永不落盘明文、永不离开本机。「退出钱包」即从 Keychain 删除。
+私钥以 generic password 存于 `com.v0idchain.macos`，`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` + `kSecAttrSynchronizable=false`——仅本机、解锁后可读，**不随 iCloud Keychain 同步、也不进加密备份/设备迁移**（与 iOS 端一致，兑现“永不离开本机”），永不落盘明文。「显示/备份私钥」前需通过生物识别（Touch ID，回退账户密码）；「退出钱包」即从 Keychain 删除。
 
 ### ATS（明文 ws://）
 v0idChain 是明文 `ws://` 教学链，`Info.plist` 放行明文加载（并对种子域名 `mc.void1211.com` 设例外）。生产化方向是种子前置 `wss://`，届时只需改连接 URL 并收紧 ATS。

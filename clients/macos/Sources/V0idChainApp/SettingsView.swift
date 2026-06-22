@@ -35,10 +35,13 @@ struct SettingsView: View {
             Text("⚠️ 64 hex 字符。任何拿到它的人都能动用此钱包——务必妥善保管，泄露即丢币。")
                 .font(.caption).foregroundStyle(.secondary)
             if revealKey {
-                CopyableRow(label: "私钥", value: w.privateKeyHex)
+                CopyableRow(label: "私钥", value: w.privateKeyHex, sensitive: true)
             } else {
-                Button("显示私钥") { revealKey = true }
-                    .buttonStyle(.bordered)
+                Button("显示私钥") {
+                    // 显示私钥前先做身份验证（Touch ID，回退账户密码）。
+                    BiometricGate.authenticate(reason: "验证身份以显示私钥") { ok in if ok { revealKey = true } }
+                }
+                .buttonStyle(.bordered)
             }
         }
         .card()

@@ -43,7 +43,15 @@ class WsClient(
         userClosed = false
         myAddress = address
         setStatus(Status.CONNECTING)
-        val httpUrl = url.trim()
+        val trimmed = url.trim()
+        // 强制 ws:// 或 wss:// scheme：否则 replaceFirst 对 http://attacker 或裸 host 不生效，
+        // OkHttp 会照单全收连上非节点地址（钓鱼）。这里在网络层兜底拦截（setNodeUrl 已先校验一道）。
+        if (!trimmed.startsWith("ws://") && !trimmed.startsWith("wss://")) {
+            onLog("地址无效（需 ws:// 或 wss://）：$url")
+            setStatus(Status.DISCONNECTED)
+            return
+        }
+        val httpUrl = trimmed
             .replaceFirst("ws://", "http://")
             .replaceFirst("wss://", "https://")
         val req = try {
