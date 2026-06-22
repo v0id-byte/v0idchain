@@ -108,7 +108,7 @@ struct RedPacketsView: View {
             ForEach(done.prefix(12)) { p in
                 HStack {
                     Text(p.refunded ? "↩️ 已退" : "✓ 抢完").font(.caption)
-                        .foregroundStyle(p.refunded ? .secondary : .green)
+                        .foregroundStyle(p.refunded ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
                     Text("\(p.total) \(Config.symbol) / \(p.count) 份").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Text("发起 \(model.displayName(p.creator))").font(.caption2).foregroundStyle(.secondary)
