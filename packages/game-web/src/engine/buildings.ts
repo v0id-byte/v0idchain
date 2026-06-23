@@ -106,6 +106,13 @@ function stamp(ctx: CanvasRenderingContext2D, coord: [number, number], dx: numbe
   const img = atlasImage();
   if (img) ctx.drawImage(img, coord[0] * STRIDE, coord[1] * STRIDE, T, T, dx, dy, T, T);
 }
+// 门窗 1px 投影（§7-D / oblique）：在 16px 元件的右、下沿向外各投 1px 半透明暗影 ⇒ 元件"凸出/凹进"墙面、
+// 增强左上光下的体积。须在 stamp 之前画(只露出偏移到墙上的那 1px)。
+function frameShadow(ctx: CanvasRenderingContext2D, dx: number, dy: number) {
+  ctx.fillStyle = 'rgba(40,28,18,0.28)';
+  ctx.fillRect(dx + 1, dy + T, T, 1); // 下沿投影(光来自左上 ⇒ 影朝下)
+  ctx.fillRect(dx + T, dy + 1, 1, T); // 右沿投影(影朝右)
+}
 
 // 灰泥 + 木骨架墙（Tudor 风:角柱 + 上中下横梁 + 斜撑）。
 // 体积(克制版, RENDER-3D-FEEL §7-D)：底色保持灰泥亮色不变暗，立体靠"边缘"而非压暗大面——
@@ -597,13 +604,16 @@ export function buildingCanvas(styleId: string, w: number, h: number, variant = 
     c % 2 === 0 && c !== doorCol;
   for (let c = wingFrom; c < wingTo; c++) {
     if (!winAt(c)) continue;
+    frameShadow(ctx, c * T, winRow);
     stamp(ctx, s.window, c * T, winRow);
     if (s.shutters) drawShutters(ctx, c * T, winRow, s.shutters);
     if (twoFloor) {
+      frameShadow(ctx, c * T, lowerRow);
       stamp(ctx, s.window, c * T, lowerRow);
       if (s.shutters) drawShutters(ctx, c * T, lowerRow, s.shutters);
     }
   }
+  frameShadow(ctx, doorCol * T, H - T);
   stamp(ctx, s.door, doorCol * T, H - T);
 
   if (s.awning) drawAwning(ctx, H - T - 6, W, s.awning); // 棚在门楣上方
