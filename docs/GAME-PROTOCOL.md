@@ -133,8 +133,75 @@ memo 放不下整间房，故：
 | 参数 | 位置 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `PET_HATCH_COST` | `core/pets.ts` | 300 | 孵崽烧币额。崽贵以体现稀缺/炫耀价值。 |
+| `FISH_BURN` | `core/fishing.ts` | 2 | 铸渔获藏品烧币额。很小：高频娱乐，瞎钓不上链、想收藏才烧。 |
 | `FAUCET_AMOUNT` | game-server | 待定（人均多一些） | 单地址 faucet 额度。 |
 | `FAUCET_GLOBAL_CAP` | game-server | 待定 | faucet 全局总额上限（央行池由矿工把出块奖励指向央行地址缓慢回补）。 |
 
 > 央行收款地址（公开安全）：`0xd63300cb79b682979a5c62bad419a2a1147da9be4111736d52c636523a20cefb`（`GENESIS_PREMINE_ADDRESS`）。
 > 往它转币 = 给 faucet 补水；faucet 用央行**私钥**（仅服务器本机）往外发。
+
+---
+
+## 6. 钓鱼（链上渔获藏品）：memo 约定 + 确定性渲染
+
+定位：与崽（PET）/红包同级的**纯 memo 约定层**（`@v0idchain/core` 的 `fishing.ts`），不改共识、无软分叉。
+链只当“**不可伪造的随机源 + 可验证的渔获账本**”。**钓鱼只烧币、绝不发币**（零新发币路径，不碰 faucet/央行私钥）。
+日常瞎钓是**纯客户端 QTE**（零延迟、不触链）；只有想把某次渔获**铸成藏品**时，才发一笔交易。
+
+### 6.1 链上约定（纯 memo，建在“自转 + 烧币 + memo”之上）
+- **铸渔获**：自转（`from === to`）+ 烧 `FISH_BURN` 个 `$V0ID`（进虚空）+ memo `FISH|`。渔获 id = 该交易 txid。
+  - 形态等同孵崽（`amount=0 + burn>0 + memo`）。旧节点眼里只是一笔合法的“自发消息”，照收 → 不软分叉。
+- **渔获 hash**：`catchHash = sha256(主人地址 + '|' + 该交易所在区块hash + '|' + txid)`。
+  与红包 `redSeed` 同源——掺入**出块后才确定的区块 hash** → 事前不可测、事后全网一致、不可伪造。
+- 渔获列表由 `parseFish(chain)` 还原（`memo==='FISH|'` 且 `from===to` 且 `burn>0`）——全网一致、reorg 安全。渔获**不流转**（无转移操作，区别于崽的 `PETX`）。
+
+> ⚠️ **协议 memo 不入收件箱**：`FISH|`（及 `PET|`/`PETX|`/`RED|`/`CLAIM|`/`REFUND|`）形态上撞“链上私信”（`amount=0+burn>0`）。
+> `messages.ts` 的 `isProtocolMemo()` 集中排除这些前缀，`parseMessages` 跳过 → 子系统交易不会被误收进私信收件箱。
+> 刻意**不含** `ENC|`（端到端加密私信，本就是正文）与 `NAME|`（`burn=0` 自转，本就非消息形态）。
+
+### 6.2 防作弊（随机源 = 出块后的区块 hash）
+`catchHash` 掺入区块 hash 是关键：玩家抛竿/改前端 JS 都改不动链上 txid 与区块 hash → **伪造不出传说鱼**。
+重试要再烧 `FISH_BURN` + fee，且落进新的不可控区块 → 刷传说期望成本随档位指数上升，**经济自带反作弊**。
+（被否决方案：客户端 RNG=可改、服务器掷骰=非权威、只用 txid=签名时已固定→可穷举挑。）
+
+### 6.3 稀有度（复用崽的前导 0 比特门槛）
+`fishRarity(catchHash) = petRarity(catchHash)`：按 `leadingZeroBits` —— `≥12` 传说 / `≥8` 史诗 / `≥5` 稀有 / else 普通。
+概率 = `2⁻ᵏ`，与崽同。稀有靠“碰巧 hash 出很多前导 0”，呼应本链 PoW 哲学。
+
+### 6.4 catchHash → 外观（`fishTraits(catchHash)`，core 提供，全客户端共用 ⇒ 同 hash 处处同长相）
+
+| 字段 | 来源 | 取值 | 含义 |
+| --- | --- | --- | --- |
+| `rarity` | `leadingZeroBits(catchHash)` | common/rare/epic/legendary | 稀有度（同崽门槛） |
+| `species` | byte0 % N | 0 .. N-1 | 该稀有度档位内的鱼种索引 |
+| `hue` | byte1/255×359 | 0–359 | 主色相 |
+| `bellyHue` | byte2/255×359 | 0–359 | 腹部/副色相 |
+| `finStyle` | byte3 % 4 | 0–3 | 鳍/尾样式 |
+| `sizeCm` | byte4 映射档位区间 | 8–200 | 体长（厘米，越稀有越大） |
+| `shiny` | byte5 < 16 | bool | 闪光个体（约 1/16） |
+
+**鱼种表**（`N_SPECIES` 各档位数；客户端按 species 索引取名/画样）：
+
+| 稀有度 | 鱼种（按 species 索引） | 外发光 |
+| --- | --- | --- |
+| 普通 | 鲫鱼 / 鲈鱼 / 泥鳅 / 河虾 | 无 |
+| 稀有 | 锦鲤 / 鳟鱼 / 河豚 | 蓝 `#54a8ff` |
+| 史诗 | 金龙鱼 / 电鳗 / 月鱼 | 紫 `#b66bff` |
+| 传说 | 虚空鲸 / 星之鲟 | 金 `#ffce3d` |
+
+### 6.5 像素映射（客户端渲染规范，版本化）—— **Fish Render Spec v1**
+渲染 = 纯客户端、无需服务器/链存图（客户端 `renderFish`，跨客户端须一致）：
+1. 画布 32×32，整数放大到展示尺寸（像素风，关闭抗锯齿）。
+2. 鱼一律**朝右**（椭圆身 + 左侧三角尾 + 1px 眼，同镇上鱼摊图标范式）。身大小随 `rarity`/`sizeCm` 缩放。
+3. 主色 = `hsl(hue,62%,55%)`，腹 = `hsl(bellyHue,55%,74%)`；`finStyle` 决定尾长/张开与背鳍（尖/圆）。
+4. 鱼种点缀：**虚空鲸**用深空体色 + 体内星点（呼应“烧币进虚空”）、**锦鲤**红白斑、**虾**加须；其余通用侧线斑。
+5. `shiny` 加高光星；`rarity` 仅加**外发光**点缀（传说金/史诗紫/稀有蓝），不改主体几何 → 不影响“同 hash 同外观”。
+
+> 改这张映射表 = bump 到 Fish Render Spec v2，并保证旧渔获在新版仍稳定渲染（catchHash 不变、长相不应跳变）。
+> `catchHash` 与 `fishTraits` 在 core 锁定，是“同 hash 任意客户端同外观”的根。
+
+### 6.6 服务端 / 客户端接口（只读 + 本地签名）
+- 只读：`GET /api/fish[?address=]` → `parseFish`/`fishOf`（服务器算好，省客户端整链扫描）。**无写端点**。
+- 写：铸渔获由客户端**本地签名**走 `POST /api/tx`（`createMessage(wallet, wallet.address, 'FISH|', nonce, FISH_BURN, MIN_FEE)`），服务器零私钥、只转发。
+- 玩法：客户端 QTE（抛竿→咬钩→张力条收线）成功后弹结算卡：「留作纪念」（仅本地计数）/「铸成链上藏品」（上链）。
+  鱼种由**上链后的** `catchHash` 事后确定 → 结算卡的本地预览仅作即时反馈，最终以链上真鱼为准。
