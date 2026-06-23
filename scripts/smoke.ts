@@ -28,6 +28,18 @@ import {
   petGene,
   petTraits,
   makePetTransfer,
+  landPrice,
+  parseFarm,
+  farmOf,
+  makeLandBuy,
+  makeZone,
+  makePlant,
+  makeHarvest,
+  ZONE_COST,
+  SEED_COST,
+  HARVEST_BURN,
+  LAND_BASE,
+  GROW_BLOCKS,
   buildListMemo,
   BUY_PREFIX,
   DEL_PREFIX,
@@ -43,6 +55,7 @@ import {
   MAX_MEMO,
   NULL_ADDRESS,
   SYMBOL,
+  sha256Hex,
 } from '../packages/core/src/index.js';
 
 let failed = 0;
@@ -488,6 +501,72 @@ check('非当前主人的转移无效（崽仍归 bob）', parsePets(pet.chain).
 const petSupply = [...pet.computeState().balances.values()].reduce((s, v) => s + v, 0);
 check('含崽的链全链守恒（孵化烧币记入虚空，总额 = 预挖 + 链高×奖励）', petSupply === GENESIS_PREMINE + pet.height * BLOCK_REWARD);
 check('含崽的链整链校验通过', Blockchain.validateChain(pet.chain).ok);
+
+console.log(`\n— 农场：动态地价整数 golden 向量（跨实现逐字节一致，权威公式见 GAME-PROTOCOL §7.3）—`);
+// 这些是钉死的金标准：任何原生客户端（Swift/Kotlin/Rust）的 landPrice 必须逐字节复现下表，否则买地合法性判定会分裂。
+check('landPrice 零行情 = LAND_BASE', landPrice({ soldTotal: 0, recentSales: 0 }) === LAND_BASE && LAND_BASE === 200);
+check('landPrice(1,0) = 204', landPrice({ soldTotal: 1, recentSales: 0 }) === 204);
+check('landPrice(10,0) = 248', landPrice({ soldTotal: 10, recentSales: 0 }) === 248);
+check('landPrice(50,0) = 600', landPrice({ soldTotal: 50, recentSales: 0 }) === 600);
+check('landPrice(100,0) = 1400', landPrice({ soldTotal: 100, recentSales: 0 }) === 1400);
+check('landPrice(100,50) = 1497（velocity 加成）', landPrice({ soldTotal: 100, recentSales: 50 }) === 1497);
+check('landPrice(200,720) = 8400（满窗 velocity 翻倍）', landPrice({ soldTotal: 200, recentSales: 720 }) === 8400);
+check('landPrice(500,100) = 25283', landPrice({ soldTotal: 500, recentSales: 100 }) === 25283);
+check('landPrice 超线性（凸）：price(200) > 2×price(100)', landPrice({ soldTotal: 200, recentSales: 0 }) > 2 * landPrice({ soldTotal: 100, recentSales: 0 }));
+check('landPrice 纯整数（无浮点尾差）', Number.isInteger(landPrice({ soldTotal: 37, recentSales: 13 })));
+
+console.log(`\n— 农场 parse 层：买地(H1 多烧缓冲)→建田→并发种植(H2 链序首胜)→成熟→收获 —`);
+// parseFarm/farmOf 是纯函数（只读 chain）。买地要 200+ 币会逼出几百个 PoW 块（难度每 8 块上调 → 不可行做真挖矿），
+// 故这里用真实签名的农场交易喂进**合成区块**直接驱动 parseFarm，覆盖 H1/H2/端到端解析逻辑（确定性、瞬时）。
+// 共识层零增发已由上文崽/消息段证明（农场动作 = 同形态 createMessage 自转烧币，applyTx 路径一致）。
+const farmer = Wallet.generate();
+let synId = 0;
+// 把若干签名交易封进一个合成块（index/hash 真实；parseFarm 只读 memo/from/to/burn/txid/index/hash）。
+const synBlock = (txs: any[]): any => {
+  const index = synId++;
+  return { index, timestamp: index, prevHash: '0'.repeat(64), transactions: txs, merkleRoot: '0'.repeat(64), difficulty: 0, nonce: 0, miner: NULL_ADDRESS, hash: sha256Hex('synblock|' + index) };
+};
+const farmTx = (memo: string, burn: number, nonce: number) => createMessage(farmer, farmer.address, memo, nonce, burn, MIN_FEE);
+let nf = 0;
+// 买第 0 块地：H1 修法——客户端按 ceil(price×1.05) 多烧 buffer；parseFarm 只要 burn≥price 即收，多烧合法进虚空
+const price0 = landPrice({ soldTotal: 0, recentSales: 0 });
+const buyBurn = Math.ceil(price0 * 1.05); // = ceil(200*1.05)=210
+check('H1：买地 buffer ceil(price×1.05) > price（多烧缓冲，防确认前涨价拒单）', buyBurn > price0 && buyBurn === 210);
+const buyTx = farmTx(makeLandBuy(0).memo!, buyBurn, nf++);
+const zoneTx = farmTx(makeZone(0, 'farmland').memo!, ZONE_COST, nf++);
+// H2：同格两笔 PLANT 抢同一 (zoneId, slot=0)——zoneId 必须先知道，故先把买地/建田封块算出 zoneId
+const synChain: any[] = [synBlock([buyTx]), synBlock([zoneTx])];
+let fv = farmOf(synChain, farmer.address);
+check('H1：多烧 buffer 的买地被 parseFarm 接受（地块入账）', fv.plots.length === 1 && fv.plots[0].n === 0);
+check('H1：pricePaid 记为当时权威地价 200（非多烧的 210）', fv.plots[0].pricePaid === price0);
+check('田地区块入账', fv.zones.length === 1 && fv.zones[0].type === 'farmland');
+const zoneId = fv.zones[0].id;
+const plantA = farmTx(makePlant(zoneId, 'turnip', 0).memo!, SEED_COST.turnip, nf++);
+const plantB = farmTx(makePlant(zoneId, 'turnip', 0).memo!, SEED_COST.turnip, nf++); // 同格竞争者
+synChain.push(synBlock([plantA, plantB])); // 同块内 plantA 在前
+const plantHeight = synChain.length - 1;
+const slot0 = parseFarm(synChain).plants.filter((p) => p.zoneId === zoneId && p.slot === 0);
+check('H2：同格并发 PLANT 链序首胜——只第一笔(plantA)入账', slot0.length === 1 && slot0[0].id === plantA.txid);
+check('H2：败者(plantB)被 parseFarm 忽略（其烧费在共识层照样进虚空、不退、不破零增发）',
+  !parseFarm(synChain).plants.some((p) => p.id === plantB.txid));
+// 未成熟前收获无效：在 plant 块后仅 1 块（growth ≈ 1/30 < 1）就试收 → parseFarm 拒收。
+// 显式给该收获块 index = plantHeight+1（紧邻 plant 块），避免后续成长块推高 synId 误判成熟。
+const earlyHarvest = { index: plantHeight + 1, timestamp: 0, prevHash: '0'.repeat(64), transactions: [farmTx(makeHarvest(plantA.txid).memo!, HARVEST_BURN, 900)], merkleRoot: '0'.repeat(64), difficulty: 0, nonce: 0, miner: NULL_ADDRESS, hash: sha256Hex('early') };
+check('未成熟前收获无效（parseFarm 拒收，须 cropGrowth ≥ 1）',
+  parseFarm([...synChain, earlyHarvest]).crops.length === 0);
+// 成长：堆空块到成熟高度，再收获
+while (synChain.length - 1 < plantHeight + GROW_BLOCKS.turnip) synChain.push(synBlock([]));
+synChain.push(synBlock([farmTx(makeHarvest(plantA.txid).memo!, HARVEST_BURN, nf++)]));
+const world = parseFarm(synChain);
+check('成熟后收获产出 1 件链上收藏作物（品质由收获区块 hash 事后确定）',
+  world.crops.length === 1 && world.crops[0].crop === 'turnip' && world.crops[0].owner === farmer.address);
+check('收获后腾出格位（farmOf 不再列该未收获作物）', farmOf(synChain, farmer.address).plants.length === 0);
+check('收获作物 hash = cropHash(owner|收获块hash|txid)（确定性，可复算）',
+  world.crops[0].hash === sha256Hex(farmer.address + '|' + synChain[synChain.length - 1].hash + '|' + world.crops[0].id));
+// 越权：别人 (bob) 拿同一 zoneId 种地 → parseFarm 拒（区块非其所有）
+const intruder = createMessage(bob, bob.address, makePlant(zoneId, 'turnip', 1).memo!, 0, SEED_COST.turnip, MIN_FEE);
+check('越权种植无效（zone 非该 owner 所有 → parseFarm 忽略）',
+  !parseFarm([...synChain, synBlock([intruder])]).plants.some((p) => p.owner === bob.address));
 
 console.log(`\n余额总览：`);
 console.log(`  央行预挖 ${bc.balanceOf(GENESIS_PREMINE_ADDRESS)} ${SYMBOL}`);

@@ -134,7 +134,7 @@ memo 放不下整间房，故：
 | --- | --- | --- | --- |
 | `PET_HATCH_COST` | `core/pets.ts` | 300 | 孵崽烧币额。崽贵以体现稀缺/炫耀价值。 |
 | `FISH_BURN` | `core/fishing.ts` | 2 | 铸渔获藏品烧币额。很小：高频娱乐，瞎钓不上链、想收藏才烧。 |
-| `LAND_BASE / LAND_K / LAND_P / LAND_VELOCITY_WINDOW` | `core/farm.ts` | 200 / 50 / 1.15 / 720 | 买地动态地价 bonding curve 参数（见 §7.3）；烧进虚空。 |
+| `LAND_BASE / LAND_K / LAND_QUAD_DEN / LAND_VELOCITY_NUM / LAND_VELOCITY_WINDOW` | `core/farm.ts` | 200 / 50 / 2500 / 1 / 720 | 买地动态地价 **全整数** bonding curve 参数（权威公式 + golden 向量见 §7.3）；烧进虚空。 |
 | `ZONE_COST` | `core/farm.ts` | 100 | 建一个功能区块（田地）烧币额。 |
 | `SEED_COST[crop]` | `core/farm.ts` | 10/15/25/50 | 各作物种子烧币额（芜菁/小麦/南瓜/星之果）。 |
 | `GROW_BLOCKS[crop]` | `core/farm.ts` | 30/60/120/200 | 各作物成熟所需区块数（成长按区块高度推进）。 |
@@ -239,17 +239,38 @@ memo 放不下整间房，故：
 作物把种植交易所在区块号记为 `plantHeight`。当前链高 `H` 时成熟度 `cropGrowth = clamp((H - plantHeight) / GROW_BLOCKS[crop], 0, 1)`。
 纯由链高算 → 全网/跨端一致、reorg 安全（链重组就重算）、无“时间”歧义。视觉阶段 `cropStage`：`0` 种子 / `1` 幼苗（≥0.25）/ `2` 成株未结果（≥0.66）/ `3` 成熟可收（≥1）。
 
-### 7.3 动态地价（随行情浮动的链上状态函数）
+### 7.3 动态地价（随行情浮动的链上状态函数）—— **权威整数公式（跨实现逐字节一致）**
 地价 = **全网供需的确定性 bonding curve**（`landPrice(farmState)`）：人人同价、链上可复算、随行情走。
 
-```
-landPrice = ceil( LAND_BASE * (1 + soldTotal/LAND_K)^LAND_P * (1 + recentSales/LAND_VELOCITY_WINDOW) )
-  soldTotal   = parseFarm 还原的“全网已售地块总数”（卖得越多越稀缺 → 越贵）
-  recentSales = 最近 LAND_VELOCITY_WINDOW 个区块内售出地块数（最近抢得越凶 → 越贵，体现行情热度）
-  LAND_BASE=200 · LAND_K=50 · LAND_P=1.15 · LAND_VELOCITY_WINDOW=720 块
-```
+> ⚠️ **共识可复算路径，必须全整数**：`landPrice` 是「某笔买地是否合法」的判定输入（`parseFarm` 要求 `burn ≥ price`），即已进入「全网必须算出同一结果」的路径。早期版本用浮点 `Math.pow(.,1.15)` + `ceil`，但**不同语言/运行时的浮点最后一位 ulp 差异**会让两端对同一笔买地取整后差 1 → 合法性判定分歧 → **农场状态跨客户端分裂**。故现已改为**只含整数 `+ - * /`（`/` 一律向下取整）的确定性公式**（同 `redpacket.computeShare` 的全整数纪律）。原生客户端（Swift/Kotlin/Rust）**必须照下面这套固定的整数算子顺序复现**，并用下方 golden 向量对拍。
 
-> 共识/复算关键：`parseFarm` 校验某笔买地时，用的是**截至该交易“之前”**的全网状态（`soldTotal` + 相对本块高度的窗口内成交数）算地价 → 买方可预测、各节点可复算、同块内多笔按交易数组顺序定胜负（确定性）。
+**权威整数公式**（所有 `/` 为**向下取整除法** `floor`；本式所有被除数/除数恒非负，故 `floor` = 截断）：
+```
+linear      = floor( soldTotal * LAND_BASE / LAND_K )            // 线性档：每多卖 K 块 +1 个 BASE
+quad        = floor( soldTotal * soldTotal * LAND_BASE / LAND_QUAD_DEN )  // 二次档：凸增、超线性（替代旧 ^1.15 的超线性意图）
+scarcity    = LAND_BASE + linear + quad
+velocityBump= floor( scarcity * recentSales * LAND_VELOCITY_NUM / LAND_VELOCITY_WINDOW )  // ×(1 + recentSales/WINDOW) 的整数展开
+landPrice   = scarcity + velocityBump
+  soldTotal   = parseFarm 还原的“全网已售地块总数”（卖得越多越稀缺 → 越贵）
+  recentSales = 最近 LAND_VELOCITY_WINDOW 个区块内售出地块数（最近抢得越凶 → 越贵）
+  LAND_BASE=200 · LAND_K=50 · LAND_QUAD_DEN=2500(=K²) · LAND_VELOCITY_NUM=1 · LAND_VELOCITY_WINDOW=720 块
+```
+**固定算子顺序（不可重排，否则取整结果可能差 1）**：先各自 `floor` 求出 `linear`、`quad` 再相加得 `scarcity`；velocity 加成是 `(scarcity * recentSales * NUM)` **先乘后** `floor` 除以 `WINDOW`。中间量 `soldTotal*soldTotal*LAND_BASE` 与 `scarcity*recentSales` 须用 ≥64-bit 整数承载（教学链规模下远不溢出）。
+
+**Golden 向量**（输入 `{soldTotal, recentSales}` → 期望 `landPrice`，原生实现须逐字节复现）：
+
+| soldTotal | recentSales | landPrice | 说明 |
+| --- | --- | --- | --- |
+| 0 | 0 | **200** | 零行情 = `LAND_BASE` |
+| 1 | 0 | **204** | `linear=floor(200/50)=4`, `quad=0` |
+| 10 | 0 | **248** | `linear=40`, `quad=floor(100·200/2500)=8` |
+| 50 | 0 | **600** | `linear=200`, `quad=floor(2500·200/2500)=200` |
+| 100 | 0 | **1400** | `linear=400`, `quad=800`（凸：远超线性档） |
+| 100 | 50 | **1497** | `scarcity=1400`, `bump=floor(1400·50/720)=97` |
+| 200 | 720 | **8400** | `scarcity=4200`, 满窗 `recentSales=WINDOW` → 翻倍 |
+| 500 | 100 | **25283** | `scarcity=22200`, `bump=floor(22200·100/720)=3083` |
+
+> 共识/复算关键：`parseFarm` 校验某笔买地时，用的是**截至该交易“之前”**的全网状态（`soldTotal` + 相对本块高度的窗口内成交数 `recentSales`）算地价 → 买方可预测、各节点可复算、同块内多笔按交易数组顺序定胜负（确定性）。回归测试见 `scripts/smoke.ts`「农场」段。
 > 二级市场（已有地玩家间 P2P 转让，Phase 2 的 `CROPX`/`LANDX`）由卖方自由定价 → 直接的自由市场行情。
 
 ### 7.4 防作弊（收成品质 = 出块后的区块 hash）

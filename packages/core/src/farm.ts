@@ -26,11 +26,15 @@ export const HARVEST_PREFIX = 'HARVEST|';
 export const CROPX_PREFIX = 'CROPX|';
 
 // ———— 经济参数（草案，最终 v0id 拍板；全部只烧进虚空，零增发；每笔再叠网络 gas MIN_FEE→矿工）————
-/** 动态地价 bonding curve：landPrice = BASE * (1 + soldTotal/K)^P * (1 + recentVelocity)。 */
-export const LAND_BASE = 200; // 起步地价（第一块、零行情时）
-export const LAND_K = 50; // 稀缺尺度：已售越多越贵的速率
-export const LAND_P = 1.15; // 稀缺指数（>1 → 超线性涨价）
-export const LAND_VELOCITY_WINDOW = 720; // recentVelocity 统计窗口（区块数）
+// 动态地价 = 全整数定点 bonding curve（见 landPrice 的权威整数公式 + GAME-PROTOCOL §7.3）。
+// 历史上曾用浮点 Math.pow(.,1.15)，但它进了“parseFarm 入块重算并校验 burn≥price”的可复算路径——
+// 不同语言/运行时的浮点最后一位 ulp 差异会让两端对“某笔买地是否有效”判定分歧 → 农场状态跨客户端分裂。
+// 故改为只含整数 +,-,*,/(向下取整) 的确定性公式：任何实现照同样整数步骤得**逐字节同一结果**（同 redpacket.computeShare 纪律）。
+export const LAND_BASE = 200; // 起步地价（第一块、零行情时）= soldTotal=0、recentSales=0 时的价
+export const LAND_K = 50; // 稀缺尺度：每多卖 K 块，scarcity 的“线性档”加一个 LAND_BASE
+export const LAND_QUAD_DEN = 2500; // 二次档分母（= K²）：贡献 +floor(soldTotal²/QUAD_DEN)×LAND_BASE，使涨价超线性（凸）
+export const LAND_VELOCITY_WINDOW = 720; // recentSales 统计窗口（区块数）
+export const LAND_VELOCITY_NUM = 1; // velocity 加成分子：价格再 ×(1 + recentSales/WINDOW)，整数实现见 landPrice
 /** 建一个功能区块烧币额。 */
 export const ZONE_COST = 100;
 /** 收获烧币额（很小：成本主要在种子+地，收获只象征性烧一点）。 */
@@ -71,16 +75,29 @@ export interface FarmMarketState {
 }
 
 /**
- * 动态地价（向上取整为整数币，便于与 burn 整数比较）。纯由链上状态算，人人同价、可复算、随行情走。
- *   landPrice = BASE * (1 + soldTotal/K)^P * (1 + recentVelocity)
- *   recentVelocity = recentSales / LAND_VELOCITY_WINDOW（最近一个窗口的“每块成交密度”）
- * 取舍：用“窗口内成交密度”而非绝对计数当 velocity，避免地价随窗口长度任意放大；密度天然落在合理区间，
- * 既体现热度又不至于因一次抢购就指数失控。
+ * 动态地价 —— **权威整数公式（跨实现逐字节一致；任何语言照同样整数步骤得同一结果）**。
+ * 全程只用整数 `+ - * /`，其中 `/` 一律是**向下取整除法**（floor，对非负数 = 截断；本函数所有被除数/除数恒非负）。
+ * 无浮点、无 Math.pow、无 ceil —— 杜绝浮点 ulp 撕裂共识（同 redpacket.computeShare 的全整数纪律）。
+ *
+ *   scarcity = LAND_BASE
+ *            + (soldTotal / LAND_K)      * LAND_BASE     // 线性档：每多卖 K 块 +1 个 BASE
+ *            + (soldTotal² / LAND_QUAD_DEN) * LAND_BASE  // 二次档：凸增、超线性涨价（替代原 ^1.15 的超线性意图）
+ *   price    = scarcity
+ *            + (scarcity * recentSales) / LAND_VELOCITY_WINDOW   // velocity 加成：×(1 + recentSales/WINDOW)，整数展开
+ *
+ * 经济意图保持：soldTotal 越多越贵（线性 + 二次，凸），最近 velocity 越高越贵；零行情时 = LAND_BASE。
+ * 取舍：用“窗口内成交数”作 velocity 加成的整数权重，密度天然有界，一次抢购不会指数失控。
+ * 注意整数除法的固定顺序：scarcity 的两档先各自 floor 再求和；velocity 加成是 (scarcity*recentSales) 先乘后 floor 除。
+ * 这套**固定的整数算子序列**就是权威定义——原生客户端必须照此顺序复现（golden 向量见 GAME-PROTOCOL §7.3）。
  */
 export function landPrice(s: FarmMarketState): number {
-  const velocity = s.recentSales / LAND_VELOCITY_WINDOW;
-  const price = LAND_BASE * Math.pow(1 + s.soldTotal / LAND_K, LAND_P) * (1 + velocity);
-  return Math.ceil(price);
+  const sold = s.soldTotal < 0 ? 0 : Math.trunc(s.soldTotal); // 防御：非负整数（链上 soldTotal 本就非负整数）
+  const recent = s.recentSales < 0 ? 0 : Math.trunc(s.recentSales);
+  const linear = Math.floor((sold * LAND_BASE) / LAND_K); // 线性档
+  const quad = Math.floor((sold * sold * LAND_BASE) / LAND_QUAD_DEN); // 二次档（凸）
+  const scarcity = LAND_BASE + linear + quad;
+  const velocityBump = Math.floor((scarcity * recent * LAND_VELOCITY_NUM) / LAND_VELOCITY_WINDOW);
+  return scarcity + velocityBump;
 }
 
 // ———— 成长 / 品质（仿钓鱼区块hash随机源）————
