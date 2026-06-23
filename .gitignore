@@ -4,3 +4,6 @@ dist/
 .claude/
 *.log
 .DS_Store
+
+# 审计 PoC 运行时产物：运行 exploit 时本地生成的临时钱包/令牌/邻居表，含私钥与 token，绝不入库
+audits/**/tmp/

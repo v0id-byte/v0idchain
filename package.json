@@ -16,9 +16,12 @@
     "dev:node1": "tsx packages/cli/src/index.ts start --name node1 --p2p-port 6001 --api-port 7001 --mine",
     "dev:node2": "tsx packages/cli/src/index.ts start --name node2 --p2p-port 6002 --api-port 7002 --peers ws://127.0.0.1:6001",
     "dev:web": "corepack pnpm --filter @v0idchain/web dev",
+    "dev:game-web": "corepack pnpm --filter @v0idchain/game-web dev",
+    "dev:game-server": "corepack pnpm --filter @v0idchain/game-server dev",
     "mine": "tsx packages/cli/src/index.ts start --name miner --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --mine",
     "typecheck": "corepack pnpm -r run typecheck",
     "smoke": "tsx scripts/smoke.ts",
+    "check:boundaries": "tsx scripts/check-boundaries.ts",
     "rtc:proto": "tsx scripts/rtc-proto.ts"
   },
   "devDependencies": {
