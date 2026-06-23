@@ -161,6 +161,72 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .palette-item:hover { border-color: var(--accent); }
 .editor-pub { color: var(--text); font-size: 13px; margin-top: 8px; }
 
+/* ---- 钓鱼浮层 ---- */
+.fishing-menu { width: min(460px, 92vw); }
+.fish-score { margin-left: 12px; color: var(--muted); font-size: 12px; }
+.fishing-panel { display: flex; flex-direction: column; align-items: stretch; }
+.fishing-stage {
+  position: relative; height: 168px; border-radius: 14px; overflow: hidden;
+  background: linear-gradient(180deg, #16344a 0%, #0e2336 60%, #0a1b2a 100%);
+  border: 1px solid var(--line); display: grid; place-items: center;
+}
+.fishing-stage.phase-bite { animation: stageShake .5s ease infinite; }
+@keyframes stageShake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
+.bobber-wrap { position: relative; width: 60px; height: 90px; }
+.bobber {
+  position: absolute; left: 50%; top: 24px; width: 12px; height: 12px; margin-left: -6px;
+  border-radius: 50%; background: #e8503a; box-shadow: 0 0 0 2px #fff inset, 0 2px 0 #b8362a;
+  animation: bob 2.4s ease-in-out infinite;
+}
+.bobber.bite { animation: bobBite .28s ease-in-out infinite; background: #ffce3d; }
+@keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
+@keyframes bobBite { 0%,100% { transform: translateY(0); } 50% { transform: translateY(11px); } }
+.ripple {
+  position: absolute; left: 50%; top: 40px; width: 30px; height: 8px; margin-left: -15px;
+  border: 1px solid rgba(255,255,255,.28); border-radius: 50%;
+  animation: ripple 2.4s ease-out infinite;
+}
+@keyframes ripple { 0% { transform: scale(.5); opacity: .7; } 100% { transform: scale(1.8); opacity: 0; } }
+.catch-burst { animation: catchPop .5s cubic-bezier(.18,1.4,.4,1) both; }
+@keyframes catchPop { 0% { transform: scale(.2) translateY(20px); opacity: 0; } 100% { transform: scale(1) translateY(0); opacity: 1; } }
+
+.tension-bar {
+  position: relative; height: 16px; margin: 12px 0 0; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); overflow: hidden;
+}
+.tension-green {
+  position: absolute; top: 0; bottom: 0;
+  background: color-mix(in srgb, #38d27a 38%, transparent);
+  border-left: 1px solid #38d27a; border-right: 1px solid #38d27a;
+}
+.tension-pointer {
+  position: absolute; top: -2px; bottom: -2px; width: 4px; margin-left: -2px;
+  background: var(--legendary); border-radius: 2px; box-shadow: 0 0 6px var(--legendary);
+}
+.fish-hint { text-align: center; color: var(--text); font-size: 13px; margin: 12px 0 4px; min-height: 18px; }
+
+.catch-card { margin-top: 8px; }
+.catch-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+}
+.catch-meta.rarity-rare { border-color: color-mix(in srgb, var(--rare) 45%, var(--line)); }
+.catch-meta.rarity-epic { border-color: color-mix(in srgb, var(--epic) 50%, var(--line)); }
+.catch-meta.rarity-legendary { border-color: color-mix(in srgb, var(--legendary) 55%, var(--line)); }
+.catch-meta strong { font-size: 15px; }
+.fish-size { color: var(--muted); font-size: 12px; }
+.fish-preview-note { color: var(--muted); font-size: 11px; }
+.fish-id { color: var(--muted); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+.catch-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+.ghost-btn {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  padding: 9px 16px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer;
+}
+.ghost-btn:hover:not(:disabled) { border-color: var(--accent); }
+.ghost-btn:disabled { color: var(--muted); cursor: not-allowed; }
+.bite-btn { animation: bitePulse .5s ease infinite; }
+@keyframes bitePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,206,61,.6); } 50% { box-shadow: 0 0 0 6px rgba(255,206,61,0); } }
+
 /* ---- 串门名册 ---- */
 .dir-list { display: flex; flex-direction: column; gap: 8px; }
 .dir-item {
