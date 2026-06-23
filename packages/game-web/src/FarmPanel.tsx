@@ -157,6 +157,13 @@ export function FarmActionModal({
 
   const submit = useCallback(async () => {
     if (busy || !canAfford) return;
+    // H2 前置校验：同格并发种植/收获是「链序首胜、败者烧费不退」（见 GAME-PROTOCOL §7.8）。
+    // 提交前用最新 farm 快照再判一次该格是否已被占用，挡掉「两标签页 / 快照未刷新就重复点」的自撞——
+    // 不能根治（快照可能滞后链状态），但能显著降低白烧概率。
+    if (action.kind === 'slot') {
+      const taken = (farm?.plants ?? []).some((p) => p.zoneId === action.zoneId && p.slot === action.slot && !p.harvested);
+      if (taken) { setMsg('该格已被占用（可能刚有一笔种植已确认）——换个空格，避免重复烧种子费'); return; }
+    }
     const built = buildMemo();
     if (!built) { setMsg('参数无效'); return; }
     setBusy(true);
