@@ -18,6 +18,7 @@ interface Props {
   farm?: FarmView | null; // 自家农场状态（buildFarm 用）
   depletedFruits?: ReadonlySet<string>; // 已摘取的果树 id，传给 buildTown 过滤
   choppedTrees?: ReadonlySet<string>;   // 已砍倒的果树 id，从 buildTown 移除
+  gardenState?: ReadonlyMap<string, { phase: string }>; // 菜地格状态，控制作物可见
   onToggleMenu: () => void;
   onInteract: (it: Interactable) => void;
   onNearby?: (it: Interactable | null) => void;
@@ -53,7 +54,7 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
       return v ? buildRoom(v.furniture, v.theme) : buildRoom(propsRef.current.furniture, propsRef.current.theme);
     };
     const buildScene = (id: string, spawnOverride?: { x: number; y: number }) => {
-      if (id === 'town') return buildTown(propsRef.current.depletedFruits, propsRef.current.choppedTrees, spawnOverride);
+      if (id === 'town') return buildTown(propsRef.current.depletedFruits, propsRef.current.choppedTrees, spawnOverride, propsRef.current.gardenState);
       if (id === 'farm') return buildFarm(propsRef.current.farm ?? null);
       if (id.startsWith('npc:')) return buildNpcRoom(id.slice(4));
       return buildCurrentRoom();
@@ -128,12 +129,12 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
       engineRef.current.setScene(buildFarm(props.farm ?? null), false);
     }
   }, [props.farm]);
-  // 果树摘取/砍伐/再生变化时，若在镇中心则就地重建
+  // 果树/菜地状态变化时，若在镇中心则就地重建
   useEffect(() => {
     if (engineRef.current && sceneRef.current === 'town') {
-      engineRef.current.setScene(buildTown(props.depletedFruits, props.choppedTrees), false);
+      engineRef.current.setScene(buildTown(props.depletedFruits, props.choppedTrees, undefined, props.gardenState), false);
     }
-  }, [props.depletedFruits, props.choppedTrees]);
+  }, [props.depletedFruits, props.choppedTrees, props.gardenState]);
 
   return <canvas ref={canvasRef} className="game-canvas" />;
 });

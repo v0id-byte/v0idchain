@@ -151,6 +151,7 @@ export function buildTown(
   depletedFruits?: ReadonlySet<string>,
   choppedTrees?: ReadonlySet<string>,
   spawnOverride?: { x: number; y: number },
+  gardenState?: ReadonlyMap<string, { phase: string }>,
 ): Scene {
   const w = 96; // 加宽:容下更松散的住宅区
   const h = 78; // 加高:南侧扩出一片带院子的住宅区
@@ -389,14 +390,22 @@ export function buildTown(
     interactables.push({ x: spot.x, y: spot.y, type: 'fruit', label: `摘${FRUIT_LABEL[spot.kind]}`, fruitId: spot.id, fruitKind: spot.kind });
   }
 
-  // —— 公共菜地格位交互（后院菜圈变可交互）——
+  // —— 公共菜地格位交互 + 作物可见（后院菜圈）——
   const gardenPositions: [number, number][] = [[9, swY + 3], [26, swY + 3], [w - 30, swY + 3], [w - 15, swY + 3]];
   for (let pi = 0; pi < gardenPositions.length; pi++) {
     const [gx, gy] = gardenPositions[pi];
     for (let yy = gy; yy < gy + 2; yy++) {
       for (let xx = gx; xx < gx + 4; xx++) {
         const slot = (yy - gy) * 4 + (xx - gx);
-        interactables.push({ x: xx, y: yy, type: 'garden', label: '公共菜地', gardenId: `garden_${pi}_${slot}` });
+        const gardenId = `garden_${pi}_${slot}`;
+        interactables.push({ x: xx, y: yy, type: 'garden', label: '公共菜地', gardenId });
+        const phase = gardenState?.get(gardenId)?.phase;
+        if (phase === 'planted' || phase === 'watered') {
+          furniture.push({ kind: 'flower', x: xx, y: yy }); // 幼苗/已浇水（花朵可踩）
+        } else if (phase === 'ready') {
+          furniture.push({ kind: 'plant', x: xx, y: yy }); // 成熟（大植物）
+          if (solid[yy]?.[xx] !== undefined) solid[yy][xx] = false; // 成熟作物仍可交互，不挡路
+        }
       }
     }
   }
