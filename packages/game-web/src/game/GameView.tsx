@@ -1,5 +1,5 @@
 // React ↔ 引擎的桥：建画布、起引擎、转交互/点击回调。门切场景在这里;编辑时家具/主题变化就地重建房间。
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { GameEngine } from '../engine/game';
 import { buildRoom, buildTown, buildFarm, type Interactable, type FurnitureItem } from '../engine/scene';
 import type { RoomThemeId } from '../engine/tileset';
@@ -20,12 +20,23 @@ interface Props {
   onTileClick?: (tx: number, ty: number, sceneId: string) => void;
 }
 
-export default function GameView(props: Props) {
+// 触屏控件经此句柄把方向/交互推给引擎（与键盘走同一条 update() 逻辑，桌面零回归）。
+export interface GameHandle {
+  setTouchDir: (dx: number, dy: number) => void;
+  touchInteract: () => void;
+}
+
+const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
   const sceneRef = useRef<string>('room');
+
+  useImperativeHandle(ref, () => ({
+    setTouchDir: (dx, dy) => engineRef.current?.setTouchDir(dx, dy),
+    touchInteract: () => engineRef.current?.touchInteract(),
+  }), []);
 
   useEffect(() => {
     const cv = canvasRef.current;
@@ -92,4 +103,6 @@ export default function GameView(props: Props) {
   }, [props.farm]);
 
   return <canvas ref={canvasRef} className="game-canvas" />;
-}
+});
+
+export default GameView;

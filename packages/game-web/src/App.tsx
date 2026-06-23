@@ -15,7 +15,8 @@ import { renderPet, RARITY_LABEL } from './pet-render';
 import { renderFish, fishName } from './fish-render';
 import FishingModal from './FishingModal';
 import { FarmPanel, FarmActionModal } from './FarmPanel';
-import GameView from './game/GameView';
+import GameView, { type GameHandle } from './game/GameView';
+import TouchControls from './TouchControls';
 import type { Interactable, FurnitureItem, FarmRef } from './engine/scene';
 import { DEFAULT_ROOM_FURNITURE } from './engine/scene';
 import { FURNITURE_CATALOG, FURNITURE_TILES, ROOM_THEMES, type RoomThemeId } from './engine/tileset';
@@ -118,6 +119,10 @@ export default function App() {
   } | null>(null);
   const [dirOpen, setDirOpen] = useState(false);
   const [dirList, setDirList] = useState<{ address: string; name?: string }[]>([]);
+  // 触屏
+  const gameRef = useRef<GameHandle>(null);
+  const [invToast, setInvToast] = useState(false); // 🎒物品栏占位提示
+  const invTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     const [b, ps, fs, fm, names] = await Promise.all([
@@ -278,9 +283,25 @@ export default function App() {
 
   const petGene = pets[0]?.gene ?? null;
 
+  // 🎒物品栏占位：背包系统后接，这里先弹个短提示，入口/位置已留。
+  const showInvPlaceholder = useCallback(() => {
+    setInvToast(true);
+    if (invTimer.current) clearTimeout(invTimer.current);
+    invTimer.current = setTimeout(() => setInvToast(false), 1800);
+  }, []);
+
+  // 任一浮层打开时引擎已暂停（paused）→ 同时隐藏触屏方向/交互键，避免遮挡弹窗。
+  const anyOverlay = menuOpen || fishingOpen || !!farmAction || dirOpen;
+  const showTouch = !anyOverlay && !editMode;
+  // D-pad 卸载（开浮层/进装修）时若有手指还按着，补发一次归零，避免角色卡着走。
+  useEffect(() => {
+    if (!showTouch) gameRef.current?.setTouchDir(0, 0);
+  }, [showTouch]);
+
   return (
     <div className="game-root">
       <GameView
+        ref={gameRef}
         address={wallet.address}
         petGene={visit ? visit.petGene : petGene}
         furniture={furniture}
@@ -294,6 +315,17 @@ export default function App() {
         onSceneChange={onSceneChange}
         onTileClick={onTileClick}
       />
+
+      {showTouch && (
+        <TouchControls
+          onDir={(dx, dy) => gameRef.current?.setTouchDir(dx, dy)}
+          onInteract={() => gameRef.current?.touchInteract()}
+          onMenu={() => setMenuOpen(true)}
+          onEdit={scene === 'room' && !visit ? () => { setEditMode(true); setSel(null); } : undefined}
+          onInventory={showInvPlaceholder}
+        />
+      )}
+      {invToast && <div className="inv-toast">🎒 背包开发中</div>}
 
       <div className="hud">
         <div className="hud-left">

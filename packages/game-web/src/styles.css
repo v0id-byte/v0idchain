@@ -241,3 +241,101 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .dir-item:hover { border-color: var(--accent); }
 .dir-name { font-weight: 600; }
 .dir-go { color: var(--accent); font-size: 13px; }
+
+/* ---- 触屏控件（虚拟方向键 / 交互键 / 触屏 HUD） ---- */
+/* 默认隐藏：桌面用键盘。仅 pointer:coarse（手机/平板）显示，见底部 @media。 */
+.tc-hud, .tc-dpad, .tc-action { display: none; }
+
+/* 安全区变量：刘海/底部 home indicator 避让（无刘海设备 env() 退化为 0）。 */
+:root {
+  --sa-l: env(safe-area-inset-left, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-t: env(safe-area-inset-top, 0px);
+}
+
+.inv-toast {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  background: rgba(20, 18, 30, .94); border: 1px solid var(--line); color: var(--text);
+  padding: 12px 20px; border-radius: 12px; font-size: 14px; font-weight: 600;
+  z-index: 20; backdrop-filter: blur(8px); box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+  animation: invPop .2s ease both;
+}
+@keyframes invPop { from { opacity: 0; transform: translate(-50%, -46%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+
+@media (pointer: coarse) {
+  /* 触屏：禁画布默认手势（缩放/滚动），方向/交互键各自 touch-action:none 防误触。
+     根容器用 manipulation 去掉双击缩放延迟，但保留菜单/调色板的滚动手势。 */
+  .game-root { touch-action: manipulation; }
+  .game-canvas { touch-action: none; }
+  /* HUD 文字/按钮禁选中，避免长按弹放大镜/选择菜单（输入框/可复制地址除外）。 */
+  .hud, .tc-hud, .tc-dpad, .tc-action, .hud-hint, .editor-bar {
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+
+  .tc-hud {
+    display: flex; gap: 10px; z-index: 9; pointer-events: auto;
+    position: absolute;
+    top: calc(8px + var(--sa-t)); right: calc(10px + var(--sa-r));
+  }
+  /* 触屏时桌面右上角文字按钮多余 → 由触屏 HUD 接管，隐藏旧的避免重叠/挤压。 */
+  .hud-right { display: none; }
+
+  .tc-hud-btn, .tc-dir, .tc-action {
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: none; cursor: pointer; font: inherit;
+  }
+  .tc-hud-btn {
+    width: 46px; height: 46px; border-radius: 12px;
+    background: rgba(20, 18, 30, .82); border: 1px solid var(--line); color: var(--text);
+    font-size: 20px; line-height: 1; display: grid; place-items: center; backdrop-filter: blur(6px);
+  }
+  .tc-hud-btn:active { background: var(--accent); border-color: var(--accent); transform: scale(.94); }
+
+  /* 左下虚拟方向键：3×3 网格摆十字，每个箭头独立按住（多点 → 斜向）。 */
+  .tc-dpad {
+    display: grid; z-index: 9; pointer-events: auto;
+    grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 6px;
+    position: absolute;
+    left: calc(16px + var(--sa-l)); bottom: calc(20px + var(--sa-b));
+  }
+  .tc-dir {
+    width: 56px; height: 56px; border: 1px solid var(--line); color: var(--text);
+    background: rgba(20, 18, 30, .74); backdrop-filter: blur(6px);
+    font-size: 18px; display: grid; place-items: center; border-radius: 12px;
+  }
+  .tc-dir.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tc-up { grid-area: 1 / 2; border-radius: 14px 14px 8px 8px; }
+  .tc-left { grid-area: 2 / 1; border-radius: 14px 8px 8px 14px; }
+  .tc-right { grid-area: 2 / 3; border-radius: 8px 14px 14px 8px; }
+  .tc-down { grid-area: 3 / 2; border-radius: 8px 8px 14px 14px; }
+
+  /* 右下大圆交互键 = E/确认。 */
+  .tc-action {
+    display: grid; place-items: center; z-index: 9; pointer-events: auto;
+    width: 84px; height: 84px; border-radius: 50%;
+    background: radial-gradient(circle at 50% 38%, #9a7dff, var(--accent));
+    border: 2px solid color-mix(in srgb, var(--accent) 60%, #fff 10%); color: #fff;
+    font-size: 26px; font-weight: 700; box-shadow: 0 6px 18px rgba(139, 109, 255, .4);
+    position: absolute;
+    right: calc(24px + var(--sa-r)); bottom: calc(34px + var(--sa-b));
+  }
+  .tc-action:active { transform: scale(.92); box-shadow: 0 3px 10px rgba(139, 109, 255, .5); }
+
+  /* 移动提示在触屏无意义（无键盘），藏掉省空间；状态提示仍走 panel/toast。 */
+  .hud-hint { display: none; }
+
+  /* HUD 信息条让开顶部安全区，过窄时允许换行不挤爆。 */
+  .hud { padding: calc(8px + var(--sa-t)) calc(12px + var(--sa-r)) 8px calc(12px + var(--sa-l)); }
+  .hud-left { flex-wrap: wrap; gap: 6px; }
+}
+
+/* 窄屏（手机竖屏）：菜单/编辑器浮层占满宽度更好按，按钮加大到 ≥44px 触摸目标。 */
+@media (max-width: 560px) {
+  .menu { width: 94vw; max-height: 88vh; }
+  .menu-tabs button { padding: 9px 14px; }
+  .editor-bar { width: 96vw; left: 50%; bottom: calc(8px + var(--sa-b)); }
+  .palette-item { min-width: 56px; padding: 8px; }
+  .wallet-actions { flex-wrap: wrap; }
+  .wallet-actions button, .editor-actions button, button.primary, .ghost-btn { min-height: 44px; }
+}

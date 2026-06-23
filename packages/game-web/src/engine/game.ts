@@ -139,6 +139,14 @@ export class GameEngine {
   setEditMode(b: boolean) {
     this.editMode = b;
   }
+  /** 虚拟方向键 → 持续移动向量（触屏 D-pad 用；桌面键盘不经此路径）。 */
+  setTouchDir(dx: number, dy: number) {
+    this.input.setTouchDir(dx, dy);
+  }
+  /** 触屏交互键 → 等效一次 E（与键盘交互走同一条 update() 逻辑）。 */
+  touchInteract() {
+    this.input.pressTouch('e');
+  }
 
   private onPointerDown(e: PointerEvent) {
     if (!this.editMode || !this.cellPx || !this.scene) return;
