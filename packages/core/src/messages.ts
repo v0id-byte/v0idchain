@@ -6,6 +6,7 @@ import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX } from './config.
 import { PET_PREFIX, PETX_PREFIX } from './pets.js';
 import { FISH_PREFIX } from './fishing.js';
 import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
+import { MINE_PREFIX } from './mining.js';
 
 export interface ChainMessage {
   txid: string;
@@ -42,7 +43,8 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(ZONE_PREFIX) ||
     memo.startsWith(PLANT_PREFIX) ||
     memo.startsWith(HARVEST_PREFIX) ||
-    memo.startsWith(CROPX_PREFIX)
+    memo.startsWith(CROPX_PREFIX) ||
+    memo.startsWith(MINE_PREFIX)
   );
 }
 

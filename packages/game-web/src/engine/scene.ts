@@ -35,7 +35,7 @@ export interface MineRef {
   oreKind?: string;
 }
 export interface MineObject {
-  kind: 'ore' | 'chest' | 'monster' | 'stairsDown' | 'stairsUp' | 'exit';
+  kind: 'ore' | 'chest' | 'monster' | 'stairsDown' | 'stairsUp' | 'exit' | 'mineEntrance';
   x: number;
   y: number;
   oreKind?: string;
@@ -207,6 +207,7 @@ export function buildTown(
   const interactables: Interactable[] = [];
   const effects: EffectItem[] = [];
   const buildings: BuildingItem[] = [];
+  const mineObjects: MineObject[] = [];
 
   let seed = 73113;
   const rnd = () => {
@@ -334,9 +335,7 @@ export function buildTown(
   // 路灯沿主街
   for (const lx of [12, 26, cx - 8, cx + 9, w - 26, w - 13]) effects.push({ kind: 'lantern', x: lx, y: streetY + 2 });
 
-  // —— 边界高树 + 散布树/灌木/花 ——
-  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
-  for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+  // —— 散布树/灌木/花 ——
   for (let i = 0; i < 240; i++) {
     const x = 2 + Math.floor(rnd() * (w - 4));
     const y = 2 + Math.floor(rnd() * (h - 4));
@@ -363,6 +362,30 @@ export function buildTown(
   effects.push({ kind: 'lantern', x: cx + 6, y: streetY + 4 });
   for (const [px, py, k] of [[cx - 5, streetY + 1, 'barrel'], [cx - 4, streetY + 1, 'crate'], [cx + 5, streetY + 1, 'crate'], [cx + 6, streetY + 1, 'barrel']] as [number, number, string][])
     furniture.push({ kind: k, x: px, y: py });
+
+  // 东侧巨型矿洞入口：从主街右端清出石质广场，避免被商铺或散布装饰盖住。
+  const mineX = w - 7;
+  const mineY = streetY + 1;
+  const mineClear = { x0: mineX - 8, y0: mineY - 5, x1: mineX + 3, y1: mineY + 4 };
+  const inMineClear = (x: number, y: number) => x >= mineClear.x0 && x <= mineClear.x1 && y >= mineClear.y0 && y <= mineClear.y1;
+  for (let i = buildings.length - 1; i >= 0; i--) {
+    const b = buildings[i];
+    if (b.x <= mineClear.x1 && b.x + b.w - 1 >= mineClear.x0 && b.y <= mineClear.y1 && b.y + b.h - 1 >= mineClear.y0) buildings.splice(i, 1);
+  }
+  for (let i = interactables.length - 1; i >= 0; i--) if (inMineClear(interactables[i].x, interactables[i].y)) interactables.splice(i, 1);
+  for (let i = furniture.length - 1; i >= 0; i--) if (inMineClear(furniture[i].x, furniture[i].y)) furniture.splice(i, 1);
+  for (let i = effects.length - 1; i >= 0; i--) if (inMineClear(effects[i].x, effects[i].y)) effects.splice(i, 1);
+  fill(mineClear.x0, mineY - 1, mineX + 1, mineY + 1, 'cobble');
+  fill(mineX - 4, mineY - 3, mineX + 2, mineY + 3, 'stone');
+  for (let y = mineClear.y0; y <= mineClear.y1; y++) {
+    for (let x = mineClear.x0; x <= mineClear.x1; x++) {
+      if (solid[y]?.[x] !== undefined) solid[y][x] = false;
+    }
+  }
+  effects.push({ kind: 'torch', x: mineX - 4, y: mineY - 2 });
+  effects.push({ kind: 'torch', x: mineX - 4, y: mineY + 2 });
+  mineObjects.push({ kind: 'mineEntrance', x: mineX, y: mineY, variant: 0 });
+  interactables.push({ x: mineX, y: mineY, type: 'door', label: '进入巨型矿洞', target: 'mine:1' });
 
   // 公共田地（两块开放大农场，无围栏；8×3 格，可直接走入种地）
   const farmBlocks: [number, number, number, number][] = [
@@ -451,7 +474,7 @@ export function buildTown(
     }
   }
 
-  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, crops: townCrops, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
+  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, crops: townCrops, mineObjects, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
 }
 
 /**

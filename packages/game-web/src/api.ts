@@ -1,8 +1,10 @@
 // 游戏服务器 HTTP 客户端。读链走只读代理；写动作在本地签名后经 /api/tx 广播；faucet 走 /api/faucet。
 import type { Transaction } from '@v0idchain/core/browser';
-import type { Pet, Catch, FarmView } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView, FeedEvent, MineAsset } from '@v0idchain/core/browser';
 
-const BASE = (import.meta.env.VITE_GAME_API as string | undefined) || 'http://127.0.0.1:8790';
+// 空串 VITE_GAME_API ⇒ 同源（fetch('/api/...')，给反代/隧道用，避免 HTTPS 页面混合内容）；
+// 未设置(undefined) ⇒ 本地直连 dev 后端。故用 ?? 而非 ||（空串是有效的“同源”取值）。
+const BASE = (import.meta.env.VITE_GAME_API as string | undefined) ?? 'http://127.0.0.1:8790';
 
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(BASE + path);
@@ -39,6 +41,22 @@ export interface FaucetResult {
   error?: string;
 }
 
+export interface Profile {
+  address: string;
+  nickname?: string;
+  balance: number;
+  joinHeight: number;
+  joinTimestamp: number;
+  petCount: number;
+  rarePets: number;
+  fishCount: number;
+  bestRarity?: 'common' | 'rare' | 'epic' | 'legendary';
+  farm: { plots: number; zones: number; harvests: number } | null;
+  hasRoom: boolean;
+  totalBurned: number;
+  visitCount: number;
+}
+
 export const api = {
   info: () => get<ChainInfo>('/api/info'),
   balance: (address: string) => get<{ address: string; balance: number }>(`/api/balance?address=${address}`),
@@ -46,8 +64,13 @@ export const api = {
   pets: (address: string) => get<Pet[]>(`/api/pets?address=${address}`),
   fish: (address: string) => get<Catch[]>(`/api/fish?address=${address}`),
   farm: (address: string) => get<FarmView>(`/api/farm?address=${address}`),
+  mines: (address: string) => get<MineAsset[]>(`/api/mines?address=${address}`),
   names: () => get<{ addressToName: Record<string, string> }>('/api/names'),
   rooms: () => get<{ address: string; name?: string }[]>('/api/rooms'),
+  feed: (mode = 'all', limit = 80) => get<{ events: FeedEvent[] }>(`/api/feed?mode=${mode}&limit=${limit}`),
+  profile: (address: string) => get<Profile>(`/api/profile?address=${address}`),
+  visit: (visitor: string, target: string) =>
+    send<{ ok: boolean; visitCount: number }>('POST', '/api/visit', { visitor, target }),
   txStatus: (txid: string) => get<TxStatus>(`/api/tx?txid=${txid}`),
   faucet: (address: string) => send<FaucetResult>('POST', '/api/faucet', { address }),
   submitTx: (tx: Transaction) => send<{ ok: boolean; txid: string }>('POST', '/api/tx', { tx }),

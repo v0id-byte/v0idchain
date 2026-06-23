@@ -8,7 +8,7 @@ const ART = 16; // 每格艺术像素 = 星露谷规格(放大后块感正)
 const TEX = 8; // 大纹理边长(格)
 const N = TEX * ART; // 128
 
-export const GROUND_KINDS = new Set(['grass', 'dirt', 'stone', 'cobble', 'sand', 'water']);
+export const GROUND_KINDS = new Set(['grass', 'dirt', 'stone', 'cobble', 'sand', 'water', 'caveFloor', 'caveWall']);
 
 function hash(x: number, y: number): number {
   let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) ^ 0x5bd1e995;
@@ -157,7 +157,48 @@ function genStone(): HTMLCanvasElement {
   return cv;
 }
 
-const GEN: Record<string, () => HTMLCanvasElement> = { grass: genGrass, dirt: genDirt, stone: genStone, cobble: genCobble, sand: genSand, water: genWater };
+const CAVE_FLOOR = { mid: [54, 50, 61] as RGB, light: [68, 62, 74] as RGB, dark: [38, 36, 46] as RGB, gem: [91, 83, 116] as RGB };
+function genCaveFloor(): HTMLCanvasElement {
+  const noise = tileNoise(TEX * 2);
+  const [cv, ctx] = paint((x, y) => {
+    const n = noise((x / ART) * 2, (y / ART) * 2);
+    if (n < 0.28) return CAVE_FLOOR.dark;
+    return n + bayer(x, y) - 0.5 > 0.58 ? CAVE_FLOOR.light : CAVE_FLOOR.mid;
+  });
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const r = hash(x * 11 + 3, y * 7 + 9);
+      if (r < 0.014) { ctx.fillStyle = css(CAVE_FLOOR.dark); ctx.fillRect(x, y, 1, 1); }
+      else if (r > 0.996) { ctx.fillStyle = css(CAVE_FLOOR.gem); ctx.fillRect(x, y, 1, 1); }
+    }
+  }
+  return cv;
+}
+
+const CAVE_WALL = { mid: [38, 35, 47] as RGB, light: [56, 50, 66] as RGB, dark: [23, 22, 31] as RGB };
+function genCaveWall(): HTMLCanvasElement {
+  const noise = tileNoise(TEX * 2);
+  const [cv, ctx] = paint((x, y) => {
+    const n = noise((x / ART) * 2, (y / ART) * 2);
+    if (n < 0.32) return CAVE_WALL.dark;
+    return n + bayer(x, y) - 0.5 > 0.55 ? CAVE_WALL.light : CAVE_WALL.mid;
+  });
+  ctx.fillStyle = 'rgba(12,10,18,0.55)';
+  for (let y = ART - 1; y < N; y += ART) ctx.fillRect(0, y, N, 1);
+  for (let x = ART - 1; x < N; x += ART) ctx.fillRect(x, 0, 1, N);
+  return cv;
+}
+
+const GEN: Record<string, () => HTMLCanvasElement> = {
+  grass: genGrass,
+  dirt: genDirt,
+  stone: genStone,
+  cobble: genCobble,
+  sand: genSand,
+  water: genWater,
+  caveFloor: genCaveFloor,
+  caveWall: genCaveWall,
+};
 const cache = new Map<string, HTMLCanvasElement>();
 function texture(name: string): HTMLCanvasElement {
   let t = cache.get(name);
