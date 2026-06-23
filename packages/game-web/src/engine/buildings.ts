@@ -19,6 +19,10 @@ export interface BuildingItem {
   variant?: number; // 门窗排布/屋顶形状的确定性变体（破除千篇一律）
 }
 
+// 屋顶形状(剪影差异的主来源):坡顶 / 正面歇山三角 / 四坡梯形 / 平顶女儿墙 / A 字尖顶。
+// 'auto' = 由 variant 在坡顶/歇山间确定性挑(老逻辑,商铺用);住宅各自指定一个固定形状一眼能分。
+export type RoofShape = 'auto' | 'pitched' | 'gable' | 'hip' | 'flat' | 'aframe';
+
 export interface BuildingStyle {
   label: string;
   wall: WallKind;
@@ -31,6 +35,13 @@ export interface BuildingStyle {
   sign?: SignIcon;
   chimney?: boolean;
   open?: string; // 开放式摊位(无墙无门):值=遮阳棚主色。鱼摊等。
+  // —— 住宅户型字段(让剪影一眼能分,不只换色) ——
+  roofShape?: RoofShape; // 屋顶形状(缺省 'auto')
+  porch?: string; // 前廊雨棚柱色(美式 farmhouse):门前一排柱 + 平棚
+  dormer?: boolean; // 坡顶上开一扇老虎窗(阁楼 cottage)
+  wing?: 'left' | 'right'; // 一侧矮耳房(L 形/ranch 车库感)
+  trimColor?: string; // 门窗框/檐口描边色(美式撞色 trim);缺省取 beamColor
+  shutters?: string; // 窗扇百叶色(美式);有则窗两侧画一对百叶
 }
 
 // 中世纪调色:灰泥/石墙 + 木骨架;陶土/青/石板/木屋顶。门窗坐标取自 tileset ?pick 映射。
@@ -61,6 +72,19 @@ export const BUILDING_STYLES: Record<string, BuildingStyle> = {
   chapel: { label: '教堂', wall: 'stone', wallColor: '#cdc8b8', beamColor: '#8a8270', roofColor: '#5a6a78', door: [40, 7], window: [42, 2], sign: 'cross' },
   mill: { label: '磨坊', wall: 'timber', wallColor: '#e2cfa2', beamColor: '#6b4a2c', roofColor: '#9a6a3a', door: [34, 2], window: [40, 0], sign: 'wheat', chimney: true },
   barn: { label: '谷仓', wall: 'timber', wallColor: '#b6543a', beamColor: '#e8e0cc', roofColor: '#7a4a30', door: [32, 5], window: [42, 0] },
+  // —— 美式/乡村住宅(户型剪影一眼能分;墙低饱和暖灰,屋顶唯一高饱和点缀色,门窗撞色 trim + 百叶) ——
+  // 暖屋顶组(陶土红/赭/琥珀):
+  farmhouse: { label: '前廊农舍', wall: 'timber', wallColor: '#eae3d2', beamColor: '#8a7256', roofColor: '#b6553a', door: [34, 1], window: [42, 0], roofShape: 'gable', porch: '#cdb53f', chimney: true, trimColor: '#f3ece0', shutters: '#5a7050' },
+  colonial: { label: '殖民两层', wall: 'timber', wallColor: '#e6ddc8', beamColor: '#7a6450', roofColor: '#9a5a3a', door: [34, 1], window: [42, 0], roofShape: 'hip', chimney: true, trimColor: '#f0e8d6', shutters: '#3a5a78' },
+  ranch: { label: '车库平房', wall: 'timber', wallColor: '#e3d6b8', beamColor: '#8a7050', roofColor: '#c08a3a', door: [34, 1], window: [42, 0], roofShape: 'pitched', wing: 'right', trimColor: '#efe7d0', shutters: '#7a4a3a' },
+  brownstone: { label: '排屋', wall: 'stone', wallColor: '#c8a274', beamColor: '#9a7850', roofColor: '#7a5a44', door: [40, 7], window: [42, 2], roofShape: 'flat', trimColor: '#e8dcc4' },
+  cape: { label: '海角小筑', wall: 'timber', wallColor: '#e8e0cf', beamColor: '#80684e', roofColor: '#a86a44', door: [34, 1], window: [42, 0], roofShape: 'gable', dormer: true, chimney: true, trimColor: '#f3ece0', shutters: '#8a5a4a' },
+  // 冷屋顶组(青/蓝灰/苔绿):
+  cottagey: { label: '阁楼小屋', wall: 'timber', wallColor: '#e4dcc4', beamColor: '#6a6a4a', roofColor: '#5a7f6a', door: [34, 1], window: [42, 0], roofShape: 'pitched', dormer: true, chimney: true, trimColor: '#eee6d2', shutters: '#4a6a5a' },
+  craftsman: { label: '工匠前廊', wall: 'timber', wallColor: '#dcd0b4', beamColor: '#5a5238', roofColor: '#4f6a82', door: [34, 2], window: [42, 2], roofShape: 'pitched', porch: '#6a5238', chimney: true, trimColor: '#e8e0c8', shutters: '#3a4a58' },
+  saltbox: { label: '盐盒木屋', wall: 'timber', wallColor: '#e0d8c2', beamColor: '#6a5840', roofColor: '#5a6a78', door: [34, 1], window: [42, 0], roofShape: 'gable', chimney: true, trimColor: '#ece4d0', shutters: '#4a5a4a' },
+  aframe: { label: 'A字尖屋', wall: 'timber', wallColor: '#e2d6ba', beamColor: '#6a4a30', roofColor: '#4a7a6a', door: [34, 1], window: [42, 0], roofShape: 'aframe', chimney: true, trimColor: '#efe7cf' },
+  bungalow: { label: '平顶小宅', wall: 'stone', wallColor: '#cfc6b0', beamColor: '#7e7660', roofColor: '#6a8a7a', door: [40, 7], window: [42, 2], roofShape: 'flat', trimColor: '#e8e0cc', shutters: '#4a6a5a' },
   // 开放式鱼摊(无墙无门):柱 + 斜条纹棚 + 冰台摆鱼。
   fishstall: { label: '鱼摊', wall: 'timber', wallColor: '#caa46a', beamColor: '#6b4a2c', roofColor: '#3f7f93', door: [0, 0], window: [0, 0], open: '#2f86b8', sign: 'fish' },
 };
@@ -321,6 +345,153 @@ function drawGableRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, 
   px(ctx, W / 2 - 1, roofH - 7, 2, 2, '#2a2a30');
 }
 
+// 四坡梯形顶(hip):上窄下宽的梯形,两侧斜坡 + 正面斜坡阴影 ⇒ 殖民风厚重剪影。
+function drawHipRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, color: string) {
+  const over = 3;
+  const topInset = Math.round(W * 0.26); // 顶边内收量(越大越尖)
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-over, roofH);
+  ctx.lineTo(topInset, 1);
+  ctx.lineTo(W - topInset, 1);
+  ctx.lineTo(W + over, roofH);
+  ctx.closePath();
+  ctx.fill();
+  // 两端三角坡用暗面区分(左暗右更暗 ⇒ 体积感)
+  ctx.fillStyle = shade(color, -16);
+  ctx.beginPath();
+  ctx.moveTo(-over, roofH);
+  ctx.lineTo(topInset, 1);
+  ctx.lineTo(topInset, roofH);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = shade(color, -26);
+  ctx.beginPath();
+  ctx.moveTo(W + over, roofH);
+  ctx.lineTo(W - topInset, 1);
+  ctx.lineTo(W - topInset, roofH);
+  ctx.closePath();
+  ctx.fill();
+  for (let y = 4; y < roofH - 2; y += 3) px(ctx, topInset, y, W - topInset * 2, 1, shade(color, -14)); // 正坡瓦楞
+  px(ctx, topInset, 1, W - topInset * 2, 2, shade(color, 14)); // 屋脊高光
+  px(ctx, -over, roofH - 2, W + over * 2, 2, shade(color, -32)); // 檐影
+}
+
+// 平顶 + 女儿墙(parapet):矮顶带檐口与压顶线 ⇒ 排屋/平房剪影,与坡顶强烈对比。
+function drawFlatRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, color: string) {
+  const over = 2;
+  const capH = Math.max(5, Math.round(roofH * 0.5)); // 女儿墙带高度(只占上半,露出墙体顶)
+  px(ctx, -over, 0, W + over * 2, capH, color); // 压顶墙带
+  px(ctx, -over, 0, W + over * 2, 2, shade(color, 18)); // 压顶高光
+  px(ctx, -over, capH - 2, W + over * 2, 2, shade(color, -30)); // 压顶底影
+  // 檐口齿(规则小垛口,强调平顶的水平线)
+  for (let x = -over; x < W + over; x += 6) px(ctx, x, 0, 3, 1, shade(color, -22));
+}
+
+// A 字尖顶(aframe):从地面直插的超陡双坡,几乎没有竖墙 ⇒ 最独特的剪影。整面屋顶高度=H 大部。
+function drawAframeRoof(ctx: CanvasRenderingContext2D, W: number, H: number, color: string) {
+  const over = 2;
+  const baseY = H; // 坡脚直达底
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(W / 2, 1);
+  ctx.lineTo(-over, baseY);
+  ctx.lineTo(W + over, baseY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = shade(color, -24); // 右坡暗面
+  ctx.beginPath();
+  ctx.moveTo(W / 2, 1);
+  ctx.lineTo(W + over, baseY);
+  ctx.lineTo(W / 2, baseY);
+  ctx.closePath();
+  ctx.fill();
+  // 沿两坡画几道平行瓦楞线(跟随斜率)
+  ctx.strokeStyle = shade(color, -14);
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 6; i++) {
+    const ty = 1 + (baseY - 1) * (i / 6);
+    const half = (W / 2 + over) * (i / 6);
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - half, ty);
+    ctx.lineTo(W / 2 + half, ty);
+    ctx.stroke();
+  }
+  px(ctx, W / 2 - 1, 1, 2, baseY - 1, shade(color, 12)); // 屋脊高光
+}
+
+// 坡顶上的老虎窗(dormer):正面一个带小坡顶的凸窗,改变屋顶轮廓(阁楼感)。
+function drawDormer(ctx: CanvasRenderingContext2D, W: number, roofH: number, roofColor: string, trim: string) {
+  const dw = 8;
+  const dx = Math.round(W * 0.5 - dw / 2);
+  const dyTop = Math.round(roofH * 0.32);
+  const dBodyY = dyTop + 4;
+  // 小坡顶
+  ctx.fillStyle = shade(roofColor, -10);
+  ctx.beginPath();
+  ctx.moveTo(dx - 1, dBodyY);
+  ctx.lineTo(dx + dw / 2, dyTop);
+  ctx.lineTo(dx + dw + 1, dBodyY);
+  ctx.closePath();
+  ctx.fill();
+  // 窗体 + 框 + 玻璃
+  px(ctx, dx, dBodyY, dw, roofH - dBodyY + 1, trim);
+  px(ctx, dx + 1, dBodyY + 1, dw - 2, roofH - dBodyY - 1, '#6a8aa0');
+  px(ctx, dx + dw / 2 - 0, dBodyY + 1, 1, roofH - dBodyY - 1, trim); // 竖棂
+}
+
+// 前廊(porch):门前一排细柱 + 一道平棚顶,投在墙下沿之上 ⇒ 美式 farmhouse/craftsman 标志。
+function drawPorch(ctx: CanvasRenderingContext2D, W: number, H: number, postColor: string) {
+  const roofY = H - T - 3; // 廊顶高度(门窗带上方)
+  const depth = 3;
+  px(ctx, 0, roofY, W, depth, shade(postColor, 20)); // 廊顶板
+  px(ctx, 0, roofY, W, 1, shade(postColor, 40)); // 顶高光
+  px(ctx, 0, roofY + depth, W, 1, shade(postColor, -30)); // 顶下影
+  // 立柱(均布 3~4 根,避开门居中列)
+  const n = W >= 80 ? 4 : 3;
+  for (let i = 0; i <= n; i++) {
+    const x = Math.round((i / n) * (W - 2));
+    px(ctx, x, roofY + depth, 2, H - (roofY + depth), postColor);
+    px(ctx, x, roofY + depth, 1, H - (roofY + depth), shade(postColor, 22)); // 柱左高光
+  }
+  // 廊地台阶(底边一道)
+  px(ctx, 0, H - 2, W, 2, shade(postColor, -18));
+}
+
+// 一侧矮耳房(wing):在主屋一侧贴一块矮一截的体块(自带小坡顶 + 一扇窗) ⇒ L 形/车库平房剪影。
+function drawWing(ctx: CanvasRenderingContext2D, W: number, H: number, side: 'left' | 'right', wall: string, beam: string, roofColor: string, trim: string) {
+  const ww = Math.round(W * 0.34); // 耳房宽
+  const topY = Math.round(H * 0.42); // 耳房顶比主屋低
+  const x0 = side === 'left' ? 0 : W - ww;
+  // 墙体(始终带 x0 偏移的方框墙;石/木统一用浅描边面,小耳房不必复刻整墙纹理)
+  const wy = topY + 5;
+  px(ctx, x0, wy, ww, H - wy, wall);
+  px(ctx, x0 + 1, wy + 1, ww - 2, H - wy - 1, shade(wall, 5)); // 内墙提亮
+  px(ctx, x0, wy, ww, 2, beam); // 上梁
+  px(ctx, x0, H - 2, ww, 2, beam); // 底梁
+  px(ctx, x0, wy, 2, H - wy, beam); // 内/外柱
+  px(ctx, x0 + ww - 2, wy, 2, H - wy, beam);
+  // 小横坡顶(出檐)
+  const rh = 7;
+  px(ctx, x0 - 2, topY, ww + 4, rh, roofColor);
+  for (let y = 2; y < rh - 1; y += 2) px(ctx, x0 - 2, topY + y, ww + 4, 1, shade(roofColor, -16));
+  px(ctx, x0 - 2, topY, ww + 4, 1, shade(roofColor, 16));
+  px(ctx, x0 - 2, topY + rh - 1, ww + 4, 1, shade(roofColor, -30));
+  // 一扇车库/侧窗
+  px(ctx, x0 + Math.round(ww / 2) - 4, topY + rh + 4, 8, 8, trim);
+  px(ctx, x0 + Math.round(ww / 2) - 3, topY + rh + 5, 6, 6, '#6a8aa0');
+  return { x0, ww }; // 供调用方避让此区域的门窗
+}
+
+// 一对窗扇百叶(美式 shutters):贴在窗左右各一片竖条。
+function drawShutters(ctx: CanvasRenderingContext2D, wx: number, wy: number, color: string) {
+  for (const sx of [wx - 3, wx + T - 1]) {
+    px(ctx, sx, wy + 1, 3, T - 2, color);
+    px(ctx, sx, wy + 1, 1, T - 2, shade(color, 16)); // 高光边
+    for (let yy = wy + 2; yy < wy + T - 2; yy += 3) px(ctx, sx, yy, 3, 1, shade(color, -22)); // 百叶横纹
+  }
+}
+
 const cache = new Map<string, HTMLCanvasElement>();
 
 /** 拼装某风格 w×h 建筑（按签名缓存）。门/窗需图集就绪;未就绪先出无门窗版,图集到位后自然重拼。 */
@@ -348,14 +519,41 @@ export function buildingCanvas(styleId: string, w: number, h: number, variant = 
     return cv;
   }
 
+  const trim = s.trimColor ?? s.beamColor;
+  const { doorCol } = buildingMeta(w);
+
+  // —— A 字尖屋:特例。坡顶几乎吃满整高,只在底部露一点墙 + 居中门 + 山墙小窗 ——
+  if (s.roofShape === 'aframe') {
+    const baseWallY = H - Math.round(T * 0.9);
+    if (s.wall === 'stone') drawStoneWall(ctx, baseWallY, W, H - baseWallY, s.wallColor, s.beamColor);
+    else drawTimberWall(ctx, baseWallY, W, H - baseWallY, s.wallColor, s.beamColor);
+    drawAframeRoof(ctx, W, H, s.roofColor);
+    // 山墙正面一扇大三角窗 + 居中门
+    px(ctx, Math.round(W / 2) - 5, Math.round(H * 0.34), 10, Math.round(H * 0.28), trim);
+    px(ctx, Math.round(W / 2) - 4, Math.round(H * 0.34) + 1, 8, Math.round(H * 0.28) - 2, '#6a8aa0');
+    stamp(ctx, s.door, doorCol * T, H - T);
+    if (s.chimney) drawChimney(ctx, Math.round(W * 0.78), Math.round(T * 1.0));
+    cache.set(key, cv);
+    return cv;
+  }
+
   const roofH = Math.round(T * 1.35);
   const wallY = roofH - 3;
   const wallH = H - wallY;
   if (s.wall === 'stone') drawStoneWall(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
   else drawTimberWall(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
 
+  // —— 一侧耳房(wing):占住一侧列范围,门窗在此让开 ——
+  let wingFrom = 0;
+  let wingTo = w; // 主屋开窗的列区间 [wingFrom, wingTo)
+  if (s.wing) {
+    const wg = drawWing(ctx, W, H, s.wing, s.wallColor, s.beamColor, s.roofColor, trim);
+    const wingCols = Math.ceil(wg.ww / T);
+    if (s.wing === 'left') wingFrom = wingCols;
+    else wingTo = w - wingCols;
+  }
+
   // —— 门窗布局随 variant 变化（破除千篇一律）：4 种窗列型 × 单/双层，门保持居中(与场景交互点一致) ——
-  const { doorCol } = buildingMeta(w);
   const winRow = wallY + 4;
   const lowerRow = winRow + T + 2;
   const twoFloor = h >= 5; // 高楼做两层窗
@@ -365,17 +563,29 @@ export function buildingCanvas(styleId: string, w: number, h: number, variant = 
     pat === 1 ? c === 1 || c === w - 2 :
     pat === 2 ? c % 2 === 1 :
     c % 2 === 0 && c !== doorCol;
-  for (let c = 0; c < w; c++) {
+  for (let c = wingFrom; c < wingTo; c++) {
     if (!winAt(c)) continue;
     stamp(ctx, s.window, c * T, winRow);
-    if (twoFloor) stamp(ctx, s.window, c * T, lowerRow);
+    if (s.shutters) drawShutters(ctx, c * T, winRow, s.shutters);
+    if (twoFloor) {
+      stamp(ctx, s.window, c * T, lowerRow);
+      if (s.shutters) drawShutters(ctx, c * T, lowerRow, s.shutters);
+    }
   }
   stamp(ctx, s.door, doorCol * T, H - T);
 
   if (s.awning) drawAwning(ctx, H - T - 6, W, s.awning); // 棚在门楣上方
-  // 屋顶形状随 variant：约半数(非店铺、够高)用正面歇山三角，改变剪影
-  if (Math.floor(variant / 4) % 2 === 1 && !s.awning && h >= 4) drawGableRoof(ctx, W, roofH, s.roofColor);
+  if (s.porch) drawPorch(ctx, W, H, s.porch); // 前廊(柱+平棚),压在门窗带下沿
+
+  // —— 屋顶形状分派:住宅各自固定剪影;'auto'/未指定走旧 variant 逻辑(商铺) ——
+  const shape = s.roofShape ?? 'auto';
+  if (shape === 'hip') drawHipRoof(ctx, W, roofH, s.roofColor);
+  else if (shape === 'flat') drawFlatRoof(ctx, W, roofH, s.roofColor);
+  else if (shape === 'gable') drawGableRoof(ctx, W, roofH, s.roofColor);
+  else if (shape === 'pitched') drawRoof(ctx, W, roofH, s.roofColor);
+  else if (Math.floor(variant / 4) % 2 === 1 && !s.awning && h >= 4) drawGableRoof(ctx, W, roofH, s.roofColor);
   else drawRoof(ctx, W, roofH, s.roofColor);
+  if (s.dormer && (shape === 'pitched' || shape === 'gable' || shape === 'auto')) drawDormer(ctx, W, roofH, s.roofColor, trim);
   if (s.chimney) drawChimney(ctx, Math.round(W * 0.72), roofH);
   if (s.sign) drawSign(ctx, Math.round(W * 0.5), roofH + 1, s.sign);
 
