@@ -114,6 +114,7 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .pet-card.rarity-epic { border-color: color-mix(in srgb, var(--epic) 50%, var(--line)); }
 .pet-card.rarity-legendary { border-color: color-mix(in srgb, var(--legendary) 55%, var(--line)); }
 .sprite { image-rendering: pixelated; }
+.mine-icon { font-size: 42px; line-height: 1; padding: 10px 0 4px; }
 .pet-meta { display: flex; align-items: center; gap: 7px; }
 .pet-meta code { color: var(--muted); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--line); color: var(--muted); }
@@ -450,33 +451,38 @@ button.dir-go:hover { text-decoration: underline; }
 }
 
 /* ── 菜地弹窗 ── */
-.garden-modal { max-width: 380px; }
-.garden-plot-detail { text-align: center; }
-.garden-phase-badge {
-  display: inline-block; padding: 4px 14px; border-radius: 20px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  font-size: 13px; margin-bottom: 10px;
+/* ── 田地 HUD 气泡 ── */
+.garden-hud {
+  position: fixed; top: 62px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center;
+  background: rgba(12, 11, 18, .9); border: 1px solid var(--line);
+  border-radius: 14px; padding: 8px 12px; backdrop-filter: blur(10px);
+  z-index: 20; pointer-events: auto; max-width: 96vw;
+  animation: fadeIn 0.12s ease;
 }
-.garden-stage-dot { opacity: 0.75; font-size: 12px; }
-.garden-grow-bar {
-  width: 100%; max-width: 220px; height: 8px;
-  background: var(--panel-2); border-radius: 4px; overflow: hidden; margin: 0 auto;
+.garden-hud-title { font-size: 13px; color: var(--muted); white-space: nowrap; padding-right: 2px; }
+.garden-hud-btn {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  padding: 6px 10px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 14px;
+  white-space: nowrap;
 }
-.garden-grow-fill { height: 100%; background: #6abf5e; border-radius: 4px; transition: width 0.4s; }
-.garden-crops { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
-.garden-crop-btn {
-  display: flex; flex-direction: column; align-items: center;
-  padding: 10px 14px; min-width: 72px;
+.garden-hud-btn:hover { border-color: var(--accent); }
+.garden-hud-harvest { border-color: color-mix(in srgb, #6abf5e 50%, var(--line)); }
+.garden-hud-harvest:hover { border-color: #6abf5e; }
+.garden-hud-remove { opacity: 0.75; }
+.garden-hud-remove:hover { opacity: 1; border-color: #e55; }
+.garden-hud-key {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  font-size: 10px; padding: 1px 4px; color: var(--muted);
+  font-family: ui-monospace, Menlo, monospace; font-style: normal;
 }
-.garden-crop-icon { font-size: 22px; }
-.garden-crop-name { font-size: 13px; margin-top: 2px; }
-.garden-crop-time { font-size: 11px; opacity: 0.6; }
-.garden-remove-btn {
-  display: block; margin: 10px auto 0; padding: 5px 16px;
-  background: transparent; border: 1px solid var(--line); border-radius: 8px;
-  color: var(--fg); font-size: 13px; cursor: pointer; opacity: 0.75;
+.garden-hud-time { font-size: 11px; color: var(--muted); }
+.garden-hud-close {
+  background: transparent; border: none; color: var(--muted);
+  cursor: pointer; padding: 4px 6px; font-size: 13px; line-height: 1;
 }
-.garden-remove-btn:hover { opacity: 1; border-color: #e55; color: #e55; }
+.garden-hud-close:hover { color: var(--text); }
 
 /* ── 租售弹窗 ── */
 .rent-grid { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }

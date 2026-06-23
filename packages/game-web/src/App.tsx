@@ -8,8 +8,14 @@ import {
   petTraits,
   fishTraits,
   NULL_ADDRESS,
+  MINE_KIND_META,
+  MINE_KINDS,
+  makeMineDiscovery,
+  makeMineMaterial,
+  mineDiscoveryBurn,
+  mineMaterialBurn,
 } from '@v0idchain/core/browser';
-import type { Pet, Catch, FarmView, Wallet, FeedEvent, Crop } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView, Wallet, FeedEvent, Crop, MineAsset, MineAssetKind } from '@v0idchain/core/browser';
 import { api, waitConfirmed } from './api';
 import { loadOrCreateWallet, exportPrivateKey, importPrivateKey, shortAddr } from './wallet';
 import { TownBoard, ProfileOverlay, MyProfilePanel } from './Social';
@@ -22,6 +28,7 @@ import TouchControls from './TouchControls';
 import Hotbar, { DEFAULT_INVENTORY, type InventorySlot } from './Hotbar';
 import type { Interactable, FurnitureItem, FarmRef, FruitKind, GardenStateEntry } from './engine/scene';
 import { DEFAULT_ROOM_FURNITURE } from './engine/scene';
+import { mineTileKey } from './engine/mine';
 import { FURNITURE_CATALOG, FURNITURE_TILES, ROOM_THEMES, type RoomThemeId } from './engine/tileset';
 import { loadAtlas, drawAtlasTile } from './engine/atlas';
 import { publishRoom, loadRoom } from './room';
@@ -36,6 +43,25 @@ function plotHash(id: string): string {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
   return h.toString(16).padStart(8, '0').repeat(8);
+}
+
+function isMineAssetKind(kind: string): kind is MineAssetKind {
+  return MINE_KINDS.includes(kind as MineAssetKind);
+}
+
+function addSlot(prev: InventorySlot[], slot: InventorySlot, unique = false): InventorySlot[] {
+  const next = [...prev];
+  if (!unique) {
+    const existing = next.findIndex((s) => s?.kind === slot.kind && !s.chain);
+    if (existing >= 0) {
+      next[existing] = { ...next[existing], count: next[existing].count + slot.count };
+      return next;
+    }
+  }
+  const emptyIdx = next.findIndex((s, i) => i >= 4 && s === undefined);
+  if (emptyIdx >= 0) next[emptyIdx] = slot;
+  else next.push(slot);
+  return next;
 }
 function computeGardenStage(plot: GardenPlot): 0 | 1 | 2 | 3 {
   if (!plot.crop || !plot.plantedAt || plot.phase === 'empty') return 0;
@@ -115,7 +141,7 @@ function FurnitureIcon({ kind, size = 30 }: { kind: string; size?: number }) {
   return <canvas ref={ref} style={{ width: size, height: size, imageRendering: 'pixelated' }} />;
 }
 
-type Tab = 'wallet' | 'pets' | 'fish' | 'farm' | 'profile';
+type Tab = 'wallet' | 'pets' | 'fish' | 'farm' | 'mine' | 'profile';
 
 export default function App() {
   const wallet = useMemo<Wallet>(() => loadOrCreateWallet(), []);
@@ -123,6 +149,7 @@ export default function App() {
   const [pets, setPets] = useState<Pet[]>([]);
   const [fish, setFish] = useState<Catch[]>([]);
   const [farm, setFarm] = useState<FarmView | null>(null);
+  const [mines, setMines] = useState<MineAsset[]>([]);
   const [fishingOpen, setFishingOpen] = useState(false);
   const [farmAction, setFarmAction] = useState<FarmRef | null>(null);
   const [name, setName] = useState('');
@@ -130,7 +157,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('pets');
-  const [scene, setScene] = useState<'room' | 'town' | 'farm'>('room');
+  const [scene, setScene] = useState<string>('room');
   // 房间编辑
   const [furniture, setFurniture] = useState<FurnitureItem[]>(DEFAULT_ROOM_FURNITURE);
   const [theme, setTheme] = useState<RoomThemeId>('wood');
@@ -175,8 +202,7 @@ export default function App() {
   // 附近的可交互物件（引擎回调）
   const [nearby, setNearby] = useState<Interactable | null>(null);
   // 公共菜地浮层 + 当前聚焦格
-  const [gardenOpen, setGardenOpen] = useState(false);
-  const [gardenFocusId, setGardenFocusId] = useState<string | null>(null);
+  const [gardenHud, setGardenHud] = useState<{ gardenId: string } | null>(null);
   // 房间租售浮层
   const [rentOpen, setRentOpen] = useState(false);
   // 果子铸造浮层（选中的果子 slot）
@@ -184,13 +210,18 @@ export default function App() {
   // 链上资产：已铸造的果子记录（从 feed 解析），房间所有权
   const [mintedAssets, setMintedAssets] = useState<{ kind: string; count: number; ts: number }[]>([]);
   const [roomOwnership, setRoomOwnership] = useState<{ type: 'rent' | 'buy'; expiryTs?: number } | null>(null);
+  const [mineHp, setMineHp] = useState(100);
+  const [mineMined, setMineMined] = useState<Set<string>>(new Set());
+  const [mineChests, setMineChests] = useState<Set<string>>(new Set());
+  const [mineMonsters, setMineMonsters] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
-    const [b, ps, fs, fm, names, ownFeed] = await Promise.all([
+    const [b, ps, fs, fm, ms, names, ownFeed] = await Promise.all([
       api.balance(wallet.address).then((r) => r.balance).catch(() => null),
       api.pets(wallet.address).catch(() => [] as Pet[]),
       api.fish(wallet.address).catch(() => [] as Catch[]),
       api.farm(wallet.address).catch(() => null),
+      api.mines(wallet.address).catch(() => [] as MineAsset[]),
       api.names().then((r) => r.addressToName).catch(() => ({}) as Record<string, string>),
       api.feed(wallet.address, 200).catch(() => ({ events: [] as import('@v0idchain/core/browser').FeedEvent[] })),
     ]);
@@ -198,6 +229,7 @@ export default function App() {
     setPets(ps);
     setFish(fs);
     setFarm(fm);
+    setMines(ms);
     setName(names[wallet.address] ?? '');
     setNamesMap(names);
 
@@ -276,6 +308,7 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  // 田地 HUD 键盘快捷键（1-4 选作物 / 1-2 执行操作 / Esc 关闭）
   const hatch = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -397,12 +430,92 @@ export default function App() {
     setGardenPlots((prev) => { const m = new Map(prev); m.set(gardenId, { phase: 'empty' }); return m; });
   }, []);
 
+  useEffect(() => {
+    if (!gardenHud) return;
+    const handler = (e: KeyboardEvent) => {
+      if (['1', '2', '3', '4', 'Escape'].indexOf(e.key) === -1) return;
+      e.stopPropagation();
+      const id = gardenHud.gardenId;
+      const plot = gardenPlots.get(id) ?? { phase: 'empty' as const };
+      if (e.key === 'Escape') { setGardenHud(null); return; }
+      if (plot.phase === 'empty') {
+        const OPTS: Crop[] = ['turnip', 'wheat', 'pumpkin', 'starfruit'];
+        const idx = parseInt(e.key) - 1;
+        if (idx >= 0 && idx < OPTS.length) { plantGarden(id, OPTS[idx]); setGardenHud(null); }
+      } else {
+        const stage = computeGardenStage(plot);
+        if (e.key === '1') { stage >= 3 ? harvestGarden(id) : waterGarden(id); setGardenHud(null); }
+        if (e.key === '2') { removeCrop(id); setGardenHud(null); }
+      }
+    };
+    window.addEventListener('keydown', handler, { capture: true });
+    return () => window.removeEventListener('keydown', handler, { capture: true });
+  }, [gardenHud, gardenPlots, plantGarden, harvestGarden, waterGarden, removeCrop]);
+
+  const addMineMaterial = useCallback((kind: MineAssetKind, count: number) => {
+    const meta = MINE_KIND_META[kind];
+    setInventory((prev) => addSlot(prev, {
+      kind: `mine_mat_${kind}`,
+      label: `${meta.label}材料`,
+      icon: meta.icon,
+      count,
+    }));
+  }, []);
+
+  const addMineDiscovery = useCallback((depth: number, x: number, y: number, kind: MineAssetKind) => {
+    const meta = MINE_KIND_META[kind];
+    setInventory((prev) => addSlot(prev, {
+      kind: `mine_disc_${depth}_${x}_${y}_${kind}`,
+      label: `${meta.label}发现证明`,
+      icon: meta.icon,
+      count: 1,
+      chain: { type: 'mine_discovery', depth, x, y, kind },
+    }, true));
+  }, []);
+
   const onInteract = useCallback((it: Interactable) => {
     const toolIdx = hotbarSelRef.current;
     const tool = inventoryRef.current[toolIdx];
     const toolKind = tool?.kind;
 
-    if (it.type === 'pedestal') {
+    if ((it.type === 'mine_rock' || it.type === 'mine_ore') && it.mine) {
+      if (toolKind !== 'tool_pickaxe' && toolKind !== 'tool_hoe') {
+        setStatus('需要装备矿镐才能凿开矿壁');
+        return;
+      }
+      const key = mineTileKey(it.mine.depth, it.mine.x, it.mine.y);
+      setMineMined((prev) => new Set(prev).add(key));
+      useTool(toolIdx);
+      if (it.mine.oreKind && isMineAssetKind(it.mine.oreKind)) {
+        const kind = it.mine.oreKind;
+        const meta = MINE_KIND_META[kind];
+        const count = 1 + Math.floor(it.mine.depth / 3) + (meta.tier >= 4 ? 1 : 0);
+        addMineMaterial(kind, count);
+        if (meta.tier >= 3) addMineDiscovery(it.mine.depth, it.mine.x, it.mine.y, kind);
+        setStatus(`⛏️ 获得 ${meta.label}材料 ×${count}${meta.tier >= 3 ? '，发现证明已入背包' : ''}`);
+      } else {
+        setStatus('⛏️ 凿开了一块岩壁');
+      }
+    } else if (it.type === 'mine_chest' && it.mine) {
+      const key = mineTileKey(it.mine.depth, it.mine.x, it.mine.y);
+      setMineChests((prev) => new Set(prev).add(key));
+      const available = MINE_KINDS.filter((k) => MINE_KIND_META[k].minDepth <= it.mine!.depth);
+      const kind = available[(it.mine.x * 31 + it.mine.y * 17 + it.mine.depth) % available.length] ?? 'copper';
+      const count = 2 + Math.floor(it.mine.depth / 2);
+      addMineMaterial(kind, count);
+      setStatus(`🎁 宝箱里找到 ${MINE_KIND_META[kind].label}材料 ×${count}`);
+    } else if (it.type === 'mine_monster' && it.mine) {
+      const key = mineTileKey(it.mine.depth, it.mine.x, it.mine.y);
+      setMineMonsters((prev) => new Set(prev).add(key));
+      if (toolKind === 'tool_sword') {
+        useTool(toolIdx);
+        setStatus('🗡️ 击退了洞穴怪物');
+      } else {
+        setMineHp((hp) => Math.max(15, hp - 18));
+        setStatus('受伤后勉强赶跑了怪物，带把剑会轻松很多');
+      }
+      if (it.mine.depth >= 3) addMineMaterial('void_crystal', 1);
+    } else if (it.type === 'pedestal') {
       setTab('pets');
       setMenuOpen(true);
     } else if (it.type === 'board') {
@@ -429,15 +542,14 @@ export default function App() {
         waterGarden(it.gardenId);
         useTool(toolIdx);
       } else {
-        // 无工具/其他工具 → 开菜地浮层
-        setGardenFocusId(it.gardenId);
-        setGardenOpen(true);
+        setGardenHud({ gardenId: it.gardenId });
       }
     }
-  }, [pickFruit, useTool, chopTree, waterGarden, gardenPlots]);
+  }, [pickFruit, useTool, chopTree, waterGarden, gardenPlots, addMineMaterial, addMineDiscovery]);
 
   const onSceneChange = useCallback((id: string) => {
-    setScene(id as 'room' | 'town' | 'farm');
+    setScene(id);
+    if (!id.startsWith('mine:')) setMineHp(100);
     if (id !== 'room') {
       setEditMode(false);
       setVisit(null); // 走出他人房间的门 → 退出串门
@@ -542,22 +654,38 @@ export default function App() {
 
   const FRUIT_MINT_COST: Record<string, number> = { fruit_apple: 5, fruit_orange: 5, fruit_berry: 5, fruit_golden_apple: 50 };
 
-  const mintFruit = useCallback(async () => {
+  const mintItem = useCallback(async () => {
     if (!mintTarget || busy) return;
     setBusy(true);
     try {
-      setStatus('铸造果子：签名 + 烧币…');
+      setStatus('铸造资产：签名 + 烧币…');
       const { nonce } = await api.nonce(wallet.address);
-      const kind = mintTarget.kind.replace('fruit_', '');
-      const cost = (FRUIT_MINT_COST[mintTarget.kind] ?? 10) * mintTarget.count;
-      const memo = `FRUIT:MINT:${kind}:${mintTarget.count}`;
+      let memo = '';
+      let cost = 0;
+      if (mintTarget.chain?.type === 'mine_discovery' && isMineAssetKind(mintTarget.chain.kind)) {
+        const { depth, x, y, kind } = mintTarget.chain;
+        const made = makeMineDiscovery(depth, x, y, kind);
+        if (!made.ok || !made.memo) throw new Error(made.error ?? '矿洞发现证明无效');
+        memo = made.memo;
+        cost = mineDiscoveryBurn(depth, kind);
+      } else if (mintTarget.kind.startsWith('mine_mat_')) {
+        const kind = mintTarget.kind.slice('mine_mat_'.length);
+        if (!isMineAssetKind(kind)) throw new Error('未知矿洞材料');
+        const made = makeMineMaterial(kind, mintTarget.count);
+        if (!made.ok || !made.memo) throw new Error(made.error ?? '矿洞材料无效');
+        memo = made.memo;
+        cost = mineMaterialBurn(kind, mintTarget.count);
+      } else {
+        const kind = mintTarget.kind.replace('fruit_', '');
+        cost = (FRUIT_MINT_COST[mintTarget.kind] ?? 10) * mintTarget.count;
+        memo = `FRUIT:MINT:${kind}:${mintTarget.count}`;
+      }
       const tx = createMessage(wallet, NULL_ADDRESS, memo, nonce, cost, MIN_FEE);
       const r = await api.submitTx(tx);
       setStatus('已广播，等矿工打包…');
       const ok = await waitConfirmed(r.txid);
       await refresh();
       if (ok) {
-        // 从背包移除已铸造的果子
         setInventory((prev) => prev.filter((s) => s?.kind !== mintTarget.kind));
         setStatus(`✅ ${mintTarget.icon} 已铸造上链！`);
       } else setStatus('已广播，稍后生效');
@@ -601,6 +729,11 @@ export default function App() {
     return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gardenPlots, gardenTick]);
+  const mineState = useMemo(() => ({
+    mined: mineMined,
+    openedChests: mineChests,
+    defeatedMonsters: mineMonsters,
+  }), [mineMined, mineChests, mineMonsters]);
 
   // 工具提示：根据 nearby 类型 + 当前选中工具推导上下文提示
   const toolHint = useMemo(() => {
@@ -613,12 +746,27 @@ export default function App() {
       return 'E: 查看田地';
     }
     if (nearby.type === 'rent') return 'E: 查看租售详情';
+    if (nearby.type === 'mine_rock') return tk === 'tool_pickaxe' || tk === 'tool_hoe' ? '⛏️ E: 凿开岩壁' : '需要矿镐';
+    if (nearby.type === 'mine_ore') return tk === 'tool_pickaxe' || tk === 'tool_hoe' ? `⛏️ E: ${nearby.label}` : '需要矿镐';
+    if (nearby.type === 'mine_chest') return '🎁 E: 打开宝箱';
+    if (nearby.type === 'mine_monster') return tk === 'tool_sword' ? '🗡️ E: 击退怪物' : 'E: 赶跑怪物（会受伤）';
     if (nearby.type === 'door') return `E: ${nearby.label}`;
     return `E: ${nearby.label}`;
   }, [nearby, inventory, hotbarSel]);
+  const mintTargetCost = useMemo(() => {
+    if (!mintTarget) return 0;
+    if (mintTarget.chain?.type === 'mine_discovery' && isMineAssetKind(mintTarget.chain.kind)) {
+      return mineDiscoveryBurn(mintTarget.chain.depth, mintTarget.chain.kind);
+    }
+    if (mintTarget.kind.startsWith('mine_mat_')) {
+      const kind = mintTarget.kind.slice('mine_mat_'.length);
+      return isMineAssetKind(kind) ? mineMaterialBurn(kind, mintTarget.count) : 0;
+    }
+    return (FRUIT_MINT_COST[mintTarget.kind] ?? 10) * mintTarget.count;
+  }, [mintTarget]);
 
   // 任一浮层打开时引擎已暂停（paused）→ 同时隐藏触屏方向/交互键，避免遮挡弹窗。
-  const anyOverlay = menuOpen || fishingOpen || !!farmAction || dirOpen || !!profileAddr || gardenOpen || rentOpen || !!mintTarget;
+  const anyOverlay = menuOpen || fishingOpen || !!farmAction || dirOpen || !!profileAddr || !!gardenHud || rentOpen || !!mintTarget;
   const showTouch = !anyOverlay && !editMode;
   // D-pad 卸载（开浮层/进装修）时若有手指还按着，补发一次归零，避免角色卡着走。
   useEffect(() => {
@@ -635,12 +783,13 @@ export default function App() {
         furniture={furniture}
         theme={theme}
         editMode={editMode}
-        paused={menuOpen || fishingOpen || !!farmAction || gardenOpen || rentOpen || !!mintTarget}
+        paused={menuOpen || fishingOpen || !!farmAction || !!gardenHud || rentOpen || !!mintTarget}
         visit={visit ? { furniture: visit.furniture, theme: visit.theme } : null}
         farm={farm}
         depletedFruits={depletedFruits}
         choppedTrees={choppedTreesSet}
         gardenState={gardenStateMap}
+        mineState={mineState}
         onToggleMenu={() => setMenuOpen((o) => !o)}
         onNearby={setNearby}
         onInteract={onInteract}
@@ -657,7 +806,7 @@ export default function App() {
             // 双击已选中的果子格 → 开铸造面板
             if (i === hotbarSel) {
               const s = inventory[i];
-              if (s?.kind?.startsWith('fruit_') || s?.kind?.startsWith('crop_')) setMintTarget(s);
+              if (s?.kind?.startsWith('fruit_') || s?.kind?.startsWith('crop_') || s?.kind?.startsWith('mine_mat_') || s?.chain) setMintTarget(s);
             }
           }}
         />
@@ -683,7 +832,9 @@ export default function App() {
                 ? '🏠 我的房间'
                 : scene === 'farm'
                   ? '🌾 我的农场'
-                  : '🏙 镇中心'}
+                  : scene.startsWith('mine:')
+                    ? `⛏️ 巨型矿洞 · 第 ${Number(scene.slice(5)) || 1} 层 · HP ${mineHp}/100`
+                    : '🏙 镇中心'}
           </span>
           <span className="hud-bal">{balance === null ? '—' : balance} $V0ID</span>
           {name ? <span className="hud-name">@{name}</span> : <code className="hud-addr">{shortAddr(wallet.address)}</code>}
@@ -726,6 +877,7 @@ export default function App() {
               <button className={tab === 'pets' ? 'on' : ''} onClick={() => setTab('pets')}>崽</button>
               <button className={tab === 'fish' ? 'on' : ''} onClick={() => setTab('fish')}>鱼篓</button>
               <button className={tab === 'farm' ? 'on' : ''} onClick={() => setTab('farm')}>农场</button>
+              <button className={tab === 'mine' ? 'on' : ''} onClick={() => setTab('mine')}>矿洞</button>
               <button className={tab === 'profile' ? 'on' : ''} onClick={() => setTab('profile')}>主页</button>
               <button className={tab === 'wallet' ? 'on' : ''} onClick={() => setTab('wallet')}>钱包</button>
               <button className="menu-close" onClick={() => setMenuOpen(false)}>✕</button>
@@ -736,6 +888,8 @@ export default function App() {
               <FishPanel fish={fish} canFish={nearby?.type === 'fishing'} onFish={() => { setMenuOpen(false); setFishingOpen(true); }} />
             ) : tab === 'farm' ? (
               <FarmPanel farm={farm} status={status} />
+            ) : tab === 'mine' ? (
+              <MinePanel mines={mines} />
             ) : tab === 'profile' ? (
               <MyProfilePanel address={wallet.address} onProfile={(a) => { setMenuOpen(false); setProfileAddr(a); }} />
             ) : (
@@ -763,76 +917,49 @@ export default function App() {
           onClose={() => setProfileAddr(null)}
         />
       )}
-      {gardenOpen && (
-        <div className="menu-backdrop" onClick={() => { setGardenOpen(false); setGardenFocusId(null); }}>
-          <div className="menu garden-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="menu-tabs">
-              <button className="on">🌾 公共田地</button>
-              <button className="menu-close" onClick={() => { setGardenOpen(false); setGardenFocusId(null); }}>✕</button>
-            </div>
-            <div className="panel">
-              {gardenFocusId ? (() => {
-                const plot = gardenPlots.get(gardenFocusId) ?? { phase: 'empty' as const };
-                const stage = computeGardenStage(plot);
-                const effPhase = plot.phase !== 'empty' && stage === 3 ? 'ready' : plot.phase;
-                const CROP_OPTS: { crop: Crop; time: string }[] = [
-                  { crop: 'turnip',    time: '45s' },
-                  { crop: 'wheat',     time: '75s' },
-                  { crop: 'pumpkin',   time: '2分' },
-                  { crop: 'starfruit', time: '3分' },
-                ];
-                const STAGE_TEXT = ['刚种下 🌱', '长苗 🌿', '成长中 🌿', '可收获！🌾'] as const;
-                return (
-                  <div className="garden-plot-detail">
-                    {effPhase === 'empty' ? (
-                      <>
-                        <p className="note" style={{ marginBottom: 10 }}>选择作物播种：</p>
-                        <div className="garden-crops">
-                          {CROP_OPTS.map(({ crop, time }) => (
-                            <button key={crop} className="primary garden-crop-btn"
-                              onClick={() => { plantGarden(gardenFocusId, crop); setGardenOpen(false); }}>
-                              <span className="garden-crop-icon">{CROP_ICON[crop]}</span>
-                              <span className="garden-crop-name">{CROP_LABEL[crop]}</span>
-                              <span className="garden-crop-time">{time}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="garden-phase-badge">
-                          {CROP_ICON[plot.crop!] ?? '🌱'} {CROP_LABEL[plot.crop!] ?? plot.crop}
-                          <span className="garden-stage-dot" style={{ marginLeft: 8 }}>{STAGE_TEXT[stage]}</span>
-                        </div>
-                        <div className="garden-grow-bar">
-                          <div className="garden-grow-fill" style={{ width: `${(stage / 3) * 100}%` }} />
-                        </div>
-                        {stage < 3 && (
-                          <p className="note" style={{ marginTop: 6 }}>
-                            {effPhase === 'watered' ? '💧 已浇水，加速成长中' : '装备水桶（🪣）可加速'}
-                          </p>
-                        )}
-                        {stage === 3 && (
-                          <button className="primary" style={{ marginTop: 8 }}
-                            onClick={() => { harvestGarden(gardenFocusId); setGardenOpen(false); }}>
-                            🎉 收获！（+{plot.wateredAt ? 2 : 1} {CROP_LABEL[plot.crop!] ?? ''}）
-                          </button>
-                        )}
-                        <button className="garden-remove-btn"
-                          onClick={() => { removeCrop(gardenFocusId); setGardenOpen(false); }}>
-                          🗑 拔除
-                        </button>
-                      </>
-                    )}
-                  </div>
-                );
-              })() : (
-                <p className="note">走到田地格子按 E 播种 · 装备水桶可直接浇水</p>
-              )}
-            </div>
+      {gardenHud && (() => {
+        const plot = gardenPlots.get(gardenHud.gardenId) ?? { phase: 'empty' as const };
+        const stage = computeGardenStage(plot);
+        const isReady = plot.phase !== 'empty' && stage === 3;
+        const CROP_OPTS: { crop: Crop; time: string }[] = [
+          { crop: 'turnip', time: '45s' }, { crop: 'wheat', time: '75s' },
+          { crop: 'pumpkin', time: '2分' }, { crop: 'starfruit', time: '3分' },
+        ];
+        return (
+          <div className="garden-hud">
+            {plot.phase === 'empty' ? (
+              <>
+                <span className="garden-hud-title">播种</span>
+                {CROP_OPTS.map(({ crop, time }, i) => (
+                  <button key={crop} className="garden-hud-btn"
+                    onClick={() => { plantGarden(gardenHud.gardenId, crop); setGardenHud(null); }}>
+                    <kbd className="garden-hud-key">{i + 1}</kbd>
+                    {CROP_ICON[crop]} {CROP_LABEL[crop]}
+                    <span className="garden-hud-time">{time}</span>
+                  </button>
+                ))}
+              </>
+            ) : (
+              <>
+                <span className="garden-hud-title">
+                  {CROP_ICON[plot.crop!]} {CROP_LABEL[plot.crop!]}
+                  {isReady ? ' · 可收获' : plot.phase === 'watered' ? ' · 💧加速' : ` · ${'🌱🌿🌿🌾'[stage]}`}
+                </span>
+                <button className={`garden-hud-btn${isReady ? ' garden-hud-harvest' : ''}`}
+                  onClick={() => { isReady ? harvestGarden(gardenHud.gardenId) : waterGarden(gardenHud.gardenId); setGardenHud(null); }}>
+                  <kbd className="garden-hud-key">1</kbd>
+                  {isReady ? `🎉 收获 +${plot.wateredAt ? 2 : 1}` : (plot.phase === 'watered' ? '💧 已浇水' : '🪣 浇水')}
+                </button>
+                <button className="garden-hud-btn garden-hud-remove"
+                  onClick={() => { removeCrop(gardenHud.gardenId); setGardenHud(null); }}>
+                  <kbd className="garden-hud-key">2</kbd>🗑 拔除
+                </button>
+              </>
+            )}
+            <button className="garden-hud-close" onClick={() => setGardenHud(null)}>✕</button>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {rentOpen && (
         <div className="menu-backdrop" onClick={() => setRentOpen(false)}>
@@ -892,13 +1019,13 @@ export default function App() {
             <div className="panel">
               <div style={{ textAlign: 'center', fontSize: 48, margin: '12px 0' }}>{mintTarget.icon}</div>
               <p><strong>{mintTarget.label}</strong> × {mintTarget.count}</p>
-              <p className="note">将此物品铸造成链上资产（烧 {(FRUIT_MINT_COST[mintTarget.kind] ?? 10) * mintTarget.count} $V0ID），永久上链可交易。</p>
-              {mintTarget.kind === 'fruit_golden_apple' && (
+              <p className="note">将此物品铸造成链上资产（烧 {mintTargetCost} $V0ID），永久上链可交易。</p>
+              {(mintTarget.kind === 'fruit_golden_apple' || mintTarget.chain) && (
                 <p className="note" style={{ color: '#f4c430' }}>★ 稀有物品，铸造后链上唯一标记！</p>
               )}
               <div className="catch-actions">
-                <button className="primary" disabled={busy || (balance ?? 0) < (FRUIT_MINT_COST[mintTarget.kind] ?? 10) * mintTarget.count + MIN_FEE}
-                  onClick={mintFruit}>
+                <button className="primary" disabled={busy || mintTargetCost <= 0 || (balance ?? 0) < mintTargetCost + MIN_FEE}
+                  onClick={mintItem}>
                   {busy ? '铸造中…' : '确认铸造'}
                 </button>
                 <button onClick={() => setMintTarget(null)}>取消</button>
@@ -1068,6 +1195,37 @@ function FishPanel({ fish, canFish, onFish }: { fish: Catch[]; canFish?: boolean
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function MinePanel({ mines }: { mines: MineAsset[] }) {
+  const discoveries = mines.filter((m) => m.type === 'discovery');
+  const materials = mines.filter((m) => m.type === 'material');
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2>矿洞藏品</h2>
+        <span className="tag">{discoveries.length} 发现 / {materials.length} 材料</span>
+      </div>
+      {mines.length === 0 ? (
+        <p className="empty">还没有链上矿洞资产。去镇中心东侧进入巨型矿洞，采到稀有矿物后在快捷栏双击发现证明或材料铸造上链。</p>
+      ) : (
+        <div className="pet-grid">
+          {mines.map((m) => (
+            <div key={m.id} className={`pet-card rarity-${m.traits.rarity}`}>
+              <div className="mine-icon">{m.icon}</div>
+              <div className="pet-meta">
+                <span className={`tag tag-${m.traits.rarity}`}>{RARITY_LABEL[m.traits.rarity]}</span>
+                <strong style={{ fontSize: 12 }}>{m.label}</strong>
+              </div>
+              <code title={m.id}>{m.type === 'discovery' ? `第 ${m.depth} 层 · 纯度 ${m.traits.purity}` : `材料 ×${m.count}`}</code>
+            </div>
+          ))}
+        </div>
+      )}
+      <h3>玩法</h3>
+      <p className="note">矿镐凿墙和采矿，短剑轻战斗。三阶以上矿物会掉落发现证明；材料和证明都可以烧 $V0ID 铸成链上资产，后续可接交易、合成和升级。</p>
     </div>
   );
 }
