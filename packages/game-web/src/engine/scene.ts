@@ -9,7 +9,7 @@ export interface FurnitureItem {
   x: number;
   y: number;
 }
-export type InteractType = 'door' | 'pedestal' | 'board';
+export type InteractType = 'door' | 'pedestal' | 'board' | 'fishing';
 export interface Interactable {
   x: number;
   y: number;
@@ -104,7 +104,7 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
 /**
  * 镇中心（热闹紧凑的中世纪鹅卵石商业街）。横向主街 + 北排店铺(门临街) + 南排店铺/民居(门临人行道) +
  * 中央石板广场(篝火/喷泉/名册牌) + 西北水塘(沙岸) + 开放式鱼摊 + 高树/路灯/栅栏。
- * 店门 → 回房间；广场名册牌 → 串门；鱼摊 → 占位交互(后续接玩法)。确定性布局(自带 LCG)，刷新稳定。
+ * 店门 → 回房间；广场名册牌 → 串门；鱼摊 → 钓鱼小游戏(QTE + 链上渔获)。确定性布局(自带 LCG)，刷新稳定。
  */
 export function buildTown(): Scene {
   const w = 84;
@@ -174,7 +174,7 @@ export function buildTown(): Scene {
     const st = BUILDING_STYLES[style];
     const dX = x + doorCol;
     const dY = y + bh - 1;
-    interactables.push({ x: dX, y: dY, type: st?.open ? 'board' : 'door', label: st?.open ? '鱼摊' : '进屋', target: st?.open ? undefined : 'room' });
+    interactables.push({ x: dX, y: dY, type: st?.open ? 'fishing' : 'door', label: st?.open ? '钓鱼' : '进屋', target: st?.open ? undefined : 'room' });
     if (solid[dY + 1]?.[dX] !== undefined) solid[dY + 1][dX] = false;
     if (st?.chimney) effects.push({ kind: 'chimneySmoke', x: x + chimneyCol, y: y + 1 });
   };

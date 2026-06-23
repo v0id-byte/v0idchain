@@ -6,11 +6,14 @@ import {
   MIN_FEE,
   sha256Hex,
   petTraits,
+  fishTraits,
 } from '@v0idchain/core/browser';
-import type { Pet, Wallet } from '@v0idchain/core/browser';
+import type { Pet, Catch, Wallet } from '@v0idchain/core/browser';
 import { api, waitConfirmed } from './api';
 import { loadOrCreateWallet, exportPrivateKey, shortAddr } from './wallet';
 import { renderPet, RARITY_LABEL } from './pet-render';
+import { renderFish, fishName } from './fish-render';
+import FishingModal from './FishingModal';
 import GameView from './game/GameView';
 import type { Interactable, FurnitureItem } from './engine/scene';
 import { DEFAULT_ROOM_FURNITURE } from './engine/scene';
@@ -39,6 +42,28 @@ function PetCard({ pet, size = 88 }: { pet: Pet; size?: number }) {
   );
 }
 
+function FishSprite({ catchHash, size = 88 }: { catchHash: string; size?: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (ref.current) renderFish(ref.current, catchHash, size);
+  }, [catchHash, size]);
+  return <canvas ref={ref} className="sprite" style={{ width: size, height: size }} />;
+}
+
+function FishCard({ fish, size = 88 }: { fish: Catch; size?: number }) {
+  const t = fish.traits;
+  return (
+    <div className={`pet-card rarity-${t.rarity}`}>
+      <FishSprite catchHash={fish.catchHash} size={size} />
+      <div className="pet-meta">
+        <span className={`tag tag-${t.rarity}`}>{RARITY_LABEL[t.rarity]}</span>
+        <strong style={{ fontSize: 12 }}>{fishName(t)}</strong>
+        <code title={fish.id}>{t.sizeCm}cm</code>
+      </div>
+    </div>
+  );
+}
+
 function FurnitureIcon({ kind, size = 30 }: { kind: string; size?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -59,12 +84,14 @@ function FurnitureIcon({ kind, size = 30 }: { kind: string; size?: number }) {
   return <canvas ref={ref} style={{ width: size, height: size, imageRendering: 'pixelated' }} />;
 }
 
-type Tab = 'wallet' | 'pets';
+type Tab = 'wallet' | 'pets' | 'fish';
 
 export default function App() {
   const wallet = useMemo<Wallet>(() => loadOrCreateWallet(), []);
   const [balance, setBalance] = useState<number | null>(null);
   const [pets, setPets] = useState<Pet[]>([]);
+  const [fish, setFish] = useState<Catch[]>([]);
+  const [fishingOpen, setFishingOpen] = useState(false);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('连接中…');
   const [busy, setBusy] = useState(false);
@@ -90,13 +117,15 @@ export default function App() {
   const [dirList, setDirList] = useState<{ address: string; name?: string }[]>([]);
 
   const refresh = useCallback(async () => {
-    const [b, ps, names] = await Promise.all([
+    const [b, ps, fs, names] = await Promise.all([
       api.balance(wallet.address).then((r) => r.balance).catch(() => null),
       api.pets(wallet.address).catch(() => [] as Pet[]),
+      api.fish(wallet.address).catch(() => [] as Catch[]),
       api.names().then((r) => r.addressToName).catch(() => ({}) as Record<string, string>),
     ]);
     setBalance(b);
     setPets(ps);
+    setFish(fs);
     setName(names[wallet.address] ?? '');
     return b;
   }, [wallet.address]);
@@ -167,6 +196,8 @@ export default function App() {
     } else if (it.type === 'board') {
       api.rooms().then(setDirList).catch(() => setDirList([]));
       setDirOpen(true);
+    } else if (it.type === 'fishing') {
+      setFishingOpen(true);
     }
   }, []);
 
@@ -248,7 +279,7 @@ export default function App() {
         furniture={furniture}
         theme={theme}
         editMode={editMode}
-        paused={menuOpen}
+        paused={menuOpen || fishingOpen}
         visit={visit ? { furniture: visit.furniture, theme: visit.theme } : null}
         onToggleMenu={() => setMenuOpen((o) => !o)}
         onInteract={onInteract}
@@ -300,11 +331,14 @@ export default function App() {
           <div className="menu" onClick={(e) => e.stopPropagation()}>
             <div className="menu-tabs">
               <button className={tab === 'pets' ? 'on' : ''} onClick={() => setTab('pets')}>崽</button>
+              <button className={tab === 'fish' ? 'on' : ''} onClick={() => setTab('fish')}>鱼篓</button>
               <button className={tab === 'wallet' ? 'on' : ''} onClick={() => setTab('wallet')}>钱包</button>
               <button className="menu-close" onClick={() => setMenuOpen(false)}>✕</button>
             </div>
             {tab === 'pets' ? (
               <PetsPanel pets={pets} balance={balance} busy={busy} onHatch={hatch} status={status} />
+            ) : tab === 'fish' ? (
+              <FishPanel fish={fish} onFish={() => { setMenuOpen(false); setFishingOpen(true); }} />
             ) : (
               <WalletPanel address={wallet.address} name={name} balance={balance} />
             )}
@@ -313,6 +347,14 @@ export default function App() {
       )}
       {dirOpen && (
         <DirectoryOverlay list={dirList} self={wallet.address} onVisit={visitRoom} onClose={() => setDirOpen(false)} />
+      )}
+      {fishingOpen && (
+        <FishingModal
+          wallet={wallet}
+          balance={balance}
+          onMinted={() => refresh().catch(() => {})}
+          onClose={() => setFishingOpen(false)}
+        />
       )}
     </div>
   );
@@ -446,6 +488,39 @@ function PetsPanel({
       <div className="pet-grid">
         {samples.map((g) => (
           <PetCard key={g} pet={{ id: g, gene: g, owner: '', minter: '', birthHeight: 0, birthTs: 0 }} size={72} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FishPanel({ fish, onFish }: { fish: Catch[]; onFish: () => void }) {
+  // 图鉴预览：几个本地随机 hash，展示稀有度与鱼种长相（与崽图鉴同套路）。
+  const samples = useMemo(() => Array.from({ length: 6 }, (_, i) => sha256Hex(`v0id-fish-sample-${i}`)), []);
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2>我的鱼篓</h2>
+        <button className="primary" onClick={onFish}>去钓鱼 🎣</button>
+      </div>
+      {fish.length === 0 ? (
+        <p className="empty">还没钓到链上藏品。去镇中心西端的鱼摊抛竿，钓中后可铸成链上渔获——鱼种由出块后的区块 hash 事后确定，谁也伪造不出传说鱼。</p>
+      ) : (
+        <div className="pet-grid">
+          {fish.map((f) => (
+            <FishCard key={f.id} fish={f} />
+          ))}
+        </div>
+      )}
+      <h3>图鉴 · 区块 hash 决定鱼种</h3>
+      <div className="pet-grid">
+        {samples.map((h) => (
+          <div key={h} className={`pet-card rarity-${fishTraits(h).rarity}`}>
+            <FishSprite catchHash={h} size={72} />
+            <div className="pet-meta">
+              <span className={`tag tag-${fishTraits(h).rarity}`}>{RARITY_LABEL[fishTraits(h).rarity]}</span>
+            </div>
+          </div>
         ))}
       </div>
     </div>
