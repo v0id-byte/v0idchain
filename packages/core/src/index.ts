@@ -12,3 +12,4 @@ export * from './names.js';
 export * from './redpacket.js';
 export * from './pets.js';
 export * from './fishing.js';
+export * from './farm.js';
