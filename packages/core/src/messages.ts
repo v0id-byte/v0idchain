@@ -5,6 +5,7 @@ import type { Block } from './block.js';
 import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX } from './config.js';
 import { PET_PREFIX, PETX_PREFIX } from './pets.js';
 import { FISH_PREFIX } from './fishing.js';
+import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
 
 export interface ChainMessage {
   txid: string;
@@ -22,8 +23,8 @@ export function isMessageTx(tx: { amount: number; burn?: number }): boolean {
 }
 
 /**
- * 某 memo 是否属于“协议层约定”（崽/红包/钓鱼等建在 memo 上的子系统），而非真人私信正文。
- * 这些子系统也会发出 `amount=0 + burn>0` 形态的交易（如孵崽 `PET|`、铸渔获 `FISH|` 都是自转烧币），
+ * 某 memo 是否属于“协议层约定”（崽/红包/钓鱼/农场等建在 memo 上的子系统），而非真人私信正文。
+ * 这些子系统也会发出 `amount=0 + burn>0` 形态的交易（如孵崽 `PET|`、铸渔获 `FISH|`、买地 `LAND|`/种植 `PLANT|` 都是自转烧币），
  * 与链上消息的形态撞型 → 不排除的话会被 parseMessages 误收进收件箱。集中在此判定，便于以后新增子系统时一处维护。
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）与 `NAME|`（抢注是 burn=0 的自转，
@@ -36,7 +37,12 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(RED_PREFIX) ||
     memo.startsWith(CLAIM_PREFIX) ||
     memo.startsWith(REFUND_PREFIX) ||
-    memo.startsWith(FISH_PREFIX)
+    memo.startsWith(FISH_PREFIX) ||
+    memo.startsWith(LAND_PREFIX) ||
+    memo.startsWith(ZONE_PREFIX) ||
+    memo.startsWith(PLANT_PREFIX) ||
+    memo.startsWith(HARVEST_PREFIX) ||
+    memo.startsWith(CROPX_PREFIX)
   );
 }
 
