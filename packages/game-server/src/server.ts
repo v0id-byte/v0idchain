@@ -2,7 +2,7 @@
 // CORS 放开（'*'）是安全的：本服务**不持有任何用户私钥**——/api/tx 只广播“已签名”交易（无特权），
 // /api/faucet 由限额+限速+全局上限把关（非 CORS）。这与节点本地 API（用节点私钥代签，必须锁 localhost）不同。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { isValidAddress, petsOf, parsePets, fishOf, parseFish } from '@v0idchain/core';
+import { isValidAddress, petsOf, parsePets, fishOf, parseFish, farmOf, parseFarm } from '@v0idchain/core';
 import type { Transaction } from '@v0idchain/core';
 import { PORT } from './config.js';
 import * as chain from './chain.js';
@@ -89,6 +89,13 @@ export function startServer(): ReturnType<typeof createServer> {
             const address = url.searchParams.get('address');
             const bc = await chain.snapshot();
             return json(200, address ? fishOf(bc.chain, address) : parseFish(bc.chain));
+          }
+          case '/api/farm': {
+            // 只读：扫链还原农场（parseFarm 过滤 LAND/ZONE/PLANT/HARVEST 自转烧币）+ 动态地价预算。
+            // 无写端点——买地/建区块/种植/收获均由客户端本地签名走 /api/tx（系统零增发）。
+            const address = url.searchParams.get('address');
+            const bc = await chain.snapshot();
+            return json(200, address ? farmOf(bc.chain, address) : parseFarm(bc.chain));
           }
           case '/api/room': {
             const address = url.searchParams.get('address') ?? '';
