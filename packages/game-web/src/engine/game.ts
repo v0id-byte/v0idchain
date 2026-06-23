@@ -229,13 +229,24 @@ export class GameEngine {
    *  把直立物件"焊"在地上、并暗示其落地而非浮空。cx/baseY=屏幕空间接地中心，footW=物体接地宽。 */
   private drawContactShadow(cx: number, baseY: number, footW: number) {
     const ctx = this.ctx;
-    const rx = Math.max(3, footW * 0.45);
-    const ry = Math.max(1.5, rx * 0.4);
+    const rx = Math.max(3, footW * 0.47);
+    const ry = Math.max(1.6, rx * 0.42);
     const off = Math.min(2, rx * 0.12); // 沿光反向（右下）偏移
+    const gx = cx + off;
+    const gy = baseY + off;
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.26)';
+    // 径向落差 blob：接触核心更实(α0.36)、向椭圆边缘渐隐到透明 ⇒ "站在地上"更读得出，
+    // 且渐隐天然避免均匀黑团（§7-B：接触越实越有 3D 感，但别糊成黑团）。
+    // 把坐标系按 ry/rx 竖向压扁后画圆形径向渐变 ⇒ 渐变沿椭圆形状均匀收到全透明。
+    ctx.translate(gx, gy);
+    ctx.scale(1, ry / rx);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+    g.addColorStop(0, 'rgba(0,0,0,0.36)');
+    g.addColorStop(0.6, 'rgba(0,0,0,0.24)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.ellipse(cx + off, baseY + off, rx, ry, 0, 0, Math.PI * 2);
+    ctx.arc(0, 0, rx, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
