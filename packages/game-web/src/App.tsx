@@ -157,14 +157,18 @@ export default function App() {
   const [rentOpen, setRentOpen] = useState(false);
   // 果子铸造浮层（选中的果子 slot）
   const [mintTarget, setMintTarget] = useState<InventorySlot | null>(null);
+  // 链上资产：已铸造的果子记录（从 feed 解析），房间所有权
+  const [mintedAssets, setMintedAssets] = useState<{ kind: string; count: number; ts: number }[]>([]);
+  const [roomOwnership, setRoomOwnership] = useState<{ type: 'rent' | 'buy'; expiryTs?: number } | null>(null);
 
   const refresh = useCallback(async () => {
-    const [b, ps, fs, fm, names] = await Promise.all([
+    const [b, ps, fs, fm, names, ownFeed] = await Promise.all([
       api.balance(wallet.address).then((r) => r.balance).catch(() => null),
       api.pets(wallet.address).catch(() => [] as Pet[]),
       api.fish(wallet.address).catch(() => [] as Catch[]),
       api.farm(wallet.address).catch(() => null),
       api.names().then((r) => r.addressToName).catch(() => ({}) as Record<string, string>),
+      api.feed(wallet.address, 200).catch(() => ({ events: [] as import('@v0idchain/core/browser').FeedEvent[] })),
     ]);
     setBalance(b);
     setPets(ps);
@@ -172,6 +176,33 @@ export default function App() {
     setFarm(fm);
     setName(names[wallet.address] ?? '');
     setNamesMap(names);
+
+    // 解析自己的 ROOM + FRUIT 链上记录
+    const msgs = ownFeed.events.filter((e) => e.type === 'message' && e.actor === wallet.address);
+    // 房间所有权（取最新一条 ROOM: 记录）
+    const roomTx = msgs.find((e) => e.text?.startsWith('ROOM:'));
+    if (roomTx?.text) {
+      const [, op, param] = roomTx.text.split(':'); // ROOM:RENT:7d or ROOM:BUY
+      if (op === 'BUY') {
+        setRoomOwnership({ type: 'buy' });
+      } else if (op === 'RENT' && param) {
+        const days = parseInt(param.replace('d', ''), 10) || 7;
+        setRoomOwnership({ type: 'rent', expiryTs: roomTx.timestamp + days * 86_400_000 });
+      }
+    } else {
+      setRoomOwnership(null);
+    }
+    // 已铸造果子（聚合 FRUIT:MINT 记录）
+    const fruitMap = new Map<string, { count: number; ts: number }>();
+    for (const e of msgs) {
+      if (!e.text?.startsWith('FRUIT:MINT:')) continue;
+      const [, , kind, countStr] = e.text.split(':');
+      if (!kind) continue;
+      const prev = fruitMap.get(kind) ?? { count: 0, ts: 0 };
+      fruitMap.set(kind, { count: prev.count + (parseInt(countStr, 10) || 1), ts: Math.max(prev.ts, e.timestamp) });
+    }
+    setMintedAssets(Array.from(fruitMap.entries()).map(([kind, v]) => ({ kind, ...v })));
+
     return b;
   }, [wallet.address]);
 
@@ -570,9 +601,30 @@ export default function App() {
     invTimer.current = setTimeout(() => setInvToast(false), 1800);
   }, []);
 
-  // depletedFruits / choppedTreesSet（稳定引用）
+  // depletedFruits / choppedTreesSet / gardenStateMap（稳定引用）
   const depletedFruits = useMemo(() => new Set(fruitDepletion.keys()), [fruitDepletion]);
   const choppedTreesSet = useMemo(() => new Set(choppedTrees.keys()), [choppedTrees]);
+  const gardenStateMap = useMemo<ReadonlyMap<string, { phase: string }>>(() => {
+    const m = new Map<string, { phase: string }>();
+    for (const [k, v] of gardenPlots) m.set(k, { phase: v.phase });
+    return m;
+  }, [gardenPlots]);
+
+  // 工具提示：根据 nearby 类型 + 当前选中工具推导上下文提示
+  const toolHint = useMemo(() => {
+    if (!nearby) return null;
+    const tk = inventory[hotbarSel]?.kind;
+    if (nearby.type === 'fishing') return tk === 'tool_rod' ? '🎣 E: 垂钓（消耗鱼竿）' : 'E: 垂钓';
+    if (nearby.type === 'fruit') return tk === 'tool_axe' ? `🪓 E: 砍树（消耗斧子）` : `E: ${nearby.label}`;
+    if (nearby.type === 'garden') {
+      if (tk === 'tool_hoe') return '⛏️ E: 翻土（消耗锄头）';
+      if (tk === 'tool_can') return '🪣 E: 浇水（消耗水桶）';
+      return 'E: 查看菜地';
+    }
+    if (nearby.type === 'rent') return 'E: 查看租售详情';
+    if (nearby.type === 'door') return `E: ${nearby.label}`;
+    return `E: ${nearby.label}`;
+  }, [nearby, inventory, hotbarSel]);
 
   // 任一浮层打开时引擎已暂停（paused）→ 同时隐藏触屏方向/交互键，避免遮挡弹窗。
   const anyOverlay = menuOpen || fishingOpen || !!farmAction || dirOpen || !!profileAddr || gardenOpen || rentOpen || !!mintTarget;
@@ -597,6 +649,7 @@ export default function App() {
         farm={farm}
         depletedFruits={depletedFruits}
         choppedTrees={choppedTreesSet}
+        gardenState={gardenStateMap}
         onToggleMenu={() => setMenuOpen((o) => !o)}
         onNearby={setNearby}
         onInteract={onInteract}
@@ -664,9 +717,13 @@ export default function App() {
         />
       ) : (
         <div className="hud-hint">
-          <span>WASD/方向键 移动</span>
-          <span>E 交互</span>
-          <span>Esc 菜单</span>
+          {toolHint
+            ? <span className="hud-tool-hint">{toolHint}</span>
+            : <>
+                <span>WASD/方向键 移动</span>
+                <span>E 交互</span>
+                <span>Esc 菜单</span>
+              </>}
           {status && status !== '就绪' ? <span className="hud-status">{busy ? <i className="spin" /> : null}{status}</span> : null}
         </div>
       )}
@@ -781,6 +838,13 @@ export default function App() {
             </div>
             <div className="panel">
               <p>此房为<strong>住宅单元</strong>，可租可买。拥有后可装修、发布、和其他玩家交易。</p>
+              {roomOwnership && (
+                <div className="rent-status">
+                  {roomOwnership.type === 'buy'
+                    ? '🏠 你已永久拥有此类房产'
+                    : `📅 租约到期：${new Date(roomOwnership.expiryTs ?? 0).toLocaleDateString('zh-CN')}`}
+                </div>
+              )}
               <div className="rent-grid">
                 <div className="rent-option">
                   <div className="rent-title">短租 · 1 周</div>
@@ -834,6 +898,18 @@ export default function App() {
                 </button>
                 <button onClick={() => setMintTarget(null)}>取消</button>
               </div>
+              {mintedAssets.length > 0 && (
+                <div style={{ marginTop: 12, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+                  <p className="note">已铸链上资产：</p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                    {mintedAssets.map((a) => (
+                      <span key={a.kind} className="garden-phase-badge">
+                        {a.kind} × {a.count}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {status && status !== '就绪' && <p className="note" style={{ marginTop: 8 }}>{status}</p>}
             </div>
           </div>
