@@ -339,3 +339,132 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
   .wallet-actions { flex-wrap: wrap; }
   .wallet-actions button, .editor-actions button, button.primary, .ghost-btn { min-height: 44px; }
 }
+
+/* ---- 名册项：点名字看主页 / 点「进去看看」串门（两枚内联按钮） ---- */
+.dir-name-btn, button.dir-go {
+  background: transparent; border: none; font: inherit; cursor: pointer; padding: 2px 0;
+}
+.dir-name-btn { font-weight: 600; color: var(--text); text-align: left; }
+.dir-name-btn:hover { color: var(--accent); }
+button.dir-go:hover { text-decoration: underline; }
+
+/* ---- 世界动态流（镇中心公告牌） ---- */
+.feed-list { display: flex; flex-direction: column; gap: 6px; }
+.feed-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  padding: 9px 12px; border-radius: 11px; font: inherit; text-align: left; cursor: pointer;
+}
+.feed-item:hover { border-color: var(--accent); }
+.feed-ico { font-size: 16px; flex: none; width: 20px; text-align: center; }
+.feed-txt { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-item .tag { flex: none; }
+.feed-ago { color: var(--muted); font-size: 11px; flex: none; }
+
+/* ---- 玩家主页（炫耀卡） ---- */
+.profile-card { display: flex; flex-direction: column; gap: 12px; }
+.pf-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pf-name { font-size: 18px; font-weight: 700; word-break: break-all; }
+.pf-badge {
+  font-size: 11px; padding: 3px 9px; border-radius: 999px; flex: none;
+  background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); font-weight: 600;
+}
+.pf-bal { font-size: 24px; font-weight: 700; color: var(--legendary); }
+.pf-bal em { font-size: 12px; font-style: normal; color: var(--muted); margin-left: 2px; }
+.pf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pf-stat {
+  display: flex; flex-direction: column; gap: 3px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px; padding: 9px 12px;
+}
+.pf-k { color: var(--muted); font-size: 12px; }
+.pf-v { font-size: 14px; font-weight: 600; }
+.pf-visit { align-self: flex-start; }
+
+/* ---- 钱包导入（用已有私钥登录） ---- */
+.wallet-import {
+  margin-top: 12px; padding: 12px; border-radius: 12px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.pk-input {
+  width: 100%; margin: 8px 0; padding: 9px 11px; border-radius: 9px;
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px; resize: vertical; word-break: break-all;
+}
+.pk-input:focus { outline: none; border-color: var(--accent); }
+.panel-status.err { color: #ff6b6b; }
+
+/* ---- 底部快捷栏（物品栏）---- */
+.hotbar {
+  position: absolute; bottom: calc(12px + var(--sa-b)); left: 50%; transform: translateX(-50%);
+  display: flex; gap: 4px; z-index: 10; pointer-events: auto;
+  background: rgba(16, 14, 24, .88); border: 1px solid var(--line);
+  border-radius: 14px; padding: 5px; backdrop-filter: blur(8px);
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+}
+.hotbar-slot {
+  width: 46px; height: 46px; border-radius: 10px; border: 1.5px solid var(--line);
+  background: var(--panel-2); display: flex; flex-direction: column; align-items: center;
+  justify-content: center; cursor: pointer; font: inherit; color: var(--text);
+  position: relative; transition: border-color .12s, background .12s;
+}
+.hotbar-slot:hover { border-color: var(--accent); background: var(--panel); }
+.hotbar-slot.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent); }
+.hotbar-slot.empty { opacity: .4; cursor: default; }
+.hotbar-icon { font-size: 22px; line-height: 1; }
+.hotbar-count {
+  position: absolute; bottom: 2px; right: 4px;
+  font-size: 10px; font-weight: 700; color: #fff;
+  text-shadow: 0 1px 2px #000;
+}
+.hotbar-num { color: var(--muted); font-size: 12px; font-weight: 600; }
+.hotbar-dur {
+  position: absolute; bottom: 3px; left: 4px; right: 4px; height: 3px;
+  background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden;
+}
+.hotbar-dur-fill { height: 100%; border-radius: 2px; transition: width .2s; }
+
+/* ---- 张力条增强（钓鱼 QTE）---- */
+.tension-danger {
+  animation: tensionShake .15s ease infinite;
+}
+@keyframes tensionShake {
+  0%,100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+.tension-zone-glow {
+  position: absolute; top: 0; bottom: 0;
+  background: rgba(76, 219, 122, .25);
+  animation: zoneBreath .8s ease infinite;
+  pointer-events: none;
+}
+@keyframes zoneBreath { 0%,100% { opacity: .7; } 50% { opacity: 1; } }
+.fish-hint.hint-good { color: #4cdb7a; font-weight: 600; }
+
+/* 触屏：快捷栏在 D-pad 上方 + 右侧居中 */
+@media (pointer: coarse) {
+  .hotbar {
+    bottom: calc(170px + var(--sa-b));
+    left: 50%; transform: translateX(-50%);
+  }
+}
+
+/* ── 菜地弹窗 ── */
+.garden-modal { max-width: 380px; }
+.garden-plot-detail { text-align: center; }
+.garden-phase-badge {
+  display: inline-block; padding: 4px 14px; border-radius: 20px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 13px; margin-bottom: 14px;
+}
+.garden-crops { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 8px; }
+
+/* ── 租售弹窗 ── */
+.rent-grid { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+.rent-option {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 16px; text-align: center; min-width: 110px; display: flex; flex-direction: column; gap: 8px;
+}
+.rent-option.rent-buy { border-color: #f4c43055; }
+.rent-title { font-size: 12px; color: var(--dim); }
+.rent-price { font-size: 18px; font-weight: 700; color: var(--acc); }

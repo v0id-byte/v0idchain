@@ -2,20 +2,25 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { GameEngine } from '../engine/game';
 import { buildRoom, buildTown, buildFarm, type Interactable, type FurnitureItem } from '../engine/scene';
+import { buildNpcRoom } from '../engine/npc-rooms';
 import type { RoomThemeId } from '../engine/tileset';
 import type { FarmView } from '@v0idchain/core/browser';
 
 interface Props {
   address: string;
   petGene: string | null;
+  petFollow?: boolean; // 自家场景跟随玩家；串门(false)时主人的崽静态摆基座
   furniture: FurnitureItem[];
   theme: RoomThemeId;
   editMode: boolean;
   paused: boolean;
   visit?: { furniture: FurnitureItem[]; theme: RoomThemeId } | null; // 串门:渲染他人(只读)房间
   farm?: FarmView | null; // 自家农场状态（buildFarm 用）
+  depletedFruits?: ReadonlySet<string>; // 已摘取的果树 id，传给 buildTown 过滤
+  choppedTrees?: ReadonlySet<string>;   // 已砍倒的果树 id，从 buildTown 移除
   onToggleMenu: () => void;
   onInteract: (it: Interactable) => void;
+  onNearby?: (it: Interactable | null) => void;
   onSceneChange?: (id: string) => void;
   onTileClick?: (tx: number, ty: number, sceneId: string) => void;
 }
@@ -32,6 +37,8 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
   const propsRef = useRef(props);
   propsRef.current = props;
   const sceneRef = useRef<string>('room');
+  // 进入 npc:* 房间时记录镇地图中该建筑门的坐标，出门回镇时在门口出现而非出生点
+  const entryDoorRef = useRef<{ x: number; y: number } | null>(null);
 
   useImperativeHandle(ref, () => ({
     setTouchDir: (dx, dy) => engineRef.current?.setTouchDir(dx, dy),
@@ -45,15 +52,31 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
       const v = propsRef.current.visit;
       return v ? buildRoom(v.furniture, v.theme) : buildRoom(propsRef.current.furniture, propsRef.current.theme);
     };
-    const buildScene = (id: string) =>
-      id === 'town' ? buildTown() : id === 'farm' ? buildFarm(propsRef.current.farm ?? null) : buildCurrentRoom();
+    const buildScene = (id: string, spawnOverride?: { x: number; y: number }) => {
+      if (id === 'town') return buildTown(propsRef.current.depletedFruits, propsRef.current.choppedTrees, spawnOverride);
+      if (id === 'farm') return buildFarm(propsRef.current.farm ?? null);
+      if (id.startsWith('npc:')) return buildNpcRoom(id.slice(4));
+      return buildCurrentRoom();
+    };
     const engine = new GameEngine(cv, props.address, {
       onToggleMenu: () => propsRef.current.onToggleMenu(),
+      onNearby: (it) => propsRef.current.onNearby?.(it),
       onInteract: (it) => {
         if (it.type === 'door' && it.target) {
-          sceneRef.current = it.target;
-          engine.setScene(buildScene(it.target));
-          propsRef.current.onSceneChange?.(it.target);
+          const target = it.target;
+          if (target.startsWith('npc:')) {
+            // 记录进入建筑的门坐标（镇地图坐标），出门时在此处生成
+            entryDoorRef.current = { x: it.x, y: it.y };
+          }
+          let spawnOverride: { x: number; y: number } | undefined;
+          if (target === 'town' && entryDoorRef.current) {
+            // 在建筑门口一格南侧出现，而不是回到镇中心出生点
+            spawnOverride = { x: entryDoorRef.current.x, y: entryDoorRef.current.y + 1 };
+            entryDoorRef.current = null;
+          }
+          sceneRef.current = target;
+          engine.setScene(buildScene(target, spawnOverride));
+          propsRef.current.onSceneChange?.(target);
         } else {
           propsRef.current.onInteract(it);
         }
@@ -63,6 +86,7 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
     sceneRef.current = 'room';
     engine.setScene(buildCurrentRoom());
     engine.setPetGene(props.petGene);
+    engine.setPetFollow(props.petFollow ?? true);
     engine.start();
     engineRef.current = engine;
     (window as unknown as { __goScene?: (id: string) => void }).__goScene = (id: string) => {
@@ -79,6 +103,9 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
   useEffect(() => {
     engineRef.current?.setPetGene(props.petGene);
   }, [props.petGene]);
+  useEffect(() => {
+    engineRef.current?.setPetFollow(props.petFollow ?? true);
+  }, [props.petFollow]);
   useEffect(() => {
     engineRef.current?.setEditMode(props.editMode);
   }, [props.editMode]);
@@ -101,6 +128,12 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
       engineRef.current.setScene(buildFarm(props.farm ?? null), false);
     }
   }, [props.farm]);
+  // 果树摘取/砍伐/再生变化时，若在镇中心则就地重建
+  useEffect(() => {
+    if (engineRef.current && sceneRef.current === 'town') {
+      engineRef.current.setScene(buildTown(props.depletedFruits, props.choppedTrees), false);
+    }
+  }, [props.depletedFruits, props.choppedTrees]);
 
   return <canvas ref={canvasRef} className="game-canvas" />;
 });

@@ -63,6 +63,10 @@ export class GameEngine {
   private time = 0; // 全局动画时钟（秒）；菜单暂停时仍推进，让世界保持呼吸
   private scale = 3;
   private petCanvas: HTMLCanvasElement | null = null;
+  private petFollowX = 0; // 宠物跟随位置（瓦片坐标）
+  private petFollowY = 0;
+  private petFollowInit = false; // 首帧/换场景时吸附到玩家身边，避免从老位置滑过来
+  private petFollowEnabled = true; // 自家场景跟随；串门(false)时主人的崽静态摆基座
   private cropCache = new Map<string, HTMLCanvasElement>(); // key = `${crop}|${hash}|${stage}` → 缓存的作物画布
   private others: OtherPlayer[] = [];
   private otherChar: CharFrames;
@@ -106,6 +110,7 @@ export class GameEngine {
     if (atSpawn) {
       this.px = scene.spawn.x + 0.5;
       this.py = scene.spawn.y + 0.5;
+      this.petFollowInit = false; // 真正切场景才重置（就地重建 atSpawn=false 不重置，免得农场刷新时宠物乱跳）
     }
     this.nearby = null;
   }
@@ -121,6 +126,11 @@ export class GameEngine {
     const c = document.createElement('canvas');
     renderPet(c, gene, this.scale * TILE);
     this.petCanvas = c;
+    this.petFollowInit = false; // 新崽 → 重新吸附到玩家身边
+  }
+  /** 自家场景跟随玩家；串门时传 false → 主人的崽静态摆在基座上。 */
+  setPetFollow(on: boolean) {
+    this.petFollowEnabled = on;
   }
   setOthers(list: OtherPlayer[]) {
     this.others = list;
@@ -173,6 +183,15 @@ export class GameEngine {
       const it = this.scene.interactables.find((i) => i.x === cx && i.y === cy);
       if (it) return it;
     }
+    // 水边感知：站在水岸格（任意 4 向邻格为 water）就可以垂钓
+    for (const [ox, oy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+      const nx = fx + ox;
+      const ny = fy + oy;
+      if (nx >= 0 && ny >= 0 && nx < this.scene.w && ny < this.scene.h
+          && this.scene.tiles[ny]?.[nx] === 'water') {
+        return { x: fx, y: fy, type: 'fishing', label: '垂钓' };
+      }
+    }
     return null;
   }
 
@@ -216,6 +235,20 @@ export class GameEngine {
       this.cb.onMove?.(this.px, this.py, this.dir, this.scene.id);
     } else {
       this.frame = 0;
+    }
+
+    // 宠物跟随：第一只崽吊在玩家身后——离太远就追、够近就停（自然拖尾，略慢于玩家）。串门时不跟随。
+    if (this.petCanvas && this.petFollowEnabled) {
+      if (!this.petFollowInit) { this.petFollowX = this.px; this.petFollowY = this.py + 0.9; this.petFollowInit = true; }
+      const dx = this.px - this.petFollowX;
+      const dy = this.py - this.petFollowY;
+      const dist = Math.hypot(dx, dy);
+      const GAP = 0.85; // 保持的身后间距
+      if (dist > GAP) {
+        const sp = 4.0 * Math.min(1, (dist - GAP) / 0.6); // 越远追越快，避免瞬移
+        this.petFollowX += (dx / dist) * sp * dt;
+        this.petFollowY += (dy / dist) * sp * dt;
+      }
     }
 
     const prev = this.nearby;
@@ -403,7 +436,20 @@ export class GameEngine {
         ds.push({ y: c.y, draw: () => { this.drawContactShadow(dx + S / 2, dy + S - 2, S * 0.42); ctx.drawImage(img, dx, dy, S, S); } });
       }
     }
-    if (this.petCanvas && this.scene.petAnchor) {
+    if (this.petCanvas && this.petFollowEnabled) {
+      // 跟随：画在 petFollowX/Y（任意场景）。移动时轻微上下浮动，给点活物感。
+      const fx = this.petFollowX;
+      const fy = this.petFollowY;
+      const bob = Math.abs(this.px - fx) + Math.abs(this.py - fy) > 0.06 ? Math.sin(this.time * 9) * 0.06 : 0;
+      ds.push({
+        y: fy,
+        draw: () => {
+          this.drawContactShadow(fx * S - camX + S / 2, (fy + 0.4) * S - camY, S * 0.5);
+          ctx.drawImage(this.petCanvas!, Math.round(fx * S - camX), Math.round((fy - 0.55 + bob) * S - camY), S, S);
+        },
+      });
+    } else if (this.petCanvas && this.scene.petAnchor) {
+      // 串门（不跟随）：主人的崽静态摆在基座上。
       const a = this.scene.petAnchor;
       ds.push({
         y: a.y,

@@ -10,7 +10,8 @@ export interface FurnitureItem {
   x: number;
   y: number;
 }
-export type InteractType = 'door' | 'pedestal' | 'board' | 'fishing' | 'plot' | 'crop';
+export type InteractType = 'door' | 'pedestal' | 'board' | 'fishing' | 'plot' | 'crop' | 'fruit' | 'garden' | 'rent';
+export type FruitKind = 'apple' | 'orange' | 'berry' | 'golden_apple';
 /** 农场交互附带的链上引用（onInteract 据此分发到买地/建区块/种植/收获动作）。 */
 export interface FarmRef {
   kind: 'buy' | 'plot' | 'slot' | 'crop'; // buy=买下一块地 / plot=空地块(建区块) / slot=田地空格(种植) / crop=作物(查看/收获)
@@ -26,8 +27,11 @@ export interface Interactable {
   y: number;
   type: InteractType;
   label: string;
-  target?: string; // door：目标场景 id
-  farm?: FarmRef; // plot/crop：农场链上引用
+  target?: string;    // door：目标场景 id
+  farm?: FarmRef;     // plot/crop：农场链上引用
+  fruitId?: string;   // fruit：唯一 id（用于缓存摘取状态）
+  fruitKind?: FruitKind; // fruit：果实种类
+  gardenId?: string;  // garden：公共菜地格位 id
 }
 /** 场景里要按成长阶段渲染的作物（引擎用 crop-render 画；纯展示，交互走同坐标的 Interactable）。 */
 export interface CropSprite {
@@ -129,7 +133,25 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
  * 中央石板广场(篝火/喷泉/名册牌) + 西北水塘(沙岸) + 开放式鱼摊 + 高树/路灯/栅栏。
  * 店门 → 回房间；广场名册牌 → 串门；鱼摊 → 钓鱼小游戏(QTE + 链上渔获)。确定性布局(自带 LCG)，刷新稳定。
  */
-export function buildTown(): Scene {
+const FRUIT_LABEL: Record<FruitKind, string> = { apple: '苹果', orange: '橙子', berry: '浆果', golden_apple: '黄金苹果' };
+
+// 固定果树位置（确认在草地上、远离建筑密集区）
+const FRUIT_SPOTS: { x: number; y: number; id: string; kind: FruitKind }[] = [
+  { x: 6, y: 20, id: 'fruit_nw', kind: 'apple' },
+  { x: 88, y: 20, id: 'fruit_ne', kind: 'orange' },
+  { x: 5, y: 47, id: 'fruit_w', kind: 'berry' },
+  { x: 90, y: 47, id: 'fruit_e', kind: 'apple' },
+  { x: 30, y: 28, id: 'fruit_cn', kind: 'orange' },
+  { x: 65, y: 28, id: 'fruit_ce', kind: 'berry' },
+  { x: 10, y: 63, id: 'fruit_sw', kind: 'apple' },
+  { x: 80, y: 63, id: 'fruit_se', kind: 'golden_apple' },
+];
+
+export function buildTown(
+  depletedFruits?: ReadonlySet<string>,
+  choppedTrees?: ReadonlySet<string>,
+  spawnOverride?: { x: number; y: number },
+): Scene {
   const w = 96; // 加宽:容下更松散的住宅区
   const h = 78; // 加高:南侧扩出一片带院子的住宅区
   const cx = Math.floor(w / 2);
@@ -197,7 +219,7 @@ export function buildTown(): Scene {
     const st = BUILDING_STYLES[style];
     const dX = x + doorCol;
     const dY = y + bh - 1;
-    interactables.push({ x: dX, y: dY, type: st?.open ? 'fishing' : 'door', label: st?.open ? '钓鱼' : '进屋', target: st?.open ? undefined : 'room' });
+    interactables.push({ x: dX, y: dY, type: st?.open ? 'fishing' : 'door', label: st?.open ? '钓鱼' : '进屋', target: st?.open ? undefined : `npc:${style}` });
     if (solid[dY + 1]?.[dX] !== undefined) solid[dY + 1][dX] = false;
     if (st?.chimney) effects.push({ kind: 'chimneySmoke', x: x + chimneyCol, y: y + 1 });
   };
@@ -353,7 +375,33 @@ export function buildTown(): Scene {
   for (const e of effects) if (e.kind !== 'chimneySmoke' && solid[e.y]?.[e.x] !== undefined) solid[e.y][e.x] = true;
   for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
 
-  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, spawn: { x: cx, y: streetY + 1 } };
+  // —— 水塘边钓鱼点（沙滩最南侧，可安全到达）——
+  const pondFishX = 22;
+  const pondFishY = 16;
+  if (tiles[pondFishY]?.[pondFishX] === 'sand' || tiles[pondFishY]?.[pondFishX] === 'grass') {
+    interactables.push({ x: pondFishX, y: pondFishY, type: 'fishing', label: '垂钓（水塘边）' });
+  }
+
+  // —— 果树交互点（固定位置；已摘/已砍均跳过）——
+  for (const spot of FRUIT_SPOTS) {
+    if (depletedFruits?.has(spot.id) || choppedTrees?.has(spot.id)) continue;
+    if (!tiles[spot.y]?.[spot.x] || solid[spot.y][spot.x]) continue;
+    interactables.push({ x: spot.x, y: spot.y, type: 'fruit', label: `摘${FRUIT_LABEL[spot.kind]}`, fruitId: spot.id, fruitKind: spot.kind });
+  }
+
+  // —— 公共菜地格位交互（后院菜圈变可交互）——
+  const gardenPositions: [number, number][] = [[9, swY + 3], [26, swY + 3], [w - 30, swY + 3], [w - 15, swY + 3]];
+  for (let pi = 0; pi < gardenPositions.length; pi++) {
+    const [gx, gy] = gardenPositions[pi];
+    for (let yy = gy; yy < gy + 2; yy++) {
+      for (let xx = gx; xx < gx + 4; xx++) {
+        const slot = (yy - gy) * 4 + (xx - gx);
+        interactables.push({ x: xx, y: yy, type: 'garden', label: '公共菜地', gardenId: `garden_${pi}_${slot}` });
+      }
+    }
+  }
+
+  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
 }
 
 /**
