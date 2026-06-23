@@ -150,6 +150,15 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             const r = node.marketDelist(String(body.id));
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
+          case '/tx/submit': {
+            // 广播一笔“客户端已签名”的交易（自托管钱包 / 游戏 web 端）。节点只校验+广播，绝不代签。
+            const tx = body.tx;
+            if (!tx || typeof tx !== 'object' || typeof tx.txid !== 'string' || typeof tx.signature !== 'string') {
+              return json(400, { error: '缺少或非法的 tx（需含 txid 与 signature 的已签名交易）' });
+            }
+            const r = node.acceptTx(tx as Parameters<typeof node.acceptTx>[0]);
+            return r.ok ? json(200, { ok: true, txid: tx.txid }) : json(400, { error: r.error });
+          }
         }
       }
 

@@ -435,6 +435,21 @@ export class V0idNode {
   }
 
   /**
+   * 接收一笔“外部已签名”的交易并广播 —— 给自托管钱包客户端（如游戏 web 端，经 HTTP /tx/submit 提交）用。
+   * 与 P2P 的 onTx 同一条入池路径（bc.addTransaction 做自洽 + 余额 + nonce 校验），区别仅是没有来源 peer 要排除，
+   * 故向全网广播。节点**只校验、不代签**：私钥始终只在客户端，节点伪造不了这笔交易。幂等：重复提交直接当成功。
+   */
+  acceptTx(tx: Transaction): { ok: boolean; error?: string } {
+    if (this.seenTx.has(tx.txid)) return { ok: true };
+    const r = this.bc.addTransaction(tx);
+    if (!r.ok) return { ok: false, error: r.error };
+    this.markSeen(tx.txid);
+    this.p2p.broadcast({ type: 'TX', tx });
+    this.persist();
+    return { ok: true };
+  }
+
+  /**
    * 按 txid 查这笔交易的确认状态（只读，供客户端轮询“处理中 → 已到账”）：
    *   confirmed = 已被打包进区块（附区块高度 / hash）
    *   pending   = 还在交易池里等矿工打包

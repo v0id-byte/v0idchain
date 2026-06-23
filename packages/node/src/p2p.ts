@@ -5,6 +5,9 @@ import { verify, addressToPublicKeyHex, type Block, type Transaction } from '@v0
 import { type Conn, WsConn } from './transport.js';
 import { RtcTransport, signalPayloadHex, type SignalMsg } from './rtc.js';
 
+/** ws 连接 + 保活标记。ws 自身的类型里没有 isAlive，按 ws 官方保活写法在此扩出来（避免 any）。详见 P2P.startHeartbeat。 */
+type KeepAliveWs = WebSocket & { isAlive?: boolean };
+
 /** 节点间消息协议 */
 export type P2PMessage =
   | { type: 'HELLO'; address: string; height: number; listen: string }
@@ -155,7 +158,9 @@ export class P2P {
 
   start(port: number): void {
     this.port = port;
-    this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD, pingInterval: 20_000 });
+    // 注意：不要给 WebSocketServer 传 pingInterval —— ws 的 ServerOptions 里没有这个选项（运行时会被
+    // 静默忽略、保活成 no-op，且 @types/ws 报 TS2353）。真正的 WS 保活见下面的 startHeartbeat。
+    this.wss = new WebSocketServer({ port, maxPayload: P2P.MAX_WS_PAYLOAD });
     // 端口被占等监听错误：给一行中文提示再退出，别甩 Node 堆栈
     this.wss.on('error', (e: NodeJS.ErrnoException) => {
       if (e.code === 'EADDRINUSE') {
@@ -165,12 +170,44 @@ export class P2P {
       throw e;
     });
     this.wss.on('connection', (ws) => this.setupSocket(ws));
+    this.startHeartbeat(this.wss); // WS 保活：周期性 ping/pong，剔除死连接 + 刷新弱网/热点下移动端的连接映射
     this.loadPeers(); // 读取上次保存的邻居表，种子挂了也能找到已知节点
     // 每 5s 尝试补连已知但未连上的节点（自愈 + 种子节点重连，掉线后快速回网）
     setInterval(() => this.reconnect(), 5_000).unref?.();
     // 每 60s 持久化一次邻居表（Bitcoin peers.dat 同款机制）
     setInterval(() => this.savePeers(), 60_000).unref?.();
     this.initRtc(); // 启用时异步加载 node-datachannel，让本节点也能 WebRTC 打洞
+  }
+
+  /**
+   * WebSocket 保活（ws 官方推荐写法）。
+   *
+   * 缘起：commit 43b7758「热点网络 WS 保活」本想给 WebSocketServer 传 `pingInterval` 选项做保活，
+   * 但 ws 的 ServerOptions 根本没有这个选项 —— 运行时被静默忽略（保活成了 no-op），还让 node 包的
+   * `typecheck` 报 TS2353。这里换成真正生效的官方写法。
+   *
+   * 机制：每 20s 给每条 inbound 连接发一个 WS 协议级 ping；对端 ws 库会自动回 pong，我们在连接的
+   * 'pong' 事件里把它标记为存活（见 setupSocket）。若某连接到了下一轮仍未回过 pong（isAlive===false），
+   * 判定为死连接并 terminate 掉。ping/pong 往返会在双向产生周期流量，从而刷新移动端(iOS/Android)在
+   * 热点/弱网下被中间设备(NAT/防火墙)维护的连接映射，避免空闲被静默掐断 —— 这正是 43b7758 的初衷。
+   *
+   * 只遍历 wss.clients（inbound 连接）：移动端通常是主动拨入种子的一侧，对种子而言即 inbound，已覆盖到
+   * 真正需要保活的链路；ping/pong 的双向流量也顺带让拨出方那一端的连接保活。
+   */
+  private startHeartbeat(wss: WebSocketServer): void {
+    const interval = setInterval(() => {
+      for (const ws of wss.clients) {
+        const ka = ws as KeepAliveWs;
+        if (ka.isAlive === false) {
+          ka.terminate(); // 上一轮 ping 后始终没回 pong → 判死，强制断开（terminate 不走关闭握手）
+          continue;
+        }
+        ka.isAlive = false; // 先置否，等本轮 ping 的 pong 回来再续命
+        ka.ping();
+      }
+    }, 20_000); // 20s：足够频繁地刷新典型 30–60s 的 NAT/防火墙空闲超时
+    interval.unref?.(); // 与 reconnect/savePeers 定时器一致：别让保活定时器吊住进程退出
+    wss.on('close', () => clearInterval(interval)); // 服务器关闭即停止保活
   }
 
   /** 是否已经连到某个对外地址（按对方广播的 listen 判断） */
@@ -251,6 +288,11 @@ export class P2P {
   private setupSocket(ws: WebSocket, dialedUrl?: string): void {
     const conn = new WsConn(ws);
     this.peers.set(conn, dialedUrl ? { listen: dialedUrl } : {});
+    // WS 保活：新连接先记为存活；之后每收到一个 pong（对 startHeartbeat 所发 ping 的自动回应）就续命，
+    // startHeartbeat 据此判定并剔除不再回 pong 的死连接（详见该方法）。
+    const ka = ws as KeepAliveWs;
+    ka.isAlive = true;
+    ws.on('pong', () => { ka.isAlive = true; });
     ws.on('message', (raw) => this.handle(conn, raw.toString()));
     ws.on('close', () => this.cleanup(conn, dialedUrl));
     ws.on('error', () => this.cleanup(conn, dialedUrl));
