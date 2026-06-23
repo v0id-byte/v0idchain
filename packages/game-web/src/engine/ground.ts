@@ -213,3 +213,17 @@ export function drawGroundTile(ctx: CanvasRenderingContext2D, name: string, dx: 
   const sy = (((ty % TEX) + TEX) % TEX) * ART;
   ctx.drawImage(tex, sx, sy, ART, ART, dx, dy, S, S);
 }
+
+/**
+ * 用外部 PNG 替换某地面种类的缓存纹理（将 16×16 像素图平铺成 128×128 无缝大纹理）。
+ * 在 loadMineSprites() 完成后调用，让 caveFloor/caveWall 切换到手绘资源。
+ */
+export function setGroundSprite(name: string, img: HTMLImageElement): void {
+  const [cv, ctx] = mk();
+  ctx.imageSmoothingEnabled = false;
+  const pat = ctx.createPattern(img, 'repeat');
+  if (!pat) return;
+  ctx.fillStyle = pat;
+  ctx.fillRect(0, 0, N, N);
+  cache.set(name, cv);
+}

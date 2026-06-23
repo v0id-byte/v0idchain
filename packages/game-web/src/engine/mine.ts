@@ -57,7 +57,10 @@ function buildFloor(depth: number): { floor: boolean[][]; up: { x: number; y: nu
     const targetX = Math.floor(W / 2 + Math.sin((roomY + depth) * 0.25) * 9);
     while (Math.abs(tx - targetX) + Math.abs(ty - up.y) > 4) {
       carve(floor, tx, ty, 1, 1);
-      if (hash01(depth, tx, ty, 7) < 0.55) tx += Math.sign(targetX - tx);
+      // force the axis that still has ground to cover; only use hash when both axes need movement
+      const needX = tx !== targetX;
+      const needY = ty !== up.y;
+      if (needX && (!needY || hash01(depth, tx, ty, 7) < 0.55)) tx += Math.sign(targetX - tx);
       else ty += Math.sign(up.y - ty);
       tx = Math.max(2, Math.min(W - 3, tx));
       ty = Math.max(2, Math.min(H - 3, ty));
