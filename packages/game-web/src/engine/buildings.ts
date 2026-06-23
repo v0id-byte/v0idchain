@@ -16,6 +16,7 @@ export interface BuildingItem {
   y: number;
   w: number;
   h: number;
+  variant?: number; // 门窗排布/屋顶形状的确定性变体（破除千篇一律）
 }
 
 export interface BuildingStyle {
@@ -292,13 +293,41 @@ function drawStall(ctx: CanvasRenderingContext2D, W: number, H: number, color: s
   }
 }
 
+// 正面歇山三角顶（改变剪影；峰在中顶 + 山墙小气窗）。
+function drawGableRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, color: string) {
+  const over = 3;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-over, roofH);
+  ctx.lineTo(W / 2, 1);
+  ctx.lineTo(W + over, roofH);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = shade(color, -24); // 右坡暗面
+  ctx.beginPath();
+  ctx.moveTo(W / 2, 1);
+  ctx.lineTo(W + over, roofH);
+  ctx.lineTo(W / 2, roofH);
+  ctx.closePath();
+  ctx.fill();
+  px(ctx, -over, roofH - 2, W + over * 2, 2, shade(color, -32)); // 檐影
+  ctx.strokeStyle = shade(color, 16); // 左坡屋脊高光
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-over, roofH);
+  ctx.lineTo(W / 2, 1);
+  ctx.stroke();
+  px(ctx, W / 2 - 2, roofH - 8, 4, 4, shade(color, -36)); // 山墙气窗
+  px(ctx, W / 2 - 1, roofH - 7, 2, 2, '#2a2a30');
+}
+
 const cache = new Map<string, HTMLCanvasElement>();
 
 /** 拼装某风格 w×h 建筑（按签名缓存）。门/窗需图集就绪;未就绪先出无门窗版,图集到位后自然重拼。 */
-export function buildingCanvas(styleId: string, w: number, h: number): HTMLCanvasElement {
+export function buildingCanvas(styleId: string, w: number, h: number, variant = 0): HTMLCanvasElement {
   const ready = atlasImage() !== null;
-  const key = `${styleId}-${w}x${h}-${ready ? 1 : 0}`;
-  const hit = cache.get(`${styleId}-${w}x${h}-1`);
+  const key = `${styleId}-${w}x${h}-${variant}-${ready ? 1 : 0}`;
+  const hit = cache.get(`${styleId}-${w}x${h}-${variant}-1`);
   if (hit) return hit; // 已有就绪版直接用
   const cached = cache.get(key);
   if (cached) return cached;
@@ -325,14 +354,28 @@ export function buildingCanvas(styleId: string, w: number, h: number): HTMLCanva
   if (s.wall === 'stone') drawStoneWall(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
   else drawTimberWall(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
 
-  // 上层窗排（偶数列），下层中央门
+  // —— 门窗布局随 variant 变化（破除千篇一律）：4 种窗列型 × 单/双层，门保持居中(与场景交互点一致) ——
   const { doorCol } = buildingMeta(w);
   const winRow = wallY + 4;
-  for (let c = 0; c < w; c++) if (c % 2 === 0) stamp(ctx, s.window, c * T, winRow);
+  const lowerRow = winRow + T + 2;
+  const twoFloor = h >= 5; // 高楼做两层窗
+  const pat = variant % 4;
+  const winAt = (c: number) =>
+    pat === 0 ? c % 2 === 0 :
+    pat === 1 ? c === 1 || c === w - 2 :
+    pat === 2 ? c % 2 === 1 :
+    c % 2 === 0 && c !== doorCol;
+  for (let c = 0; c < w; c++) {
+    if (!winAt(c)) continue;
+    stamp(ctx, s.window, c * T, winRow);
+    if (twoFloor) stamp(ctx, s.window, c * T, lowerRow);
+  }
   stamp(ctx, s.door, doorCol * T, H - T);
 
   if (s.awning) drawAwning(ctx, H - T - 6, W, s.awning); // 棚在门楣上方
-  drawRoof(ctx, W, roofH, s.roofColor); // 屋顶最后盖墙顶
+  // 屋顶形状随 variant：约半数(非店铺、够高)用正面歇山三角，改变剪影
+  if (Math.floor(variant / 4) % 2 === 1 && !s.awning && h >= 4) drawGableRoof(ctx, W, roofH, s.roofColor);
+  else drawRoof(ctx, W, roofH, s.roofColor);
   if (s.chimney) drawChimney(ctx, Math.round(W * 0.72), roofH);
   if (s.sign) drawSign(ctx, Math.round(W * 0.5), roofH + 1, s.sign);
 

@@ -323,7 +323,7 @@ export class GameEngine {
     }
     // 多瓦片建筑：整张拼装图按底边 y 站位（玩家可走到屋前/屋后）
     for (const b of this.scene.buildings) {
-      const img = buildingCanvas(b.style, b.w, b.h);
+      const img = buildingCanvas(b.style, b.w, b.h, b.variant ?? 0);
       const dx = Math.round(b.x * S - camX);
       const dy = Math.round(b.y * S - camY);
       ds.push({ y: b.y + b.h - 1, draw: () => ctx.drawImage(img, dx, dy, b.w * S, b.h * S) });

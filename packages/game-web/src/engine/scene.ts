@@ -168,7 +168,7 @@ export function buildTown(): Scene {
   // —— 放建筑助手(挡路 + 门/摊交互 + 门前留空 + 炊烟) ——
   const place = (style: string, x: number, y: number, bw: number, bh: number) => {
     if (x < 1 || x + bw > w - 1) return;
-    buildings.push({ style, x, y, w: bw, h: bh });
+    buildings.push({ style, x, y, w: bw, h: bh, variant: (x * 7 + bh * 3) % 8 });
     const { doorCol, chimneyCol } = buildingMeta(bw);
     for (let yy = y; yy < y + bh; yy++) for (let xx = x; xx < x + bw; xx++) if (solid[yy]?.[xx] !== undefined) solid[yy][xx] = true;
     const st = BUILDING_STYLES[style];
