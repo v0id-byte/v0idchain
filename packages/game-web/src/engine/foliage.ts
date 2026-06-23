@@ -98,7 +98,7 @@ export function treeCanvas(variant: number): HTMLCanvasElement {
         set(x, y, w > 0.58 ? p.light : w > 0.26 ? p.mid : p.dark);
         continue;
       }
-      if (y > H - 3 && Math.abs(x - cx) < ARTT * 1.0) set(x, y, [24, 34, 20], 70); // 落地阴影
+      // 落地阴影改由引擎统一的接触椭圆接管（game.ts drawContactShadow，§7-B），此处不再烤入竖条。
     }
   ctx.putImageData(img, 0, 0);
   cache.set(v, cv);

@@ -23,6 +23,8 @@ import { GROUND_KINDS, drawGroundTile } from './ground.js';
 import { treeCanvas, treeVariant, TREE_W, TREE_H } from './foliage.js';
 
 const SWAY_KINDS = new Set(['flower']); // 随风轻摆的装饰（绕底部中心微旋）
+const FLAT_KINDS = new Set(['rug', 'bed', 'fence']); // 贴地/铺地类家具：不画落地接触阴影（§7-B）
+const AIRBORNE_FX = new Set(['chimneySmoke', 'fishHang']); // 悬空动态物件：不落地，无接触阴影
 
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 const DELTA: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
@@ -223,6 +225,21 @@ export class GameEngine {
     this.ctx.drawImage(img, Math.round(x * S - w / 2 - camX), Math.round(y * S - hh - camY), w, hh);
   }
 
+  /** 落地接触阴影（RENDER-3D-FEEL §7-B）：物体脚下一枚半透明椭圆，中心沿光向反方向（右下）微偏，
+   *  把直立物件"焊"在地上、并暗示其落地而非浮空。cx/baseY=屏幕空间接地中心，footW=物体接地宽。 */
+  private drawContactShadow(cx: number, baseY: number, footW: number) {
+    const ctx = this.ctx;
+    const rx = Math.max(3, footW * 0.45);
+    const ry = Math.max(1.5, rx * 0.4);
+    const off = Math.min(2, rx * 0.12); // 沿光反向（右下）偏移
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.26)';
+    ctx.beginPath();
+    ctx.ellipse(cx + off, baseY + off, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   /** 昼夜光照 1=正午 0=午夜（~180s 一天，余弦平滑；起始为白天）。__daylight 可覆盖用于调试。 */
   private daylight(): number {
     const o = (window as unknown as { __daylight?: number }).__daylight;
@@ -300,6 +317,7 @@ export class GameEngine {
         ds.push({
           y: f.y,
           draw: () => {
+            this.drawContactShadow(bx, by, S * 0.95);
             ctx.save();
             ctx.translate(bx, by);
             ctx.rotate(swayAngle(this.time, f.x, f.y) * 0.5);
@@ -312,11 +330,13 @@ export class GameEngine {
       const coord = useAtlas ? furnitureCoord(f.kind, f.x, f.y) : undefined;
       const dx = Math.round(f.x * S - camX);
       const dy = Math.round(f.y * S - camY);
+      const flat = FLAT_KINDS.has(f.kind);
       if (coord) {
         const sway = SWAY_KINDS.has(f.kind);
         ds.push({
           y: f.y,
           draw: () => {
+            if (!flat) this.drawContactShadow(dx + S / 2, dy + S - S * 0.12, S * 0.62);
             if (sway) {
               // 绕格子底部中心微旋 ⇒ 随风轻摆，不破坏像素底对齐
               ctx.save();
@@ -331,7 +351,7 @@ export class GameEngine {
         });
       } else {
         const img = this.furniture[f.kind];
-        if (img) ds.push({ y: f.y, draw: () => ctx.drawImage(img, dx, dy, S, S) });
+        if (img) ds.push({ y: f.y, draw: () => { if (!flat) this.drawContactShadow(dx + S / 2, dy + S - S * 0.12, S * 0.62); ctx.drawImage(img, dx, dy, S, S); } });
       }
     }
     // 多瓦片建筑：整张拼装图按底边 y 站位（玩家可走到屋前/屋后）
@@ -339,7 +359,9 @@ export class GameEngine {
       const img = buildingCanvas(b.style, b.w, b.h, b.variant ?? 0);
       const dx = Math.round(b.x * S - camX);
       const dy = Math.round(b.y * S - camY);
-      ds.push({ y: b.y + b.h - 1, draw: () => ctx.drawImage(img, dx, dy, b.w * S, b.h * S) });
+      const bw = b.w * S;
+      const bh = b.h * S;
+      ds.push({ y: b.y + b.h - 1, draw: () => { this.drawContactShadow(dx + bw / 2, dy + bh - 2, bw * 0.92); ctx.drawImage(img, dx, dy, bw, bh); } });
     }
     // 动态物件（篝火/喷泉/灯…）：按 y 站位混入深度排序，玩家可走到其前后
     for (const e of this.scene.effects) {
@@ -350,7 +372,8 @@ export class GameEngine {
       const ph = phaseOf(e.x, e.y);
       // 炊烟在高空，永远画在最上层（不被屋顶/玩家盖住）
       const depth = e.kind === 'chimneySmoke' ? 1e6 : e.y;
-      ds.push({ y: depth, draw: () => drawer(ctx, dx, dy, S, this.time, ph) });
+      const grounded = !AIRBORNE_FX.has(e.kind);
+      ds.push({ y: depth, draw: () => { if (grounded) this.drawContactShadow(dx + S / 2, dy + S * 0.84, S * 0.72); drawer(ctx, dx, dy, S, this.time, ph); } });
     }
     // 农场作物：按成长阶段画（crop-render），底中心锚定本格底，按 y 深度排序混入。
     if (this.scene.crops) {
@@ -358,26 +381,36 @@ export class GameEngine {
         const img = this.cropImg(c);
         const dx = Math.round(c.x * S - camX);
         const dy = Math.round((c.y + 1) * S - camY - S); // 底对齐本格
-        ds.push({ y: c.y, draw: () => ctx.drawImage(img, dx, dy, S, S) });
+        ds.push({ y: c.y, draw: () => { this.drawContactShadow(dx + S / 2, dy + S - 2, S * 0.42); ctx.drawImage(img, dx, dy, S, S); } });
       }
     }
     if (this.petCanvas && this.scene.petAnchor) {
       const a = this.scene.petAnchor;
       ds.push({
         y: a.y,
-        draw: () => ctx.drawImage(this.petCanvas!, Math.round(a.x * S - camX), Math.round((a.y - 0.55) * S - camY), S, S),
+        draw: () => {
+          this.drawContactShadow(a.x * S - camX + S / 2, (a.y + 0.4) * S - camY, S * 0.5);
+          ctx.drawImage(this.petCanvas!, Math.round(a.x * S - camX), Math.round((a.y - 0.55) * S - camY), S, S);
+        },
       });
     }
     for (const o of this.others) {
       ds.push({
         y: o.y,
         draw: () => {
+          this.drawContactShadow(o.x * S - camX, o.y * S - camY, S * 0.5);
           this.drawCharSprite(this.otherChar[o.dir][0], o.x, o.y, camX, camY, S);
           if (o.name) this.drawNameTag('@' + o.name, o.x, o.y, camX, camY, S);
         },
       });
     }
-    ds.push({ y: this.py, draw: () => this.drawCharSprite(this.char[this.dir][this.moving ? this.frame : 0], this.px, this.py, camX, camY, S) });
+    ds.push({
+      y: this.py,
+      draw: () => {
+        this.drawContactShadow(this.px * S - camX, this.py * S - camY, S * 0.5);
+        this.drawCharSprite(this.char[this.dir][this.moving ? this.frame : 0], this.px, this.py, camX, camY, S);
+      },
+    });
     ds.sort((a, b) => a.y - b.y);
     for (const d of ds) d.draw();
 
