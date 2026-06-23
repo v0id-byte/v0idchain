@@ -161,6 +161,10 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .palette-item:hover { border-color: var(--accent); }
 .editor-pub { color: var(--text); font-size: 13px; margin-top: 8px; }
 
+/* 农场种植：作物选择器（横向 wrap，复用 palette-item 样式） */
+.crop-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.crop-pick canvas { image-rendering: pixelated; }
+
 /* ---- 钓鱼浮层 ---- */
 .fishing-menu { width: min(460px, 92vw); }
 .fish-score { margin-left: 12px; color: var(--muted); font-size: 12px; }

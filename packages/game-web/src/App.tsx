@@ -8,14 +8,15 @@ import {
   petTraits,
   fishTraits,
 } from '@v0idchain/core/browser';
-import type { Pet, Catch, Wallet } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView, Wallet } from '@v0idchain/core/browser';
 import { api, waitConfirmed } from './api';
 import { loadOrCreateWallet, exportPrivateKey, shortAddr } from './wallet';
 import { renderPet, RARITY_LABEL } from './pet-render';
 import { renderFish, fishName } from './fish-render';
 import FishingModal from './FishingModal';
+import { FarmPanel, FarmActionModal } from './FarmPanel';
 import GameView from './game/GameView';
-import type { Interactable, FurnitureItem } from './engine/scene';
+import type { Interactable, FurnitureItem, FarmRef } from './engine/scene';
 import { DEFAULT_ROOM_FURNITURE } from './engine/scene';
 import { FURNITURE_CATALOG, FURNITURE_TILES, ROOM_THEMES, type RoomThemeId } from './engine/tileset';
 import { loadAtlas, drawAtlasTile } from './engine/atlas';
@@ -84,20 +85,22 @@ function FurnitureIcon({ kind, size = 30 }: { kind: string; size?: number }) {
   return <canvas ref={ref} style={{ width: size, height: size, imageRendering: 'pixelated' }} />;
 }
 
-type Tab = 'wallet' | 'pets' | 'fish';
+type Tab = 'wallet' | 'pets' | 'fish' | 'farm';
 
 export default function App() {
   const wallet = useMemo<Wallet>(() => loadOrCreateWallet(), []);
   const [balance, setBalance] = useState<number | null>(null);
   const [pets, setPets] = useState<Pet[]>([]);
   const [fish, setFish] = useState<Catch[]>([]);
+  const [farm, setFarm] = useState<FarmView | null>(null);
   const [fishingOpen, setFishingOpen] = useState(false);
+  const [farmAction, setFarmAction] = useState<FarmRef | null>(null);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('连接中…');
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('pets');
-  const [scene, setScene] = useState<'room' | 'town'>('room');
+  const [scene, setScene] = useState<'room' | 'town' | 'farm'>('room');
   // 房间编辑
   const [furniture, setFurniture] = useState<FurnitureItem[]>(DEFAULT_ROOM_FURNITURE);
   const [theme, setTheme] = useState<RoomThemeId>('wood');
@@ -117,15 +120,17 @@ export default function App() {
   const [dirList, setDirList] = useState<{ address: string; name?: string }[]>([]);
 
   const refresh = useCallback(async () => {
-    const [b, ps, fs, names] = await Promise.all([
+    const [b, ps, fs, fm, names] = await Promise.all([
       api.balance(wallet.address).then((r) => r.balance).catch(() => null),
       api.pets(wallet.address).catch(() => [] as Pet[]),
       api.fish(wallet.address).catch(() => [] as Catch[]),
+      api.farm(wallet.address).catch(() => null),
       api.names().then((r) => r.addressToName).catch(() => ({}) as Record<string, string>),
     ]);
     setBalance(b);
     setPets(ps);
     setFish(fs);
+    setFarm(fm);
     setName(names[wallet.address] ?? '');
     return b;
   }, [wallet.address]);
@@ -198,11 +203,13 @@ export default function App() {
       setDirOpen(true);
     } else if (it.type === 'fishing') {
       setFishingOpen(true);
+    } else if ((it.type === 'plot' || it.type === 'crop') && it.farm) {
+      setFarmAction(it.farm); // 打开农场动作浮层（买地/建田地/种植/收获）
     }
   }, []);
 
   const onSceneChange = useCallback((id: string) => {
-    setScene(id as 'room' | 'town');
+    setScene(id as 'room' | 'town' | 'farm');
     if (id !== 'room') {
       setEditMode(false);
       setVisit(null); // 走出他人房间的门 → 退出串门
@@ -279,8 +286,9 @@ export default function App() {
         furniture={furniture}
         theme={theme}
         editMode={editMode}
-        paused={menuOpen || fishingOpen}
+        paused={menuOpen || fishingOpen || !!farmAction}
         visit={visit ? { furniture: visit.furniture, theme: visit.theme } : null}
+        farm={farm}
         onToggleMenu={() => setMenuOpen((o) => !o)}
         onInteract={onInteract}
         onSceneChange={onSceneChange}
@@ -294,7 +302,9 @@ export default function App() {
               ? `🏠 ${visit.name ? '@' + visit.name : shortAddr(visit.address)} 的房间 ${visit.verified ? '✓已验证' : '⚠未验证'}`
               : scene === 'room'
                 ? '🏠 我的房间'
-                : '🏙 镇中心'}
+                : scene === 'farm'
+                  ? '🌾 我的农场'
+                  : '🏙 镇中心'}
           </span>
           <span className="hud-bal">{balance === null ? '—' : balance} $V0ID</span>
           {name ? <span className="hud-name">@{name}</span> : <code className="hud-addr">{shortAddr(wallet.address)}</code>}
@@ -332,6 +342,7 @@ export default function App() {
             <div className="menu-tabs">
               <button className={tab === 'pets' ? 'on' : ''} onClick={() => setTab('pets')}>崽</button>
               <button className={tab === 'fish' ? 'on' : ''} onClick={() => setTab('fish')}>鱼篓</button>
+              <button className={tab === 'farm' ? 'on' : ''} onClick={() => setTab('farm')}>农场</button>
               <button className={tab === 'wallet' ? 'on' : ''} onClick={() => setTab('wallet')}>钱包</button>
               <button className="menu-close" onClick={() => setMenuOpen(false)}>✕</button>
             </div>
@@ -339,6 +350,8 @@ export default function App() {
               <PetsPanel pets={pets} balance={balance} busy={busy} onHatch={hatch} status={status} />
             ) : tab === 'fish' ? (
               <FishPanel fish={fish} onFish={() => { setMenuOpen(false); setFishingOpen(true); }} />
+            ) : tab === 'farm' ? (
+              <FarmPanel farm={farm} status={status} />
             ) : (
               <WalletPanel address={wallet.address} name={name} balance={balance} />
             )}
@@ -354,6 +367,16 @@ export default function App() {
           balance={balance}
           onMinted={() => refresh().catch(() => {})}
           onClose={() => setFishingOpen(false)}
+        />
+      )}
+      {farmAction && (
+        <FarmActionModal
+          action={farmAction}
+          farm={farm}
+          wallet={wallet}
+          balance={balance}
+          onDone={() => refresh().catch(() => {})}
+          onClose={() => setFarmAction(null)}
         />
       )}
     </div>
