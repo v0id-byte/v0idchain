@@ -210,6 +210,15 @@ export class GameEngine {
     this.ctx.drawImage(img, Math.round(x * S - w / 2 - camX), Math.round(y * S - hh - camY), w, hh);
   }
 
+  /** 昼夜光照 1=正午 0=午夜（~180s 一天，余弦平滑；起始为白天）。__daylight 可覆盖用于调试。 */
+  private daylight(): number {
+    const o = (window as unknown as { __daylight?: number }).__daylight;
+    if (typeof o === 'number') return o;
+    const cycle = 180;
+    const ph = ((this.time % cycle) / cycle) + 0.5;
+    return 0.5 - 0.5 * Math.cos(ph * Math.PI * 2);
+  }
+
   private render() {
     if (!this.scene) return;
     const ctx = this.ctx;
@@ -349,6 +358,38 @@ export class GameEngine {
     ds.push({ y: this.py, draw: () => this.drawCharSprite(this.char[this.dir][this.moving ? this.frame : 0], this.px, this.py, camX, camY, S) });
     ds.sort((a, b) => a.y - b.y);
     for (const d of ds) d.draw();
+
+    // —— 昼夜微循环：夜色罩 + 屋内暖灯 + 篝火/灯笼发光（仅室外场景有意义，室内无 buildings/光源照样安全）——
+    const dl = this.daylight();
+    if (dl < 0.985) {
+      const night = 1 - dl;
+      ctx.fillStyle = `rgba(22, 28, 66, ${0.52 * night})`;
+      ctx.fillRect(0, 0, cssW, cssH);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (const b of this.scene.buildings) {
+        const gx = (b.x + b.w / 2) * S - camX;
+        const gy = (b.y + b.h * 0.45) * S - camY;
+        const r = b.w * S * 0.55;
+        const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+        g.addColorStop(0, `rgba(255, 206, 120, ${0.3 * night})`);
+        g.addColorStop(1, 'transparent');
+        ctx.fillStyle = g;
+        ctx.fillRect(gx - r, gy - r, r * 2, r * 2);
+      }
+      for (const e of this.scene.effects) {
+        if (e.kind !== 'campfire' && e.kind !== 'lantern' && e.kind !== 'torch') continue;
+        const gx = (e.x + 0.5) * S - camX;
+        const gy = (e.y + 0.4) * S - camY;
+        const r = (e.kind === 'campfire' ? 2.6 : 1.7) * S;
+        const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+        g.addColorStop(0, `rgba(255, 176, 88, ${0.55 * night})`);
+        g.addColorStop(1, 'transparent');
+        ctx.fillStyle = g;
+        ctx.fillRect(gx - r, gy - r, r * 2, r * 2);
+      }
+      ctx.restore();
+    }
 
     if (this.editMode) {
       ctx.strokeStyle = 'rgba(139,109,255,.5)';
