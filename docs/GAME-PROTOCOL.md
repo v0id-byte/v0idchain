@@ -134,6 +134,11 @@ memo 放不下整间房，故：
 | --- | --- | --- | --- |
 | `PET_HATCH_COST` | `core/pets.ts` | 300 | 孵崽烧币额。崽贵以体现稀缺/炫耀价值。 |
 | `FISH_BURN` | `core/fishing.ts` | 2 | 铸渔获藏品烧币额。很小：高频娱乐，瞎钓不上链、想收藏才烧。 |
+| `LAND_BASE / LAND_K / LAND_P / LAND_VELOCITY_WINDOW` | `core/farm.ts` | 200 / 50 / 1.15 / 720 | 买地动态地价 bonding curve 参数（见 §7.3）；烧进虚空。 |
+| `ZONE_COST` | `core/farm.ts` | 100 | 建一个功能区块（田地）烧币额。 |
+| `SEED_COST[crop]` | `core/farm.ts` | 10/15/25/50 | 各作物种子烧币额（芜菁/小麦/南瓜/星之果）。 |
+| `GROW_BLOCKS[crop]` | `core/farm.ts` | 30/60/120/200 | 各作物成熟所需区块数（成长按区块高度推进）。 |
+| `HARVEST_BURN` | `core/farm.ts` | 2 | 收获烧币额。很小：成本主要在种子 + 地。 |
 | `FAUCET_AMOUNT` | game-server | 待定（人均多一些） | 单地址 faucet 额度。 |
 | `FAUCET_GLOBAL_CAP` | game-server | 待定 | faucet 全局总额上限（央行池由矿工把出块奖励指向央行地址缓慢回补）。 |
 
@@ -205,3 +210,79 @@ memo 放不下整间房，故：
 - 写：铸渔获由客户端**本地签名**走 `POST /api/tx`（`createMessage(wallet, wallet.address, 'FISH|', nonce, FISH_BURN, MIN_FEE)`），服务器零私钥、只转发。
 - 玩法：客户端 QTE（抛竿→咬钩→张力条收线）成功后弹结算卡：「留作纪念」（仅本地计数）/「铸成链上藏品」（上链）。
   鱼种由**上链后的** `catchHash` 事后确定 → 结算卡的本地预览仅作即时反馈，最终以链上真鱼为准。
+
+---
+
+## 7. 农场 / 土地（Stardew 式链上经济）：memo 约定 + 动态地价 + 确定性渲染
+
+定位：与崽（PET）/红包/钓鱼同级的**纯 memo 约定层**（`@v0idchain/core` 的 `farm.ts`），不改共识、无软分叉。
+经济闭环：**花币(烧进虚空) → 买地 / 建区块 / 种作物 → 按区块高度成长 → 收获链上收藏作物**；想回血只能 P2P 卖给别的玩家（Phase 2）。
+**系统零增发**：四种动作（买地/建区块/种植/收获）只烧币，绝不发币（不碰 faucet/央行私钥）。日常走动/装修预览是纯客户端，只有“落定”的动作才上链一次。
+详细设计见 `docs/ECONOMY-LAND-DESIGN.md`。
+
+### 7.1 链上约定（纯 memo，建在“自转 + 烧币 + memo”之上）
+四种动作都是玩家**本地签名**的一笔自转交易（`from === to`）+ 烧币（`burn > 0`）+ memo。旧节点眼里只是合法“自发消息”，照收 → 不软分叉。
+归属/状态由 `parseFarm(chain)` 还原（校验铁律仿 `parsePets`：`from===owner`、烧币额正确、引用的地/区块/作物**确属该 owner 且状态合法**，否则忽略）——全网一致、reorg 安全。
+
+| memo | 形态 | 烧币 | 校验要点 | 派生 id |
+| --- | --- | --- | --- | --- |
+| `LAND\|<n>` | 买地（解锁第 n 块专属农场地块） | `≥ landPrice(链上状态)` | `n` 必须**正好等于该 owner 下一个可买号**（从 0 起，禁跳号/重复）；烧 `≥` 当时动态地价 | `<owner>#<n>` |
+| `ZONE\|<plotN>\|<type>` | 在已解锁地块上建功能区 | `=== ZONE_COST` | `plotN` 须属于该 owner；`type ∈ {farmland, orchard}`（MVP 只实 farmland） | 该交易 txid |
+| `PLANT\|<zoneId>\|<crop>\|<slot>` | 在田地区块某格种作物 | `=== SEED_COST[crop]` | `zone` 须属该 owner 且为 `farmland`；`slot ∈ [0, ZONE_SLOTS)` 且当前为空 | 该交易 txid，记 `plantHeight = 所在区块号` |
+| `HARVEST\|<plantId>` | 收成熟作物 → 产出链上收藏作物 | `=== HARVEST_BURN` | `plant` 须属该 owner、未收获、且**已成熟**（`cropGrowth ≥ 1`） | 该交易 txid（= 收藏作物链上 id） |
+| `CROPX\|<cropId>\|<toAddr>` | 作物 P2P 转让 | — | **Phase 2**：先留前缀，本期 `parseFarm` 忽略（不改归属） | — |
+
+> ⚠️ **协议 memo 不入收件箱**：`LAND\|`/`ZONE\|`/`PLANT\|`/`HARVEST\|`/`CROPX\|` 形态上撞“链上私信”（`amount=0+burn>0`）。
+> `messages.ts` 的 `isProtocolMemo()` 已集中排除这些前缀，`parseMessages` 跳过 → 农场交易不会被误收进私信收件箱（同 `FISH\|`/`PET\|`/`RED\|` 等）。
+
+### 7.2 成长 = 区块高度确定性（无需“浇水”交易）
+作物把种植交易所在区块号记为 `plantHeight`。当前链高 `H` 时成熟度 `cropGrowth = clamp((H - plantHeight) / GROW_BLOCKS[crop], 0, 1)`。
+纯由链高算 → 全网/跨端一致、reorg 安全（链重组就重算）、无“时间”歧义。视觉阶段 `cropStage`：`0` 种子 / `1` 幼苗（≥0.25）/ `2` 成株未结果（≥0.66）/ `3` 成熟可收（≥1）。
+
+### 7.3 动态地价（随行情浮动的链上状态函数）
+地价 = **全网供需的确定性 bonding curve**（`landPrice(farmState)`）：人人同价、链上可复算、随行情走。
+
+```
+landPrice = ceil( LAND_BASE * (1 + soldTotal/LAND_K)^LAND_P * (1 + recentSales/LAND_VELOCITY_WINDOW) )
+  soldTotal   = parseFarm 还原的“全网已售地块总数”（卖得越多越稀缺 → 越贵）
+  recentSales = 最近 LAND_VELOCITY_WINDOW 个区块内售出地块数（最近抢得越凶 → 越贵，体现行情热度）
+  LAND_BASE=200 · LAND_K=50 · LAND_P=1.15 · LAND_VELOCITY_WINDOW=720 块
+```
+
+> 共识/复算关键：`parseFarm` 校验某笔买地时，用的是**截至该交易“之前”**的全网状态（`soldTotal` + 相对本块高度的窗口内成交数）算地价 → 买方可预测、各节点可复算、同块内多笔按交易数组顺序定胜负（确定性）。
+> 二级市场（已有地玩家间 P2P 转让，Phase 2 的 `CROPX`/`LANDX`）由卖方自由定价 → 直接的自由市场行情。
+
+### 7.4 防作弊（收成品质 = 出块后的区块 hash）
+收成品质源自不可伪造的随机源（同钓鱼 `catchHash` / 红包 `redSeed`）：
+```
+cropHash = sha256(owner + '|' + HARVEST交易所在区块hash + '|' + 该txid)
+```
+玩家改不了链上 txid 与区块 hash → **伪造不出黄金作物**。想刷好品质要再花种子 + 收获成本，且落进新的不可控区块 → **经济自带反作弊**。
+`crop`（种类）来自种植时记下的作物、**不入 hash**（种什么收什么）；品质/色相/巨型/重量全由 `cropHash` 推导。
+
+### 7.5 cropHash → 收成特征（`cropTraits(crop, cropHash)`，core 提供，全客户端共用 ⇒ 同 hash 处处同长相）
+
+| 字段 | 来源 | 取值 | 含义 |
+| --- | --- | --- | --- |
+| `crop` | 种植时记录 | turnip/wheat/pumpkin/starfruit | 作物种类（不入 hash） |
+| `quality` | `leadingZeroBits(cropHash)` | common/rare/epic/legendary | 品质（复用崽/鱼门槛：≥5/≥8/≥12 比特） |
+| `hue` | byte1/255×359 | 0–359 | 主色相（同品质同种内个体差异） |
+| `giant` | byte2 < 16 | bool | 巨型个体（约 1/16，结果阶段果实放大 1.25×） |
+| `weightG` | byte3 映射档位区间 | 80–4000 | 展示重量（克，越稀有越重） |
+
+品质中文标签：`common=普通 / rare=优质 / epic=稀有 / legendary=黄金`（与崽/鱼共用 `petRarity` 门槛，概率 `2⁻ᵏ`）。
+
+### 7.6 像素映射（客户端渲染规范，版本化）—— **Crop Render Spec v1**
+渲染 = 纯客户端、无需服务器/链存图（客户端 `renderCrop(crop, hash, size, stage)`，跨客户端须一致）：
+1. 画布 32×32，整数放大到展示尺寸（像素风，关闭抗锯齿）；底座一律画**泥畦**把作物“种”在土里。
+2. 按 `stage` 画成长：`0` 土里种子点 + 嫩芽 / `1` 矮茎单层叶 + 顶芽 / `2` 高茎双层叶 + 顶部叶团（未结果）/ `3` 成熟结果。
+3. 果实主色 = `hsl(CROP_HUE[crop] ± (hue%40−20), qSat, 56%)`，`qSat` 随品质升（62→70→78→88）越饱和明亮；高光/暗部按主色派生。
+4. 结果阶段按作物画果实：**南瓜**贴地大果带纵棱 + 蒂、**小麦**茎顶金穗 + 芒刺、**星之果**茎顶五角金星、**芜菁**（默认）茎顶圆根果 + 高光。
+5. `giant` 在结果阶段果实放大 1.25× 并加炫耀光点；`quality` **仅加外发光**点缀（rare 蓝 `#54a8ff` / epic 紫 `#b66bff` / legendary 金 `#ffce3d`），**且只在成熟阶段发光**（生长中不剧透品质），不改主体几何 → 不影响“同 hash 同外观”。
+
+> 改这张映射表 = bump 到 Crop Render Spec v2，并保证旧收成在新版仍稳定渲染（`cropHash` 不变、长相不应跳变）。`cropHash` 与 `cropTraits` 在 core 锁定，是“同 hash 任意客户端同外观”的根。
+
+### 7.7 服务端 / 客户端接口（只读 + 本地签名）
+- 只读：`GET /api/farm[?address=]` → `farmOf`（带 address，返回该地址的地块/区块/未收获作物/收成 + **当前动态地价 `landPrice` 预算** + 链高）/ `parseFarm`（不带，返回全网世界）。**无写端点**。
+- 写：买地/建区块/种植/收获均由客户端**本地签名**走 `POST /api/tx`（`createMessage(wallet, wallet.address, memo, nonce, burn, MIN_FEE)`，`memo`/`burn` 由 `makeLandBuy`/`makeZone`/`makePlant`/`makeHarvest` + §7.1 烧币额构造），服务器零私钥、只转发。买地前先用 `GET /api/farm` 拿当前 `landPrice` 作 `burn`。
+- 渲染/交互分离：农场场景 `buildFarm(farmView)` 把作物按 `cropStage` 画（走 `scene.crops`），动作走同坐标的交互点（`Interactable.farm: FarmRef`）→ `App.onInteract` 弹 `FarmActionModal`。
