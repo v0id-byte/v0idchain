@@ -169,11 +169,16 @@ function drawStoneWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: 
 // 坡瓦屋顶（横向出檐 + 瓦楞 + 屋脊 + 檐影），盖住墙顶。
 function drawRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, color: string) {
   const over = 3; // 出檐
-  px(ctx, -over, 0, W + over * 2, roofH, color);
-  for (let y = 3; y < roofH - 2; y += 3) px(ctx, -over, y, W + over * 2, 1, shade(color, -16)); // 瓦楞
-  for (let x = -over + 4; x < W + over; x += 6) px(ctx, x, 2, 1, roofH - 4, shade(color, 8)); // 竖瓦缝
-  px(ctx, -over, 0, W + over * 2, 2, shade(color, -38)); // 屋脊
-  px(ctx, -over, roofH - 2, W + over * 2, 2, shade(color, -28)); // 檐影
+  const cap = Math.max(2, Math.round(roofH * 0.22)); // 顶面厚度(cabinet 半深,薄)
+  px(ctx, -over, cap, W + over * 2, roofH - cap, color); // 正面坡
+  for (let y = cap + 3; y < roofH - 2; y += 3) px(ctx, -over, y, W + over * 2, 1, shade(color, -16)); // 瓦楞
+  for (let x = -over + 4; x < W + over; x += 6) px(ctx, x, cap + 2, 1, roofH - cap - 4, shade(color, 8)); // 竖瓦缝
+  // 顶面（受光、比正面坡更亮）+ 屋脊折线 ⇒ oblique「正面+一条顶面」体积线索（§7-E）
+  px(ctx, -over, 0, W + over * 2, cap, shade(color, 20)); // 顶面厚度
+  px(ctx, -over, 0, W + over * 2, 1, shade(color, 34)); // 顶面上沿高光
+  px(ctx, -over, cap, W + over * 2, 1, shade(color, -34)); // 屋脊折痕(顶面↔正面)
+  px(ctx, -over, roofH - 1, W + over * 2, 1, shade(color, 10)); // 檐口厚(前缘受光)
+  px(ctx, -over, roofH, W + over * 2, 1, shade(color, -34)); // 檐下 AO 暗线
 }
 
 // 条纹遮阳棚（店铺），扇贝下沿。
@@ -359,13 +364,16 @@ function drawGableRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, 
   ctx.lineTo(W / 2, roofH);
   ctx.closePath();
   ctx.fill();
-  px(ctx, -over, roofH - 2, W + over * 2, 2, shade(color, -32)); // 檐影
   ctx.strokeStyle = shade(color, 16); // 左坡屋脊高光
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(-over, roofH);
   ctx.lineTo(W / 2, 1);
   ctx.stroke();
+  // 檐口厚 + 檐下 AO（§7-E：补 oblique 体积线索，让歇山不像贴纸）
+  px(ctx, -over, roofH - 2, W + over * 2, 1, shade(color, 8)); // 檐口前缘(受光薄边)
+  px(ctx, -over, roofH - 1, W + over * 2, 1, shade(color, -34)); // 檐下 AO
+  px(ctx, W / 2 - 2, 1, 4, 2, shade(color, 26)); // 屋脊帽厚(受光)
   px(ctx, W / 2 - 2, roofH - 8, 4, 4, shade(color, -36)); // 山墙气窗
   px(ctx, W / 2 - 1, roofH - 7, 2, 2, '#2a2a30');
 }
@@ -398,8 +406,12 @@ function drawHipRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, co
   ctx.closePath();
   ctx.fill();
   for (let y = 4; y < roofH - 2; y += 3) px(ctx, topInset, y, W - topInset * 2, 1, shade(color, -14)); // 正坡瓦楞
-  px(ctx, topInset, 1, W - topInset * 2, 2, shade(color, 14)); // 屋脊高光
-  px(ctx, -over, roofH - 2, W + over * 2, 2, shade(color, -32)); // 檐影
+  // 屋脊顶面（受光薄顶面 cabinet 半深）+ 折痕 + 檐口厚 + 檐下 AO（§7-E）
+  px(ctx, topInset, 0, W - topInset * 2, 3, shade(color, 22)); // 顶面厚度(受光)
+  px(ctx, topInset, 0, W - topInset * 2, 1, shade(color, 34)); // 顶面上沿高光
+  px(ctx, topInset, 3, W - topInset * 2, 1, shade(color, -30)); // 屋脊折痕
+  px(ctx, -over, roofH - 2, W + over * 2, 1, shade(color, 8)); // 檐口前缘
+  px(ctx, -over, roofH - 1, W + over * 2, 1, shade(color, -34)); // 檐下 AO
 }
 
 // 平顶 + 女儿墙(parapet):矮顶带檐口与压顶线 ⇒ 排屋/平房剪影,与坡顶强烈对比。
@@ -407,8 +419,12 @@ function drawFlatRoof(ctx: CanvasRenderingContext2D, W: number, roofH: number, c
   const over = 2;
   const capH = Math.max(5, Math.round(roofH * 0.5)); // 女儿墙带高度(只占上半,露出墙体顶)
   px(ctx, -over, 0, W + over * 2, capH, color); // 压顶墙带
-  px(ctx, -over, 0, W + over * 2, 2, shade(color, 18)); // 压顶高光
-  px(ctx, -over, capH - 2, W + over * 2, 2, shade(color, -30)); // 压顶底影
+  // 压顶 coping 顶面（受光薄顶面 = 顶面厚度，§7-E）+ 上沿高光
+  px(ctx, -over, 0, W + over * 2, 2, shade(color, 24));
+  px(ctx, -over, 0, W + over * 2, 1, shade(color, 36));
+  px(ctx, -over, 2, W + over * 2, 1, shade(color, -28)); // coping 折痕(顶面↔正面)
+  px(ctx, -over, capH - 2, W + over * 2, 1, shade(color, -22)); // 压顶底影
+  px(ctx, -over, capH - 1, W + over * 2, 1, shade(color, -34)); // 压顶底 AO
   // 檐口齿(规则小垛口,强调平顶的水平线)
   for (let x = -over; x < W + over; x += 6) px(ctx, x, 0, 3, 1, shade(color, -22));
 }
