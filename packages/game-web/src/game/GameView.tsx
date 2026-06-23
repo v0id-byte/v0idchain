@@ -1,7 +1,7 @@
 // React ↔ 引擎的桥：建画布、起引擎、转交互/点击回调。门切场景在这里;编辑时家具/主题变化就地重建房间。
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { GameEngine } from '../engine/game';
-import { buildRoom, buildTown, buildFarm, type Interactable, type FurnitureItem, type GardenStateEntry } from '../engine/scene';
+import { buildRoom, buildTown, buildFarm, buildBeach, buildForest, buildNightMarket, buildRuins, type Interactable, type FurnitureItem, type GardenStateEntry } from '../engine/scene';
 import { buildNpcRoom } from '../engine/npc-rooms';
 import { buildMine, type MineLayerState } from '../engine/mine';
 import type { RoomThemeId } from '../engine/tileset';
@@ -58,6 +58,10 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
     const buildScene = (id: string, spawnOverride?: { x: number; y: number }) => {
       if (id === 'town') return buildTown(propsRef.current.depletedFruits, propsRef.current.choppedTrees, spawnOverride, propsRef.current.gardenState);
       if (id === 'farm') return buildFarm(propsRef.current.farm ?? null);
+      if (id === 'beach') return buildBeach();
+      if (id === 'forest') return buildForest();
+      if (id === 'nightmarket') return buildNightMarket();
+      if (id === 'ruins') return buildRuins();
       if (id.startsWith('mine:')) return buildMine(Number(id.slice(5)) || 1, propsRef.current.mineState ?? { mined: new Set(), openedChests: new Set(), defeatedMonsters: new Set() });
       if (id.startsWith('npc:')) return buildNpcRoom(id.slice(4));
       return buildCurrentRoom();
