@@ -108,9 +108,14 @@ function stamp(ctx: CanvasRenderingContext2D, coord: [number, number], dx: numbe
 }
 
 // 灰泥 + 木骨架墙（Tudor 风:角柱 + 上中下横梁 + 斜撑）。
+// 体积(克制版, RENDER-3D-FEEL §7-D)：底色保持灰泥亮色不变暗，立体靠"边缘"而非压暗大面——
+// 内墙field 顶部受光(+6) / 极淡底部暗带(-6) → 左上 rim 高光(+10) + 右侧极淡暗面(-7) + 底部 AO 暗线(-9)。
 function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, beam: string) {
   px(ctx, 0, y0, W, H, wall);
-  px(ctx, 1, y0 + 1, W - 2, H - 1, shade(wall, 6)); // 内墙提亮一点
+  px(ctx, 1, y0 + 1, W - 2, H - 1, shade(wall, 6)); // 内墙提亮一点(顶部受光基调)
+  // 极淡的上→下渐变：只把"靠近底部 ~28%"的内墙轻轻压暗一档(-6, 仍远高于 180)，整墙保持均匀亮。
+  const fade = Math.max(2, Math.round(H * 0.28));
+  px(ctx, 1, y0 + H - 1 - fade, W - 2, fade, shade(wall, -6));
   const b = 2;
   px(ctx, 0, y0, b, H, beam); // 左柱
   px(ctx, W - b, y0, b, H, beam); // 右柱
@@ -126,17 +131,30 @@ function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H:
     px(ctx, b + Math.floor((i / steps) * (W * 0.32)), yy, b, 1, beam);
     px(ctx, W - b - Math.floor((i / steps) * (W * 0.32)), yy, b, 1, beam);
   }
+  // —— 体积边缘(像素硬边, 1px)：左上受光 rim + 右侧极淡暗面 + 底部 AO ——
+  px(ctx, b, y0 + b, W - b * 2, 1, shade(wall, 10)); // 上沿 rim 高光(梁内侧, 受光)
+  px(ctx, b, y0 + b, 1, H - b * 2, shade(wall, 10)); // 左沿 rim 高光(左柱内侧)
+  px(ctx, W - b - 1, y0 + b, 1, H - b * 2, shade(wall, -7)); // 右沿极淡暗面(背光侧, 体积一丝)
+  px(ctx, 0, y0 + H - 1, W, 1, shade(beam, -16)); // 底梁下沿 AO 暗线(墙根压实, 焊在地上)
 }
 
-// 错缝石墙。
+// 错缝石墙。体积(克制版, §7-D)：石面底色保持亮色，靠边缘雕体积——
+// 顶部 rim 高光(+16) + 左沿 rim(+9) + 右沿极淡暗面(-7) + 底部 AO 暗线(-12)；底部 ~26% 极淡压暗(-6)。
 function drawStoneWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, seam: string) {
   px(ctx, 0, y0, W, H, wall);
+  // 极淡上→下渐变：仅底部 ~26% 轻压一档(-6, 灰泥石仍远高于 180)，整面保持均匀亮。
+  const fade = Math.max(2, Math.round(H * 0.26));
+  px(ctx, 0, y0 + H - fade, W, fade, shade(wall, -6));
   for (let ry = y0 + 4; ry < y0 + H; ry += 4) {
     px(ctx, 0, ry, W, 1, seam); // 横缝
     const off = (((ry - y0) / 4) % 2) * 4;
     for (let rx = off; rx < W; rx += 8) px(ctx, rx, ry - 3, 1, 3, shade(seam, 8)); // 错位竖缝
   }
-  px(ctx, 0, y0, W, 1, shade(wall, 16)); // 顶高光
+  // —— 体积边缘(1px 硬边)：左上受光 + 右侧极淡暗面 + 底部 AO ——
+  px(ctx, 0, y0, W, 1, shade(wall, 16)); // 顶高光(受光上沿)
+  px(ctx, 0, y0, 1, H, shade(wall, 9)); // 左沿 rim 高光(受光侧)
+  px(ctx, W - 1, y0, 1, H, shade(wall, -7)); // 右沿极淡暗面(背光侧, 体积一丝)
+  px(ctx, 0, y0 + H - 1, W, 1, shade(wall, -12)); // 墙根 AO 暗线(焊在地上)
 }
 
 // 坡瓦屋顶（横向出檐 + 瓦楞 + 屋脊 + 檐影），盖住墙顶。
