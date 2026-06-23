@@ -305,5 +305,15 @@ cropHash = sha256(owner + '|' + HARVEST交易所在区块hash + '|' + 该txid)
 
 ### 7.7 服务端 / 客户端接口（只读 + 本地签名）
 - 只读：`GET /api/farm[?address=]` → `farmOf`（带 address，返回该地址的地块/区块/未收获作物/收成 + **当前动态地价 `landPrice` 预算** + 链高）/ `parseFarm`（不带，返回全网世界）。**无写端点**。
-- 写：买地/建区块/种植/收获均由客户端**本地签名**走 `POST /api/tx`（`createMessage(wallet, wallet.address, memo, nonce, burn, MIN_FEE)`，`memo`/`burn` 由 `makeLandBuy`/`makeZone`/`makePlant`/`makeHarvest` + §7.1 烧币额构造），服务器零私钥、只转发。买地前先用 `GET /api/farm` 拿当前 `landPrice` 作 `burn`。
+- 写：买地/建区块/种植/收获均由客户端**本地签名**走 `POST /api/tx`（`createMessage(wallet, wallet.address, memo, nonce, burn, MIN_FEE)`，`memo`/`burn` 由 `makeLandBuy`/`makeZone`/`makePlant`/`makeHarvest` + §7.1 烧币额构造），服务器零私钥、只转发。买地前先用 `GET /api/farm` 拿当前 `landPrice`；**买地的 `burn` 取 `ceil(landPrice × 1.05)`（含市场波动缓冲，见 §7.8 H1）**，其余动作 `burn` 为固定常量。
 - 渲染/交互分离：农场场景 `buildFarm(farmView)` 把作物按 `cropStage` 画（走 `scene.crops`），动作走同坐标的交互点（`Interactable.farm: FarmRef`）→ `App.onInteract` 弹 `FarmActionModal`。
+
+### 7.8 边界与已知语义（上链动作可能被链状态拒绝，烧费不退）
+农场是「乐观提交、事后裁决」架构（同红包 CLAIM 的「占位扣 fee」）：一笔动作在**共识层**是合法的自转烧币交易，`burn` 真实进虚空；但 `parseFarm` 在**入块后**结合彼时链状态判定其是否「入账」。两者可能不一致——**链拒绝的那笔，烧费照样进虚空、不退**（不破零增发，但用户视角是「白烧」）。两处会发生：
+
+- **H1 · 买地价格竞态**：`landPrice` 随行情上涨（别人买地 → `soldTotal++` / 近窗 velocity↑）。若客户端按「拿价时的快照价」烧币，确认前涨价就会使 `burn < price` → `parseFarm` 忽略这笔买地，玩家烧了币却没拿到地、币不退。
+  **缓解（已实现）**：客户端买地烧 `ceil(landPrice × 1.05)` 的 **buffer**——`parseFarm` 只要求 `burn ≥ price`，故 5% 内涨价仍被接受，多烧部分照样进虚空（合法、不破零增发）。UI 文案标明「含市场波动缓冲」。注：`pricePaid` 记的是**当时权威地价**（非多烧额）。超过缓冲幅度的剧烈涨价仍可能被拒——这是 burn 模型的固有边界（彻底退款需共识级托管，超出 MVP）。
+- **H2 · 同格并发种植/收获**：同一 `(zoneId, slot)` 若有两笔 `PLANT`（多标签页 / 连点），或两笔 `HARVEST` 抢同一 plant，`parseFarm` 用**链序首胜**裁决（同块内按交易数组顺序、跨块按区块序）——只第一笔入账，**败者那笔被忽略、其 `SEED_COST`/`HARVEST_BURN` 烧费不退**。
+  **语义**：抢占失败烧费不退，鼓励避免冲突（与红包 CLAIM 同构）。**缓解**：客户端尽量前置校验（按 `farm.plants` 快照判该格已占用则不放种植交互点 / 提交后本地标记 pending 禁重复点），降低自撞概率；单人自家农场需手速并发才触发，属低概率 MVP 限制。
+
+> 共性：**「上链动作可能被链状态拒绝，且因 burn 模型烧费不退」**。`parseFarm` 的裁决纯函数、确定性、全网一致（不是分叉），但调用方/UI 应让用户知情，并尽量前置校验减少发生。

@@ -118,9 +118,14 @@ export function FarmActionModal({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
+  // H1 修复：买地烧的不是“快照价”，而是“当前价 × 1.05 向上取整”的 buffer。
+  // 地价是 parseFarm 入块时按截至该笔前的全网状态**重算**的（随行情上涨），快照价可能在确认前被别人买地推高；
+  // parseFarm 只要求 burn ≥ price，故在 5% 内涨价仍通过，多烧的部分照样全进虚空（合法、不破零增发）→ 避免“烧了币、没拿到地、币不退”。
+  const buyBurn = farm ? Math.ceil(farm.landPrice * 1.05) : 0;
+
   // 本动作的烧币额（用于余额校验与文案）
   const burnFor = (): number => {
-    if (action.kind === 'buy') return farm?.landPrice ?? 0;
+    if (action.kind === 'buy') return buyBurn;
     if (action.kind === 'plot') return ZONE_COST;
     if (action.kind === 'slot') return SEED_COST[crop];
     if (action.kind === 'crop') return HARVEST_BURN;
@@ -133,7 +138,7 @@ export function FarmActionModal({
   const buildMemo = (): { memo: string; burn: number } | null => {
     if (action.kind === 'buy') {
       const r = makeLandBuy(action.plotN ?? 0);
-      return r.ok && r.memo ? { memo: r.memo, burn } : null;
+      return r.ok && r.memo ? { memo: r.memo, burn: buyBurn } : null; // 多烧 5% buffer（见 buyBurn 注释）
     }
     if (action.kind === 'plot') {
       const r = makeZone(action.plotN ?? 0, 'farmland');
@@ -194,7 +199,9 @@ export function FarmActionModal({
             <>
               <p>向系统开垦你的第 <strong>#{action.plotN}</strong> 块专属农场地块。</p>
               <p className="note">地价随全网行情浮动（卖得越多、最近抢得越凶越贵），全网同价、链上可复算。开垦的币烧进虚空，系统不增发。</p>
-              <div className="kv"><span className="k">当前地价</span><span className="v">{burn} $V0ID（烧）</span></div>
+              <div className="kv"><span className="k">当前地价</span><span className="v">{farm?.landPrice ?? '—'} $V0ID</span></div>
+              <div className="kv"><span className="k">实际烧币</span><span className="v">{burn} $V0ID（烧）</span></div>
+              <p className="note">实际烧币 = 当前地价 ×1.05（<strong>含市场波动缓冲</strong>）：地价可能在确认前被别人买地推高，多烧 5% 缓冲可避免“涨价后开垦失效、烧币不退”。在缓冲内涨价仍成功，多烧部分照样进虚空。</p>
             </>
           )}
           {action.kind === 'plot' && (
