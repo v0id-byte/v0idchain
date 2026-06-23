@@ -12,8 +12,9 @@ import {
   type TileSet,
   type FurnitureKind,
 } from './sprites.js';
-import type { Scene, Interactable } from './scene.js';
+import type { Scene, Interactable, CropSprite } from './scene.js';
 import { renderPet } from '../pet-render.js';
+import { renderCrop } from '../crop-render.js';
 import { loadAtlas, atlasReady, drawAtlasTile } from './atlas.js';
 import { tileCoord, furnitureCoord } from './tileset.js';
 import { EFFECTS, drawWaterShimmer, swayAngle, phaseOf } from './effects.js';
@@ -60,6 +61,7 @@ export class GameEngine {
   private time = 0; // 全局动画时钟（秒）；菜单暂停时仍推进，让世界保持呼吸
   private scale = 3;
   private petCanvas: HTMLCanvasElement | null = null;
+  private cropCache = new Map<string, HTMLCanvasElement>(); // key = `${crop}|${hash}|${stage}` → 缓存的作物画布
   private others: OtherPlayer[] = [];
   private otherChar: CharFrames;
   private nearby: Interactable | null = null;
@@ -120,6 +122,17 @@ export class GameEngine {
   }
   setOthers(list: OtherPlayer[]) {
     this.others = list;
+  }
+  /** 取（或生成并缓存）某作物状态的画布。key 含 crop/hash/stage → 内容变才重画。 */
+  private cropImg(c: CropSprite): HTMLCanvasElement {
+    const key = `${c.crop}|${c.hash}|${c.stage}`;
+    let img = this.cropCache.get(key);
+    if (!img) {
+      img = document.createElement('canvas');
+      renderCrop(img, c.crop, c.hash, this.scale * TILE, c.stage);
+      this.cropCache.set(key, img);
+    }
+    return img;
   }
   setEditMode(b: boolean) {
     this.editMode = b;
@@ -338,6 +351,15 @@ export class GameEngine {
       // 炊烟在高空，永远画在最上层（不被屋顶/玩家盖住）
       const depth = e.kind === 'chimneySmoke' ? 1e6 : e.y;
       ds.push({ y: depth, draw: () => drawer(ctx, dx, dy, S, this.time, ph) });
+    }
+    // 农场作物：按成长阶段画（crop-render），底中心锚定本格底，按 y 深度排序混入。
+    if (this.scene.crops) {
+      for (const c of this.scene.crops) {
+        const img = this.cropImg(c);
+        const dx = Math.round(c.x * S - camX);
+        const dy = Math.round((c.y + 1) * S - camY - S); // 底对齐本格
+        ds.push({ y: c.y, draw: () => ctx.drawImage(img, dx, dy, S, S) });
+      }
     }
     if (this.petCanvas && this.scene.petAnchor) {
       const a = this.scene.petAnchor;

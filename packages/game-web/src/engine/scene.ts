@@ -3,19 +3,39 @@ import type { FurnitureKind } from './sprites.js';
 import type { EffectItem } from './effects.js';
 import { buildingMeta, BUILDING_STYLES, type BuildingItem } from './buildings.js';
 import { ROOM_THEMES, WALKABLE, type RoomThemeId } from './tileset.js';
+import { cropGrowth, cropStage, ZONE_SLOTS, type Crop, type FarmView } from '@v0idchain/core/browser';
 
 export interface FurnitureItem {
   kind: FurnitureKind;
   x: number;
   y: number;
 }
-export type InteractType = 'door' | 'pedestal' | 'board' | 'fishing';
+export type InteractType = 'door' | 'pedestal' | 'board' | 'fishing' | 'plot' | 'crop';
+/** 农场交互附带的链上引用（onInteract 据此分发到买地/建区块/种植/收获动作）。 */
+export interface FarmRef {
+  kind: 'buy' | 'plot' | 'slot' | 'crop'; // buy=买下一块地 / plot=空地块(建区块) / slot=田地空格(种植) / crop=作物(查看/收获)
+  plotN?: number; // plot/slot：所属地块号
+  zoneId?: string; // slot/crop：所属区块 id
+  slot?: number; // slot/crop：格位
+  plantId?: string; // crop：作物(plant) id
+  crop?: Crop; // crop：作物种类
+  ready?: boolean; // crop：是否已成熟可收
+}
 export interface Interactable {
   x: number;
   y: number;
   type: InteractType;
   label: string;
   target?: string; // door：目标场景 id
+  farm?: FarmRef; // plot/crop：农场链上引用
+}
+/** 场景里要按成长阶段渲染的作物（引擎用 crop-render 画；纯展示，交互走同坐标的 Interactable）。 */
+export interface CropSprite {
+  x: number;
+  y: number;
+  crop: Crop;
+  hash: string; // 已收获作物的 cropHash；未收获(生长中)用 plant id 当稳定占位 hash（仅决定生长中外观个体差异，不剧透品质）
+  stage: 0 | 1 | 2 | 3;
 }
 export interface Scene {
   id: string;
@@ -27,6 +47,7 @@ export interface Scene {
   effects: EffectItem[]; // 程序化动态物件（篝火/喷泉/灯…），按 y 深度排序与家具/玩家混排
   buildings: BuildingItem[]; // 多瓦片建筑（拼装器渲染），按底边 y 深度排序
   interactables: Interactable[];
+  crops?: CropSprite[]; // 农场作物（按成长阶段画，按 y 深度排序）
   spawn: { x: number; y: number };
   petAnchor?: { x: number; y: number }; // 崽站位（基座前）
 }
@@ -53,6 +74,7 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
   const w = 12;
   const h = 9;
   const doorX = 6;
+  const farmDoorX = 9; // 第二道门洞 → 去自家农场
   const tiles: string[][] = [];
   const solid: boolean[][] = [];
   for (let y = 0; y < h; y++) {
@@ -65,7 +87,7 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
         t = th.wallTop;
         s = true;
       } else if (y === h - 1) {
-        if (x === doorX) t = th.floor; // 门洞露地板
+        if (x === doorX || x === farmDoorX) t = th.floor; // 门洞露地板（镇中心 / 农场）
         else {
           t = th.wall;
           s = true;
@@ -94,6 +116,7 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
     buildings: [],
     interactables: [
       { x: doorX, y: h - 1, type: 'door', label: '去镇中心', target: 'town' },
+      { x: farmDoorX, y: h - 1, type: 'door', label: '去我的农场', target: 'farm' },
       { x: pedestal.x, y: pedestal.y, type: 'pedestal', label: '我的崽' },
     ],
     spawn: { x: doorX, y: h - 3 },
@@ -331,4 +354,124 @@ export function buildTown(): Scene {
   for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
 
   return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, spawn: { x: cx, y: streetY + 1 } };
+}
+
+/**
+ * 自家农场（户外草地 + 泥畦）。仿 buildRoom/buildTown 的纯几何布局，由 farm 状态确定性渲染：
+ * - 每块已解锁地块 = 一片围栏泥畦（一行 ZONE_SLOTS 个种植格）。地块上已建 farmland 区块 → 格位可种/已种/可收。
+ * - 未建区块的地块 → 一个 'plot' 交互点（建区块）。
+ * - 一个 'buy' 交互点（买下一块地，label 含动态地价）。
+ * - 作物按 cropGrowth → cropStage 画（CropSprite），同坐标放 'crop' 交互点（成熟→收获）。
+ * farm=null（尚未加载）时只画空地 + 买地入口。纯展示与交互分离：渲染走 scene.crops，动作走 interactables[].farm。
+ */
+export function buildFarm(farm: FarmView | null): Scene {
+  const w = 26;
+  const h = 20;
+  const tiles: string[][] = [];
+  const solid: boolean[][] = [];
+  for (let y = 0; y < h; y++) {
+    tiles[y] = [];
+    solid[y] = [];
+    for (let x = 0; x < w; x++) {
+      tiles[y][x] = 'grass';
+      solid[y][x] = false;
+    }
+  }
+  const furniture: FurnitureItem[] = [];
+  const interactables: Interactable[] = [];
+  const crops: CropSprite[] = [];
+  const effects: EffectItem[] = [];
+
+  const setT = (x: number, y: number, t: string) => { if (tiles[y]?.[x] !== undefined) tiles[y][x] = t; };
+
+  // 回房间的门（北墙中间一格栅栏门洞）+ 边界树
+  const gateX = Math.floor(w / 2);
+  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
+  for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+  // 门洞：清掉该格的边界树，铺小径
+  furniture.splice(furniture.findIndex((f) => f.x === gateX && f.y === 0), 1);
+  setT(gateX, 1, 'dirt');
+  interactables.push({ x: gateX, y: 1, type: 'door', label: '回房间', target: 'room' });
+
+  // 地块网格布局：每块占 (ZONE_SLOTS+2) 宽 × 4 高（含围栏 + 一行种植格），自上而下、左右排布。
+  const plotW = ZONE_SLOTS + 2;
+  const plotH = 4;
+  const cols = Math.max(1, Math.floor((w - 4) / plotW));
+  const startX = 2;
+  const startY = 3;
+
+  const plots = farm?.plots ?? [];
+  const zonesByPlot = new Map<number, string>(); // plotN → farmland zoneId（取第一个 farmland 区块）
+  for (const z of farm?.zones ?? []) if (z.type === 'farmland' && !zonesByPlot.has(z.plotN)) zonesByPlot.set(z.plotN, z.id);
+  // 未收获作物：zoneId|slot → plant
+  const plantBySlot = new Map<string, FarmView['plants'][number]>();
+  for (const p of farm?.plants ?? []) if (!p.harvested) plantBySlot.set(`${p.zoneId}|${p.slot}`, p);
+  const curH = farm?.height ?? 0;
+
+  plots.forEach((plot, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const px = startX + col * plotW;
+    const py = startY + row * plotH;
+    if (py + plotH >= h - 1) return; // 超出地图就不画（极端多地块时；MVP 够用）
+    // 泥畦 + 围栏
+    for (let yy = py; yy < py + 2; yy++) for (let xx = px; xx < px + ZONE_SLOTS; xx++) setT(xx, yy, 'dirt');
+    for (let xx = px - 1; xx <= px + ZONE_SLOTS; xx++) { furniture.push({ kind: 'fence', x: xx, y: py - 1 }); furniture.push({ kind: 'fence', x: xx, y: py + 2 }); }
+    for (let yy = py; yy < py + 2; yy++) { furniture.push({ kind: 'fence', x: px - 1, y: yy }); furniture.push({ kind: 'fence', x: px + ZONE_SLOTS, y: yy }); }
+
+    const zoneId = zonesByPlot.get(plot.n);
+    if (!zoneId) {
+      // 空地块（未建区块）：中间放一个建造交互点
+      interactables.push({
+        x: px + Math.floor(ZONE_SLOTS / 2), y: py, type: 'plot',
+        label: `地块 #${plot.n}：建田地`, farm: { kind: 'plot', plotN: plot.n },
+      });
+      return;
+    }
+    // 田地区块：每个种植格一个交互点 + 作物渲染
+    for (let s = 0; s < ZONE_SLOTS; s++) {
+      const sx = px + s;
+      const sy = py; // 作物种在畦的前排
+      const pl = plantBySlot.get(`${zoneId}|${s}`);
+      if (!pl) {
+        interactables.push({
+          x: sx, y: sy, type: 'plot',
+          label: '空格：种植', farm: { kind: 'slot', plotN: plot.n, zoneId, slot: s },
+        });
+      } else {
+        const g = cropGrowth(pl.plantHeight, curH, pl.crop);
+        const stage = cropStage(g);
+        const ready = g >= 1;
+        crops.push({ x: sx, y: sy, crop: pl.crop, hash: pl.id, stage }); // 生长中用 plant id 当占位 hash
+        interactables.push({
+          x: sx, y: sy, type: 'crop',
+          label: ready ? '成熟 · 收获' : `生长中 ${Math.floor(g * 100)}%`,
+          farm: { kind: 'crop', plotN: plot.n, zoneId, slot: s, plantId: pl.id, crop: pl.crop, ready },
+        });
+      }
+    }
+  });
+
+  // 买下一块地：放在已解锁地块网格“下一格”位置（或首块位置），label 含动态地价。
+  const nextI = plots.length;
+  const nbCol = nextI % cols;
+  const nbRow = Math.floor(nextI / cols);
+  const nbx = startX + nbCol * plotW + Math.floor(ZONE_SLOTS / 2);
+  const nby = startY + nbRow * plotH;
+  if (nby + plotH < h - 1) {
+    const price = farm?.landPrice;
+    interactables.push({
+      x: nbx, y: nby, type: 'plot',
+      label: price != null ? `开垦新地块（烧 ${price}）` : '开垦新地块',
+      farm: { kind: 'buy', plotN: farm?.nextPlotN ?? 0 },
+    });
+    furniture.push({ kind: 'deadTree', x: nbx, y: nby }); // 未开垦的荒地标记
+  }
+
+  // 碰撞：非可踩家具挡路；作物所在格可走（站上去按 E 收获）。
+  for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
+  // 但交互点所在格必须可达：清掉其碰撞（buy 的荒地标记除外——它在 interactable 同格之上，玩家从相邻格按 E）
+  for (const it of interactables) if (it.type !== 'door' && solid[it.y]?.[it.x] !== undefined && it.farm?.kind !== 'buy') solid[it.y][it.x] = false;
+
+  return { id: 'farm', w, h, tiles, solid, furniture, effects, buildings: [], interactables, crops, spawn: { x: gateX, y: 2 } };
 }
