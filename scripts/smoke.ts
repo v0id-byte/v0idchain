@@ -23,6 +23,11 @@ import {
   redSeed,
   RED_ESCROW_ADDRESS,
   RED_EXPIRY,
+  parsePets,
+  petsOf,
+  petGene,
+  petTraits,
+  makePetTransfer,
   buildListMemo,
   BUY_PREFIX,
   DEL_PREFIX,
@@ -450,6 +455,39 @@ check('发起人取回剩余（6 - 已领 - 退款费）', rf.balanceOf(alice.ad
 check('退款后该红包托管清零', rf.computeState().pools.get(rid)?.remaining === 0);
 check('退款后再抢被拒', !rf.addTransaction(createTransaction(C, C.address, 0, rf.nonceOf(C.address), 'CLAIM|' + rid, 1)).ok);
 check('退款链整链校验通过', Blockchain.validateChain(rf.chain).ok);
+
+console.log(`\n— 崽（PET NFT）：孵化(确定性基因) → 送崽(归属流转) → 越权拒绝 → 守恒 —`);
+const pet = new Blockchain();
+for (let i = 0; i < 9; i++) await pet.mine(alice.address); // alice 攒够 孵化(burn3+费1) + 送崽(1+费1) + 越权尝试(1+费1)
+// 孵化 = 自转 + 烧 burn 当孵化费 + memo `PET|`（这里用小额 burn=3 让测试快；真实客户端默认烧 PET_HATCH_COST）
+const hatch = createMessage(alice, alice.address, 'PET|', pet.nonceOf(alice.address), 3, 1);
+check('孵化交易自洽（签名/txid 合法）', verifyTransaction(hatch));
+check('孵化进池', pet.addTransaction(hatch).ok);
+await pet.mine(bob.address);
+let pets = parsePets(pet.chain);
+check('解析出 1 只崽，归属 = 孵化者 alice', pets.length === 1 && pets[0].owner === alice.address && pets[0].minter === alice.address);
+const petId = pets[0].id;
+const gene = pets[0].gene;
+check('基因 = hash(主人 + 孵化txid)（确定性、可复算）', gene === petGene(alice.address, petId));
+check('同一基因外观特征处处一致（PRD 6.5：任意客户端同基因同外观）', JSON.stringify(petTraits(gene)) === JSON.stringify(petTraits(gene)));
+check('不同孵化交易 → 不同基因（唯一）', petGene(alice.address, petId) !== petGene(alice.address, 'de'.repeat(32)));
+check('换个主人地址 → 基因不同（地址并入，防撞）', petGene(alice.address, petId) !== petGene(bob.address, petId));
+// 送崽：alice → bob（转 1 币 + memo PETX|崽id）
+const give = createTransaction(alice, bob.address, 1, pet.nonceOf(alice.address), makePetTransfer(petId).memo!);
+check('送崽交易进池', pet.addTransaction(give).ok);
+await pet.mine(bob.address);
+pets = parsePets(pet.chain);
+check('送崽后归属转移给 bob', pets[0].owner === bob.address);
+check('基因不随转手改变（还是同一只崽）', pets[0].gene === gene && pets[0].minter === alice.address);
+check('petsOf(bob) 含该崽、petsOf(alice) 不再含', petsOf(pet.chain, bob.address).some((p) => p.id === petId) && !petsOf(pet.chain, alice.address).some((p) => p.id === petId));
+// 越权转移：alice 已不是主人，再发 PETX 把崽转给别人 → 无效
+pet.addTransaction(createTransaction(alice, carol.address, 1, pet.nonceOf(alice.address), makePetTransfer(petId).memo!));
+await pet.mine(bob.address);
+check('非当前主人的转移无效（崽仍归 bob）', parsePets(pet.chain).find((p) => p.id === petId)?.owner === bob.address);
+// 守恒：孵化费烧进虚空，总账不丢
+const petSupply = [...pet.computeState().balances.values()].reduce((s, v) => s + v, 0);
+check('含崽的链全链守恒（孵化烧币记入虚空，总额 = 预挖 + 链高×奖励）', petSupply === GENESIS_PREMINE + pet.height * BLOCK_REWARD);
+check('含崽的链整链校验通过', Blockchain.validateChain(pet.chain).ok);
 
 console.log(`\n余额总览：`);
 console.log(`  央行预挖 ${bc.balanceOf(GENESIS_PREMINE_ADDRESS)} ${SYMBOL}`);
