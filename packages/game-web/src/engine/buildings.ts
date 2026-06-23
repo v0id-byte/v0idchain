@@ -2,6 +2,7 @@
 // Kenney 件:门 + 窗（坐标经 ?pick 读出）贴到手绘墙上 ⇒ 「Kenney 拼装 + 手绘部件」。
 // 一栋 = w×h 瓦片;离屏按 16px/格 原生分辨率拼装一次（按签名缓存），引擎关抗锯齿放大 ⇒ 像素清晰。
 import { atlasImage } from './atlas.js';
+import { rampHex } from './light.js';
 
 const T = 16; // 原生瓦片 px
 const STRIDE = 17; // 图集含 1px 间距
@@ -95,11 +96,8 @@ export function buildingMeta(w: number): { doorCol: number; chimneyCol: number }
   return { doorCol: Math.floor((w - 1) / 2), chimneyCol: w - 1 };
 }
 
-function shade(hex: string, d: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const c = (v: number) => Math.max(0, Math.min(255, v + d));
-  return `rgb(${c((n >> 16) & 255)},${c((n >> 8) & 255)},${c(n & 255)})`;
-}
+// hue-shift 版（§7-C / R9）：提亮偏暖、压暗偏冷，替代纯明度加减 ⇒ 建筑墙/屋顶/招牌全局通透。
+const shade = rampHex;
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, c: string) {
   ctx.fillStyle = c;
   ctx.fillRect(x, y, w, h);

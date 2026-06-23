@@ -2,6 +2,7 @@
 // 低艺术分辨率(每格 ART 像素) + 限定离散色板 + 4×4 有序抖动(Bayer dithering) + 全硬像素(无渐变/无抗锯齿) +
 // 最近邻放大。预渲染 8×8 格「无缝大纹理」(art-res)，各格 blit 子区、引擎关抗锯齿放大 ⇒ 清脆块状像素。
 // 大色块分布用可平铺低频噪声 ⇒ 8 格处无缝；细节(草簇/碎石/缝)用确定性硬像素。
+import { rampRGB } from './light.js';
 
 const ART = 16; // 每格艺术像素 = 星露谷规格(放大后块感正)
 const TEX = 8; // 大纹理边长(格)
@@ -39,7 +40,8 @@ function tileNoise(gridN: number): (fx: number, fy: number) => number {
 
 type RGB = [number, number, number];
 const css = (c: RGB) => `rgb(${c[0]},${c[1]},${c[2]})`;
-const shift = (c: RGB, d: number): RGB => [c[0] + d, c[1] + d, c[2] + d];
+// hue-shift 版（§7-C）：亮偏暖、暗偏冷，替代纯明度加减 ⇒ 鹅卵石等地面块顶亮底暗更通透。
+const shift = (c: RGB, d: number): RGB => rampRGB(c[0], c[1], c[2], d);
 
 function mk(): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const cv = document.createElement('canvas');
