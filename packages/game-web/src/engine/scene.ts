@@ -10,8 +10,37 @@ export interface FurnitureItem {
   x: number;
   y: number;
 }
-export type InteractType = 'door' | 'pedestal' | 'board' | 'fishing' | 'plot' | 'crop' | 'fruit' | 'garden' | 'rent';
+export type InteractType =
+  | 'door'
+  | 'pedestal'
+  | 'board'
+  | 'fishing'
+  | 'plot'
+  | 'crop'
+  | 'fruit'
+  | 'garden'
+  | 'rent'
+  | 'mine_rock'
+  | 'mine_ore'
+  | 'mine_chest'
+  | 'mine_monster';
+export type GardenStateEntry = { phase: string; crop?: Crop; stage?: 0 | 1 | 2 | 3; hash?: string };
 export type FruitKind = 'apple' | 'orange' | 'berry' | 'golden_apple';
+export interface MineRef {
+  kind: 'rock' | 'ore' | 'chest' | 'monster';
+  id: string;
+  depth: number;
+  x: number;
+  y: number;
+  oreKind?: string;
+}
+export interface MineObject {
+  kind: 'ore' | 'chest' | 'monster' | 'stairsDown' | 'stairsUp' | 'exit';
+  x: number;
+  y: number;
+  oreKind?: string;
+  variant?: number;
+}
 /** 农场交互附带的链上引用（onInteract 据此分发到买地/建区块/种植/收获动作）。 */
 export interface FarmRef {
   kind: 'buy' | 'plot' | 'slot' | 'crop'; // buy=买下一块地 / plot=空地块(建区块) / slot=田地空格(种植) / crop=作物(查看/收获)
@@ -32,6 +61,7 @@ export interface Interactable {
   fruitId?: string;   // fruit：唯一 id（用于缓存摘取状态）
   fruitKind?: FruitKind; // fruit：果实种类
   gardenId?: string;  // garden：公共菜地格位 id
+  mine?: MineRef;     // mine_*：矿洞破坏/拾取/轻战斗引用
 }
 /** 场景里要按成长阶段渲染的作物（引擎用 crop-render 画；纯展示，交互走同坐标的 Interactable）。 */
 export interface CropSprite {
@@ -52,6 +82,7 @@ export interface Scene {
   buildings: BuildingItem[]; // 多瓦片建筑（拼装器渲染），按底边 y 深度排序
   interactables: Interactable[];
   crops?: CropSprite[]; // 农场作物（按成长阶段画，按 y 深度排序）
+  mineObjects?: MineObject[]; // 矿洞对象（矿石/宝箱/怪物/楼梯），由引擎程序化绘制
   spawn: { x: number; y: number };
   petAnchor?: { x: number; y: number }; // 崽站位（基座前）
 }
@@ -147,11 +178,17 @@ const FRUIT_SPOTS: { x: number; y: number; id: string; kind: FruitKind }[] = [
   { x: 80, y: 63, id: 'fruit_se', kind: 'golden_apple' },
 ];
 
+function gardenHash(id: string): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16).padStart(8, '0').repeat(8);
+}
+
 export function buildTown(
   depletedFruits?: ReadonlySet<string>,
   choppedTrees?: ReadonlySet<string>,
   spawnOverride?: { x: number; y: number },
-  gardenState?: ReadonlyMap<string, { phase: string }>,
+  gardenState?: ReadonlyMap<string, GardenStateEntry>,
 ): Scene {
   const w = 96; // 加宽:容下更松散的住宅区
   const h = 78; // 加高:南侧扩出一片带院子的住宅区
@@ -327,12 +364,16 @@ export function buildTown(
   for (const [px, py, k] of [[cx - 5, streetY + 1, 'barrel'], [cx - 4, streetY + 1, 'crate'], [cx + 5, streetY + 1, 'crate'], [cx + 6, streetY + 1, 'barrel']] as [number, number, string][])
     furniture.push({ kind: k, x: px, y: py });
 
-  // 后院菜圃(围栏 + 土畦 + 作物花;放清理后免被剔除)。读作房前/屋后的小园子。
-  for (const [gx, gy] of [[9, swY + 3], [26, swY + 3], [w - 30, swY + 3], [w - 15, swY + 3]] as [number, number][]) {
-    for (let yy = gy; yy < gy + 2; yy++) for (let xx = gx; xx < gx + 4; xx++) setT(xx, yy, 'dirt');
-    for (let xx = gx - 1; xx <= gx + 4; xx++) { furniture.push({ kind: 'fence', x: xx, y: gy - 1 }); furniture.push({ kind: 'fence', x: xx, y: gy + 2 }); }
-    for (let yy = gy; yy < gy + 2; yy++) { furniture.push({ kind: 'fence', x: gx - 1, y: yy }); furniture.push({ kind: 'fence', x: gx + 4, y: yy }); }
-    for (let yy = gy; yy < gy + 2; yy++) for (let xx = gx; xx < gx + 4; xx++) if (((xx + yy) & 1) === 0) furniture.push({ kind: 'flower', x: xx, y: yy });
+  // 公共田地（两块开放大农场，无围栏；8×3 格，可直接走入种地）
+  const farmBlocks: [number, number, number, number][] = [
+    [4, swY + 3, 8, 3],      // 左侧公共田地
+    [w - 12, swY + 3, 8, 3], // 右侧公共田地
+  ];
+  for (const [fx, fy, fw, fh] of farmBlocks) {
+    for (let yy = fy; yy < fy + fh; yy++) for (let xx = fx; xx < fx + fw; xx++) setT(xx, yy, 'dirt');
+    // 四角路灯标识（装饰，不挡路）
+    effects.push({ kind: 'lantern', x: fx - 1, y: fy - 1 });
+    effects.push({ kind: 'lantern', x: fx + fw, y: fy - 1 });
   }
 
   // —— 南侧住宅区:带院子的多户型住宅,宽松网格排布(美式 suburb 留白) ——
@@ -390,27 +431,27 @@ export function buildTown(
     interactables.push({ x: spot.x, y: spot.y, type: 'fruit', label: `摘${FRUIT_LABEL[spot.kind]}`, fruitId: spot.id, fruitKind: spot.kind });
   }
 
-  // —— 公共菜地格位交互 + 作物可见（后院菜圈）——
-  const gardenPositions: [number, number][] = [[9, swY + 3], [26, swY + 3], [w - 30, swY + 3], [w - 15, swY + 3]];
-  for (let pi = 0; pi < gardenPositions.length; pi++) {
-    const [gx, gy] = gardenPositions[pi];
-    for (let yy = gy; yy < gy + 2; yy++) {
-      for (let xx = gx; xx < gx + 4; xx++) {
-        const slot = (yy - gy) * 4 + (xx - gx);
+  // —— 公共田地格位交互 + 作物精灵（两块开放农场）——
+  const townCrops: CropSprite[] = [];
+  for (let pi = 0; pi < farmBlocks.length; pi++) {
+    const [fx, fy, fw, fh] = farmBlocks[pi];
+    for (let row = 0; row < fh; row++) {
+      for (let col = 0; col < fw; col++) {
+        const slot = row * fw + col;
         const gardenId = `garden_${pi}_${slot}`;
-        interactables.push({ x: xx, y: yy, type: 'garden', label: '公共菜地', gardenId });
-        const phase = gardenState?.get(gardenId)?.phase;
-        if (phase === 'planted' || phase === 'watered') {
-          furniture.push({ kind: 'flower', x: xx, y: yy }); // 幼苗/已浇水（花朵可踩）
-        } else if (phase === 'ready') {
-          furniture.push({ kind: 'plant', x: xx, y: yy }); // 成熟（大植物）
-          if (solid[yy]?.[xx] !== undefined) solid[yy][xx] = false; // 成熟作物仍可交互，不挡路
+        const xx = fx + col;
+        const yy = fy + row;
+        const entry = gardenState?.get(gardenId);
+        const phase = entry?.phase ?? 'empty';
+        interactables.push({ x: xx, y: yy, type: 'garden', label: '公共田地', gardenId });
+        if (entry?.crop && phase !== 'empty' && entry.stage !== undefined) {
+          townCrops.push({ x: xx, y: yy, crop: entry.crop, hash: entry.hash ?? gardenHash(gardenId), stage: entry.stage });
         }
       }
     }
   }
 
-  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
+  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, crops: townCrops, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
 }
 
 /**

@@ -1,7 +1,7 @@
 // React ↔ 引擎的桥：建画布、起引擎、转交互/点击回调。门切场景在这里;编辑时家具/主题变化就地重建房间。
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { GameEngine } from '../engine/game';
-import { buildRoom, buildTown, buildFarm, type Interactable, type FurnitureItem } from '../engine/scene';
+import { buildRoom, buildTown, buildFarm, type Interactable, type FurnitureItem, type GardenStateEntry } from '../engine/scene';
 import { buildNpcRoom } from '../engine/npc-rooms';
 import type { RoomThemeId } from '../engine/tileset';
 import type { FarmView } from '@v0idchain/core/browser';
@@ -18,7 +18,7 @@ interface Props {
   farm?: FarmView | null; // 自家农场状态（buildFarm 用）
   depletedFruits?: ReadonlySet<string>; // 已摘取的果树 id，传给 buildTown 过滤
   choppedTrees?: ReadonlySet<string>;   // 已砍倒的果树 id，从 buildTown 移除
-  gardenState?: ReadonlyMap<string, { phase: string }>; // 菜地格状态，控制作物可见
+  gardenState?: ReadonlyMap<string, GardenStateEntry>; // 田地格状态（阶段/作物/精灵）
   onToggleMenu: () => void;
   onInteract: (it: Interactable) => void;
   onNearby?: (it: Interactable | null) => void;

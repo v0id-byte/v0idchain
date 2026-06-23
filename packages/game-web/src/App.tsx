@@ -9,7 +9,7 @@ import {
   fishTraits,
   NULL_ADDRESS,
 } from '@v0idchain/core/browser';
-import type { Pet, Catch, FarmView, Wallet, FeedEvent } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView, Wallet, FeedEvent, Crop } from '@v0idchain/core/browser';
 import { api, waitConfirmed } from './api';
 import { loadOrCreateWallet, exportPrivateKey, importPrivateKey, shortAddr } from './wallet';
 import { TownBoard, ProfileOverlay, MyProfilePanel } from './Social';
@@ -20,11 +20,37 @@ import { FarmPanel, FarmActionModal } from './FarmPanel';
 import GameView, { type GameHandle } from './game/GameView';
 import TouchControls from './TouchControls';
 import Hotbar, { DEFAULT_INVENTORY, type InventorySlot } from './Hotbar';
-import type { Interactable, FurnitureItem, FarmRef, FruitKind } from './engine/scene';
+import type { Interactable, FurnitureItem, FarmRef, FruitKind, GardenStateEntry } from './engine/scene';
 import { DEFAULT_ROOM_FURNITURE } from './engine/scene';
 import { FURNITURE_CATALOG, FURNITURE_TILES, ROOM_THEMES, type RoomThemeId } from './engine/tileset';
 import { loadAtlas, drawAtlasTile } from './engine/atlas';
 import { publishRoom, loadRoom } from './room';
+
+// —— 公共田地常量 ——
+const GROW_MS: Record<Crop, number> = { turnip: 45_000, wheat: 75_000, pumpkin: 120_000, starfruit: 180_000 };
+const CROP_ICON: Record<Crop, string> = { turnip: '🌰', wheat: '🌾', pumpkin: '🎃', starfruit: '⭐' };
+const CROP_LABEL: Record<Crop, string> = { turnip: '芜菁', wheat: '小麦', pumpkin: '南瓜', starfruit: '星果' };
+type GardenPlot = { phase: 'empty' | 'planted' | 'watered'; crop?: Crop; plantedAt?: number; wateredAt?: number; hash?: string };
+
+function plotHash(id: string): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16).padStart(8, '0').repeat(8);
+}
+function computeGardenStage(plot: GardenPlot): 0 | 1 | 2 | 3 {
+  if (!plot.crop || !plot.plantedAt || plot.phase === 'empty') return 0;
+  const now = Date.now();
+  const growMs = GROW_MS[plot.crop] ?? 60_000;
+  let elapsed = now - plot.plantedAt;
+  if (plot.wateredAt) {
+    elapsed = (plot.wateredAt - plot.plantedAt) + (now - plot.wateredAt) * 2;
+  }
+  const p = Math.min(1, elapsed / growMs);
+  if (p >= 1) return 3;
+  if (p >= 0.6) return 2;
+  if (p >= 0.25) return 1;
+  return 0;
+}
 
 function PetSprite({ gene, size = 88 }: { gene: string; size?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -143,11 +169,9 @@ export default function App() {
   // 砍树状态（fruitId → 砍倒时间戳 ms；砍倒后 3 分钟恢复）
   const [choppedTrees, setChoppedTrees] = useState<Map<string, number>>(new Map());
   const chopTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  // 单机版公共菜地（gardenId → plot 状态）
-  type GardenCrop = 'carrot' | 'wheat' | 'cabbage';
-  type GardenPlot = { phase: 'empty' | 'tilled' | 'planted' | 'watered' | 'ready'; crop?: GardenCrop; plantedAt?: number; watered?: boolean };
+  // 单机版公共田地（gardenId → plot 状态）
   const [gardenPlots, setGardenPlots] = useState<Map<string, GardenPlot>>(new Map());
-  const gardenTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const [gardenTick, setGardenTick] = useState(0); // 定期触发成长阶段重算
   // 附近的可交互物件（引擎回调）
   const [nearby, setNearby] = useState<Interactable | null>(null);
   // 公共菜地浮层 + 当前聚焦格
@@ -246,6 +270,12 @@ export default function App() {
     };
   }, [refresh, wallet.address]);
 
+  // 田地成长阶段每 10s 重算一次（触发 gardenStateMap 更新 → 重建镇地图作物精灵）
+  useEffect(() => {
+    const id = setInterval(() => setGardenTick((t) => t + 1), 10_000);
+    return () => clearInterval(id);
+  }, []);
+
   const hatch = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -321,39 +351,14 @@ export default function App() {
     chopTimers.current.set(fruitId, t);
   }, []);
 
-  const GROW_MS: Record<string, number> = { carrot: 60_000, wheat: 90_000, cabbage: 120_000 };
-
-  const tillGarden = useCallback((gardenId: string) => {
+  const plantGarden = useCallback((gardenId: string, crop: Crop) => {
     setGardenPlots((prev) => {
       const m = new Map(prev);
       const cur = m.get(gardenId);
-      if (!cur || cur.phase === 'empty') m.set(gardenId, { phase: 'tilled' });
+      if (cur && cur.phase !== 'empty') return prev;
+      m.set(gardenId, { phase: 'planted', crop, plantedAt: Date.now(), hash: plotHash(gardenId) });
       return m;
     });
-  }, []);
-
-  const plantGarden = useCallback((gardenId: string, crop: 'carrot' | 'wheat' | 'cabbage') => {
-    const now = Date.now();
-    setGardenPlots((prev) => {
-      const m = new Map(prev);
-      const cur = m.get(gardenId);
-      if (!cur || (cur.phase !== 'tilled' && cur.phase !== 'empty')) return prev;
-      m.set(gardenId, { phase: 'planted', crop, plantedAt: now });
-      return m;
-    });
-    // 定时成熟
-    const growMs = GROW_MS[crop] ?? 60_000;
-    if (gardenTimers.current.has(gardenId)) clearTimeout(gardenTimers.current.get(gardenId)!);
-    const t = setTimeout(() => {
-      setGardenPlots((prev) => {
-        const m = new Map(prev);
-        const cur = m.get(gardenId);
-        if (cur && (cur.phase === 'planted' || cur.phase === 'watered')) m.set(gardenId, { ...cur, phase: 'ready' });
-        return m;
-      });
-      gardenTimers.current.delete(gardenId);
-    }, growMs);
-    gardenTimers.current.set(gardenId, t);
   }, []);
 
   const waterGarden = useCallback((gardenId: string) => {
@@ -361,52 +366,35 @@ export default function App() {
       const m = new Map(prev);
       const cur = m.get(gardenId);
       if (!cur || cur.phase !== 'planted') return prev;
-      // 浇水后加速 2x：重置计时器，剩余时间减半
-      const elapsed = Date.now() - (cur.plantedAt ?? Date.now());
-      const growMs = (GROW_MS[cur.crop!] ?? 60_000);
-      const remaining = Math.max(1000, (growMs - elapsed) / 2);
-      m.set(gardenId, { ...cur, phase: 'watered', watered: true });
-      if (gardenTimers.current.has(gardenId)) clearTimeout(gardenTimers.current.get(gardenId)!);
-      const t = setTimeout(() => {
-        setGardenPlots((p2) => {
-          const m2 = new Map(p2);
-          const c2 = m2.get(gardenId);
-          if (c2 && (c2.phase === 'planted' || c2.phase === 'watered')) m2.set(gardenId, { ...c2, phase: 'ready' });
-          return m2;
-        });
-        gardenTimers.current.delete(gardenId);
-      }, remaining);
-      gardenTimers.current.set(gardenId, t);
+      m.set(gardenId, { ...cur, phase: 'watered', wateredAt: Date.now() });
       return m;
     });
   }, []);
 
   const harvestGarden = useCallback((gardenId: string) => {
-    setGardenPlots((prev) => {
-      const m = new Map(prev);
-      const cur = m.get(gardenId);
-      if (!cur || cur.phase !== 'ready') return prev;
-      // 收获后加入背包
-      const crop = cur.crop!;
-      const CROP_ICON: Record<string, string> = { carrot: '🥕', wheat: '🌾', cabbage: '🥬' };
-      const CROP_LABEL: Record<string, string> = { carrot: '胡萝卜', wheat: '小麦', cabbage: '白菜' };
-      const count = cur.watered ? 2 : 1;
-      setInventory((inv) => {
-        const next = [...inv];
-        const existing = next.findIndex((s) => s?.kind === `crop_${crop}`);
-        if (existing >= 0) {
-          next[existing] = { ...next[existing], count: next[existing].count + count };
-        } else {
-          const emptyIdx = next.findIndex((s, i) => i >= 4 && s === undefined);
-          const slot: InventorySlot = { kind: `crop_${crop}`, label: CROP_LABEL[crop], icon: CROP_ICON[crop], count };
-          if (emptyIdx >= 0) next[emptyIdx] = slot;
-          else next.push(slot);
-        }
-        return next;
-      });
-      m.set(gardenId, { phase: 'empty' });
-      return m;
+    const cur = gardenPlots.get(gardenId);
+    if (!cur || !cur.crop || cur.phase === 'empty') return;
+    if (computeGardenStage(cur) < 3) return;
+    const count = cur.wateredAt ? 2 : 1;
+    setInventory((inv) => {
+      const next = [...inv];
+      const kind = `crop_${cur.crop!}`;
+      const existing = next.findIndex((s) => s?.kind === kind);
+      if (existing >= 0) {
+        next[existing] = { ...next[existing], count: next[existing].count + count };
+      } else {
+        const emptyIdx = next.findIndex((s, i) => i >= 4 && s === undefined);
+        const slot: InventorySlot = { kind, label: CROP_LABEL[cur.crop!], icon: CROP_ICON[cur.crop!], count };
+        if (emptyIdx >= 0) next[emptyIdx] = slot;
+        else next.push(slot);
+      }
+      return next;
     });
+    setGardenPlots((prev) => { const m = new Map(prev); m.set(gardenId, { phase: 'empty' }); return m; });
+  }, [gardenPlots]);
+
+  const removeCrop = useCallback((gardenId: string) => {
+    setGardenPlots((prev) => { const m = new Map(prev); m.set(gardenId, { phase: 'empty' }); return m; });
   }, []);
 
   const onInteract = useCallback((it: Interactable) => {
@@ -436,18 +424,17 @@ export default function App() {
         pickFruit(it.fruitId, it.fruitKind);
       }
     } else if (it.type === 'garden' && it.gardenId) {
-      if (toolKind === 'tool_hoe') {
-        tillGarden(it.gardenId);
-        useTool(toolIdx);
-      } else if (toolKind === 'tool_can') {
+      const plot = gardenPlots.get(it.gardenId) ?? { phase: 'empty' as const };
+      if (toolKind === 'tool_can' && (plot.phase === 'planted' || plot.phase === 'watered')) {
         waterGarden(it.gardenId);
         useTool(toolIdx);
       } else {
+        // 无工具/其他工具 → 开菜地浮层
         setGardenFocusId(it.gardenId);
         setGardenOpen(true);
       }
     }
-  }, [pickFruit, useTool, chopTree, tillGarden, waterGarden]);
+  }, [pickFruit, useTool, chopTree, waterGarden, gardenPlots]);
 
   const onSceneChange = useCallback((id: string) => {
     setScene(id as 'room' | 'town' | 'farm');
@@ -604,11 +591,16 @@ export default function App() {
   // depletedFruits / choppedTreesSet / gardenStateMap（稳定引用）
   const depletedFruits = useMemo(() => new Set(fruitDepletion.keys()), [fruitDepletion]);
   const choppedTreesSet = useMemo(() => new Set(choppedTrees.keys()), [choppedTrees]);
-  const gardenStateMap = useMemo<ReadonlyMap<string, { phase: string }>>(() => {
-    const m = new Map<string, { phase: string }>();
-    for (const [k, v] of gardenPlots) m.set(k, { phase: v.phase });
+  const gardenStateMap = useMemo<ReadonlyMap<string, GardenStateEntry>>(() => {
+    const m = new Map<string, GardenStateEntry>();
+    for (const [k, v] of gardenPlots) {
+      const stage = computeGardenStage(v);
+      const phase = v.phase !== 'empty' && stage === 3 ? 'ready' : v.phase;
+      m.set(k, { phase, crop: v.crop, stage, hash: v.hash });
+    }
     return m;
-  }, [gardenPlots]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gardenPlots, gardenTick]);
 
   // 工具提示：根据 nearby 类型 + 当前选中工具推导上下文提示
   const toolHint = useMemo(() => {
@@ -617,9 +609,8 @@ export default function App() {
     if (nearby.type === 'fishing') return tk === 'tool_rod' ? '🎣 E: 垂钓（消耗鱼竿）' : 'E: 垂钓';
     if (nearby.type === 'fruit') return tk === 'tool_axe' ? `🪓 E: 砍树（消耗斧子）` : `E: ${nearby.label}`;
     if (nearby.type === 'garden') {
-      if (tk === 'tool_hoe') return '⛏️ E: 翻土（消耗锄头）';
       if (tk === 'tool_can') return '🪣 E: 浇水（消耗水桶）';
-      return 'E: 查看菜地';
+      return 'E: 查看田地';
     }
     if (nearby.type === 'rent') return 'E: 查看租售详情';
     if (nearby.type === 'door') return `E: ${nearby.label}`;
@@ -776,53 +767,67 @@ export default function App() {
         <div className="menu-backdrop" onClick={() => { setGardenOpen(false); setGardenFocusId(null); }}>
           <div className="menu garden-modal" onClick={(e) => e.stopPropagation()}>
             <div className="menu-tabs">
-              <button className="on">🌱 公共菜地</button>
+              <button className="on">🌾 公共田地</button>
               <button className="menu-close" onClick={() => { setGardenOpen(false); setGardenFocusId(null); }}>✕</button>
             </div>
             <div className="panel">
-              <p className="note" style={{ marginBottom: 12 }}>锄头翻土 · 选种播种 · 水桶浇水 · 成熟收获</p>
               {gardenFocusId ? (() => {
                 const plot = gardenPlots.get(gardenFocusId) ?? { phase: 'empty' as const };
-                const CROP_OPTS: { crop: 'carrot'|'wheat'|'cabbage'; icon: string; label: string }[] = [
-                  { crop: 'carrot', icon: '🥕', label: '胡萝卜 (60s)' },
-                  { crop: 'wheat',  icon: '🌾', label: '小麦 (90s)' },
-                  { crop: 'cabbage',icon: '🥬', label: '白菜 (120s)' },
+                const stage = computeGardenStage(plot);
+                const effPhase = plot.phase !== 'empty' && stage === 3 ? 'ready' : plot.phase;
+                const CROP_OPTS: { crop: Crop; time: string }[] = [
+                  { crop: 'turnip',    time: '45s' },
+                  { crop: 'wheat',     time: '75s' },
+                  { crop: 'pumpkin',   time: '2分' },
+                  { crop: 'starfruit', time: '3分' },
                 ];
+                const STAGE_TEXT = ['刚种下 🌱', '长苗 🌿', '成长中 🌿', '可收获！🌾'] as const;
                 return (
                   <div className="garden-plot-detail">
-                    <div className="garden-phase-badge">{
-                      plot.phase === 'empty' ? '空地' :
-                      plot.phase === 'tilled' ? '已翻土 ✔' :
-                      plot.phase === 'planted' ? `已种 ${plot.crop}` :
-                      plot.phase === 'watered' ? `已浇水 💧 ${plot.crop}` :
-                      `✅ 可收获！${plot.crop}`
-                    }</div>
-                    {plot.phase === 'tilled' && (
-                      <div className="garden-crops">
-                        <p>选择种子：</p>
-                        {CROP_OPTS.map(({ crop, icon, label }) => (
-                          <button key={crop} className="primary" style={{ margin: 4 }}
-                            onClick={() => { plantGarden(gardenFocusId, crop); setGardenOpen(false); }}>
-                            {icon} {label}
+                    {effPhase === 'empty' ? (
+                      <>
+                        <p className="note" style={{ marginBottom: 10 }}>选择作物播种：</p>
+                        <div className="garden-crops">
+                          {CROP_OPTS.map(({ crop, time }) => (
+                            <button key={crop} className="primary garden-crop-btn"
+                              onClick={() => { plantGarden(gardenFocusId, crop); setGardenOpen(false); }}>
+                              <span className="garden-crop-icon">{CROP_ICON[crop]}</span>
+                              <span className="garden-crop-name">{CROP_LABEL[crop]}</span>
+                              <span className="garden-crop-time">{time}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="garden-phase-badge">
+                          {CROP_ICON[plot.crop!] ?? '🌱'} {CROP_LABEL[plot.crop!] ?? plot.crop}
+                          <span className="garden-stage-dot" style={{ marginLeft: 8 }}>{STAGE_TEXT[stage]}</span>
+                        </div>
+                        <div className="garden-grow-bar">
+                          <div className="garden-grow-fill" style={{ width: `${(stage / 3) * 100}%` }} />
+                        </div>
+                        {stage < 3 && (
+                          <p className="note" style={{ marginTop: 6 }}>
+                            {effPhase === 'watered' ? '💧 已浇水，加速成长中' : '装备水桶（🪣）可加速'}
+                          </p>
+                        )}
+                        {stage === 3 && (
+                          <button className="primary" style={{ marginTop: 8 }}
+                            onClick={() => { harvestGarden(gardenFocusId); setGardenOpen(false); }}>
+                            🎉 收获！（+{plot.wateredAt ? 2 : 1} {CROP_LABEL[plot.crop!] ?? ''}）
                           </button>
-                        ))}
-                      </div>
-                    )}
-                    {(plot.phase === 'planted' || plot.phase === 'watered') && (
-                      <p className="note">等待成熟…{plot.watered ? '（已浇水，加速中）' : '（用水桶浇水可加速）'}</p>
-                    )}
-                    {plot.phase === 'ready' && (
-                      <button className="primary" onClick={() => { harvestGarden(gardenFocusId); setGardenOpen(false); }}>
-                        🎉 收获！
-                      </button>
-                    )}
-                    {plot.phase === 'empty' && (
-                      <p className="note">先装备锄头（⛏️），走到这里按 E 翻土。</p>
+                        )}
+                        <button className="garden-remove-btn"
+                          onClick={() => { removeCrop(gardenFocusId); setGardenOpen(false); }}>
+                          🗑 拔除
+                        </button>
+                      </>
                     )}
                   </div>
                 );
               })() : (
-                <p className="note">走到菜地格子按 E 交互，或装备工具直接操作。</p>
+                <p className="note">走到田地格子按 E 播种 · 装备水桶可直接浇水</p>
               )}
             </div>
           </div>

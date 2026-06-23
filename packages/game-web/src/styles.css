@@ -455,9 +455,28 @@ button.dir-go:hover { text-decoration: underline; }
 .garden-phase-badge {
   display: inline-block; padding: 4px 14px; border-radius: 20px;
   background: var(--panel-2); border: 1px solid var(--line);
-  font-size: 13px; margin-bottom: 14px;
+  font-size: 13px; margin-bottom: 10px;
 }
-.garden-crops { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 8px; }
+.garden-stage-dot { opacity: 0.75; font-size: 12px; }
+.garden-grow-bar {
+  width: 100%; max-width: 220px; height: 8px;
+  background: var(--panel-2); border-radius: 4px; overflow: hidden; margin: 0 auto;
+}
+.garden-grow-fill { height: 100%; background: #6abf5e; border-radius: 4px; transition: width 0.4s; }
+.garden-crops { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+.garden-crop-btn {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 10px 14px; min-width: 72px;
+}
+.garden-crop-icon { font-size: 22px; }
+.garden-crop-name { font-size: 13px; margin-top: 2px; }
+.garden-crop-time { font-size: 11px; opacity: 0.6; }
+.garden-remove-btn {
+  display: block; margin: 10px auto 0; padding: 5px 16px;
+  background: transparent; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--fg); font-size: 13px; cursor: pointer; opacity: 0.75;
+}
+.garden-remove-btn:hover { opacity: 1; border-color: #e55; color: #e55; }
 
 /* ── 租售弹窗 ── */
 .rent-grid { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
