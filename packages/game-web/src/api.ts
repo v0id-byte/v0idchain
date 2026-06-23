@@ -1,6 +1,6 @@
 // 游戏服务器 HTTP 客户端。读链走只读代理；写动作在本地签名后经 /api/tx 广播；faucet 走 /api/faucet。
 import type { Transaction } from '@v0idchain/core/browser';
-import type { Pet, Catch } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView } from '@v0idchain/core/browser';
 
 const BASE = (import.meta.env.VITE_GAME_API as string | undefined) || 'http://127.0.0.1:8790';
 
@@ -45,6 +45,7 @@ export const api = {
   nonce: (address: string) => get<{ address: string; nonce: number }>(`/api/nonce?address=${address}`),
   pets: (address: string) => get<Pet[]>(`/api/pets?address=${address}`),
   fish: (address: string) => get<Catch[]>(`/api/fish?address=${address}`),
+  farm: (address: string) => get<FarmView>(`/api/farm?address=${address}`),
   names: () => get<{ addressToName: Record<string, string> }>('/api/names'),
   rooms: () => get<{ address: string; name?: string }[]>('/api/rooms'),
   txStatus: (txid: string) => get<TxStatus>(`/api/tx?txid=${txid}`),
