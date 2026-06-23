@@ -107,37 +107,11 @@ function stamp(ctx: CanvasRenderingContext2D, coord: [number, number], dx: numbe
   if (img) ctx.drawImage(img, coord[0] * STRIDE, coord[1] * STRIDE, T, T, dx, dy, T, T);
 }
 
-const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-const bayer4 = (x: number, y: number) => (BAYER4[((y & 3) * 4) + (x & 3)] + 0.5) / 16;
-
-// 墙面体积（§7-D）：极淡的左上→右下明→暗梯度（Bayer 抖动量化、避免 banding）+ 顶/左 rim 高光 +
-// 右/底 暗面 + 底部 1~2px AO 压暗，让墙"浮"出地面。base=墙面色，over=可绘制的水平区间[x0,x0+w)。
-function wallVolume(ctx: CanvasRenderingContext2D, x0: number, y0: number, w: number, h: number, base: string) {
-  const lit = shade(base, 9);
-  const dark = shade(base, -8);
-  // 淡梯度：按对角线位置量化到 lit/base/dark，抖动在过渡处碎开 ⇒ 不出横带
-  for (let yy = 0; yy < h; yy++) {
-    for (let xx = 0; xx < w; xx++) {
-      const t = (xx / w) * 0.5 + (yy / h) * 0.5; // 0=左上 1=右下
-      const q = t + bayer4(x0 + xx, y0 + yy) - 0.5;
-      if (q < 0.4) { ctx.fillStyle = lit; ctx.fillRect(x0 + xx, y0 + yy, 1, 1); }
-      else if (q > 0.62) { ctx.fillStyle = dark; ctx.fillRect(x0 + xx, y0 + yy, 1, 1); }
-    }
-  }
-  // 朝光 rim：顶沿 + 左沿各 1px 高光
-  px(ctx, x0, y0, w, 1, shade(base, 22));
-  px(ctx, x0, y0, 1, h, shade(base, 18));
-  // 背光暗面 + 接地 AO：右沿 1px、底沿 2px 压暗（底更暗 ⇒ "焊"在地上）
-  px(ctx, x0 + w - 1, y0, 1, h, shade(base, -20));
-  px(ctx, x0, y0 + h - 2, w, 2, shade(base, -30));
-}
-
 // 灰泥 + 木骨架墙（Tudor 风:角柱 + 上中下横梁 + 斜撑）。
 function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, beam: string) {
   px(ctx, 0, y0, W, H, wall);
+  px(ctx, 1, y0 + 1, W - 2, H - 1, shade(wall, 6)); // 内墙提亮一点
   const b = 2;
-  // 内墙灰泥面：体积处理（淡对角梯度 + 顶/左 rim + 右/底 AO），让平面"浮"起而非平涂（§7-D）
-  wallVolume(ctx, b, y0 + b, W - 2 * b, H - 2 * b, shade(wall, 6));
   px(ctx, 0, y0, b, H, beam); // 左柱
   px(ctx, W - b, y0, b, H, beam); // 右柱
   px(ctx, 0, y0, W, b, beam); // 上梁
@@ -157,13 +131,12 @@ function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H:
 // 错缝石墙。
 function drawStoneWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, seam: string) {
   px(ctx, 0, y0, W, H, wall);
-  // 体积处理先铺底（淡对角梯度 + 顶/左 rim + 右/底 AO），再叠石缝 ⇒ 缝清晰、墙体浮起（§7-D）
-  wallVolume(ctx, 0, y0, W, H, wall);
   for (let ry = y0 + 4; ry < y0 + H; ry += 4) {
     px(ctx, 0, ry, W, 1, seam); // 横缝
     const off = (((ry - y0) / 4) % 2) * 4;
     for (let rx = off; rx < W; rx += 8) px(ctx, rx, ry - 3, 1, 3, shade(seam, 8)); // 错位竖缝
   }
+  px(ctx, 0, y0, W, 1, shade(wall, 16)); // 顶高光
 }
 
 // 坡瓦屋顶（横向出檐 + 瓦楞 + 屋脊 + 檐影），盖住墙顶。
