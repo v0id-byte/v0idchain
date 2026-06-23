@@ -22,6 +22,11 @@ export async function getChain(force = false): Promise<Block[]> {
 export function getInfo(): Promise<unknown> {
   return nodeGet('/info');
 }
+
+/** 当前链高（= 区块数 - 1）。供 /health 用：只回数字，不泄露任何内部地址/密钥。走链缓存，廉价。 */
+export async function height(): Promise<number> {
+  return (await getChain()).length - 1;
+}
 export function getNames(): Promise<unknown> {
   return nodeGet('/names');
 }

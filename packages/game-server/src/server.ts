@@ -1,50 +1,36 @@
 // 游戏服务器 HTTP 接口（阶段 0）：链只读代理 + 提交已签名交易 + faucet + 房间。
-// CORS 放开（'*'）是安全的：本服务**不持有任何用户私钥**——/api/tx 只广播“已签名”交易（无特权），
-// /api/faucet 由限额+限速+全局上限把关（非 CORS）。这与节点本地 API（用节点私钥代签，必须锁 localhost）不同。
+// 安全姿态：绑 127.0.0.1（只接本机 nginx 反代）、所有响应带安全头、CORS 走白名单（非 '*'）、
+// 写端点每 IP 限流 + 请求体限大小、入参严格校验、错误只回简短信息不甩堆栈。
+// 本服务**不持有任何用户私钥**——/api/tx 只广播“已签名”交易（无特权）；节点仍是共识权威。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { isValidAddress, petsOf, parsePets, fishOf, parseFish, farmOf, parseFarm } from '@v0idchain/core';
+import { petsOf, parsePets, fishOf, parseFish, farmOf, parseFarm } from '@v0idchain/core';
 import type { Transaction } from '@v0idchain/core';
-import { PORT } from './config.js';
+import { PORT, BIND } from './config.js';
 import * as chain from './chain.js';
 import { dispense } from './faucet.js';
 import { getRoom, putRoom, listRoomAddresses } from './rooms.js';
-
-function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', (c) => (data += c));
-    req.on('end', () => {
-      try {
-        resolve(data ? JSON.parse(data) : {});
-      } catch {
-        resolve({});
-      }
-    });
-  });
-}
-
-function clientIp(req: IncomingMessage): string {
-  const fwd = req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0].trim();
-  return req.socket.remoteAddress ?? 'unknown';
-}
-
-const CORS: Record<string, string> = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
-  'access-control-allow-headers': 'content-type',
-};
+import {
+  clientIp,
+  securityHeaders,
+  readBody,
+  rateLimitOk,
+  validateSignedTx,
+  validateLayout,
+  isValidTxid,
+  isValidAddress,
+} from './security.js';
 
 export function startServer(): ReturnType<typeof createServer> {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const headers = securityHeaders(req); // 安全头 + 命中白名单的 CORS 头，附在每个响应上
     const url = new URL(req.url ?? '/', 'http://localhost');
     const p = url.pathname;
     const json = (code: number, obj: unknown) => {
-      res.writeHead(code, { 'content-type': 'application/json', ...CORS });
+      res.writeHead(code, { 'content-type': 'application/json', ...headers });
       res.end(JSON.stringify(obj));
     };
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, CORS);
+      res.writeHead(204, headers);
       res.end();
       return;
     }
@@ -53,7 +39,8 @@ export function startServer(): ReturnType<typeof createServer> {
       if (req.method === 'GET') {
         switch (p) {
           case '/health':
-            return json(200, { ok: true });
+            // 不泄露敏感信息：只回存活 + 链高（无密钥/peer 内网地址/版本细节）。
+            return json(200, { ok: true, height: await chain.height().catch(() => null) });
           case '/api/info':
             return json(200, await chain.getInfo());
           case '/api/names':
@@ -80,6 +67,7 @@ export function startServer(): ReturnType<typeof createServer> {
           }
           case '/api/pets': {
             const address = url.searchParams.get('address');
+            if (address !== null && !isValidAddress(address)) return json(400, { error: '地址格式无效' });
             const bc = await chain.snapshot();
             // 不带 address → 全部崽；带 address → 该地址当前拥有的崽（服务器算好省客户端整链扫描）
             return json(200, address ? petsOf(bc.chain, address) : parsePets(bc.chain));
@@ -87,6 +75,7 @@ export function startServer(): ReturnType<typeof createServer> {
           case '/api/fish': {
             // 只读：扫链还原渔获（parseFish 过滤 FISH| 自转烧币）。无写端点——铸造由客户端本地签名走 /api/tx。
             const address = url.searchParams.get('address');
+            if (address !== null && !isValidAddress(address)) return json(400, { error: '地址格式无效' });
             const bc = await chain.snapshot();
             return json(200, address ? fishOf(bc.chain, address) : parseFish(bc.chain));
           }
@@ -94,6 +83,7 @@ export function startServer(): ReturnType<typeof createServer> {
             // 只读：扫链还原农场（parseFarm 过滤 LAND/ZONE/PLANT/HARVEST 自转烧币）+ 动态地价预算。
             // 无写端点——买地/建区块/种植/收获均由客户端本地签名走 /api/tx（系统零增发）。
             const address = url.searchParams.get('address');
+            if (address !== null && !isValidAddress(address)) return json(400, { error: '地址格式无效' });
             const bc = await chain.snapshot();
             return json(200, address ? farmOf(bc.chain, address) : parseFarm(bc.chain));
           }
@@ -106,41 +96,44 @@ export function startServer(): ReturnType<typeof createServer> {
           }
           case '/api/tx': {
             const txid = url.searchParams.get('txid') ?? '';
-            if (!txid) return json(400, { error: '缺少 txid' });
+            if (!isValidTxid(txid)) return json(400, { error: 'txid 格式无效' });
             return json(200, await chain.getTxStatus(txid));
           }
         }
       }
 
       if (req.method === 'POST') {
+        // 写端点：每 IP 限流（挡住单机刷量/暴力探测）。
+        if (!rateLimitOk(clientIp(req))) return json(429, { error: '请求过于频繁，稍后再试' });
         const body = await readBody(req);
         switch (p) {
           case '/api/faucet':
             return json(200, await dispense(String(body.address ?? ''), clientIp(req)));
           case '/api/tx': {
-            const tx = body.tx as Transaction | undefined;
-            if (!tx || typeof tx.txid !== 'string' || typeof tx.signature !== 'string') {
-              return json(400, { error: '缺少或非法的已签名 tx' });
-            }
-            const r = await chain.submitSigned(tx);
+            const invalid = validateSignedTx(body.tx);
+            if (invalid) return json(400, { error: invalid });
+            const r = await chain.submitSigned(body.tx as Transaction);
             return r.ok ? json(200, { ok: true, txid: r.txid }) : json(400, { error: r.error });
           }
         }
       }
 
       if (req.method === 'PUT' && p === '/api/room') {
+        if (!rateLimitOk(clientIp(req))) return json(429, { error: '请求过于频繁，稍后再试' });
         const body = await readBody(req);
         const address = String(body.address ?? '');
         const layout = String(body.layout ?? '');
         if (!isValidAddress(address)) return json(400, { error: '地址格式无效' });
-        if (!layout) return json(400, { error: '布局不能为空' });
+        const badLayout = validateLayout(layout);
+        if (badLayout) return json(400, { error: badLayout });
         return json(200, putRoom(address, layout, body.versionTx ? String(body.versionTx) : undefined));
       }
 
       json(404, { error: 'not found' });
     } catch (e) {
-      // 上游节点不可达等：回 502，附原因，别甩堆栈
-      json(502, { error: e instanceof Error ? e.message : String(e) });
+      // 上游节点不可达等：回 502。不向外暴露堆栈/内部路径——细节只进服务端日志。
+      console.error('[game-server] 请求处理出错:', e instanceof Error ? e.message : e);
+      json(502, { error: '上游服务暂时不可用' });
     }
   });
 
@@ -151,6 +144,6 @@ export function startServer(): ReturnType<typeof createServer> {
     }
     throw e;
   });
-  server.listen(PORT);
+  server.listen(PORT, BIND);
   return server;
 }

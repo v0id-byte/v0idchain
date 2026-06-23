@@ -16,6 +16,36 @@ function envInt(name: string, fallback: number): number {
 /** 游戏服务器对外端口 */
 export const PORT = envInt('GAME_PORT', 8790);
 
+/**
+ * 监听地址。默认 127.0.0.1：只接本机（nginx 反代）连接，绝不公网直连。
+ * 生产务必保持 127.0.0.1；如确需改（如容器内）用 GAME_BIND 显式覆盖。
+ */
+export const BIND = env('GAME_BIND', '127.0.0.1');
+
+/**
+ * CORS 允许的前端 origin 白名单（逗号分隔）。默认仅放行本机 dev 端口（Vite 5173 / 预览 4173）。
+ * 生产把真实前端域名加进 GAME_CORS_ORIGINS（如 https://game.example.com）。绝不用 '*' —— 宁缺毋滥。
+ */
+export const CORS_ORIGINS: string[] = env(
+  'GAME_CORS_ORIGINS',
+  'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173',
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+/** 单次请求体大小上限（字节）。挡住超大 body 撑爆内存；房间布局/交易都远小于此。 */
+export const MAX_BODY_BYTES = envInt('GAME_MAX_BODY_BYTES', 64 * 1024);
+
+/** 房间布局字节上限（写 /api/room 时校验）。便利层数据，给足余量即可。 */
+export const MAX_LAYOUT_BYTES = envInt('GAME_MAX_LAYOUT_BYTES', 32 * 1024);
+
+/** 写端点（/api/tx、/api/faucet、PUT /api/room）每 IP 速率限制：窗口内最多多少次。 */
+export const RATE_LIMIT_MAX = envInt('GAME_RATE_LIMIT_MAX', 30);
+
+/** 速率限制窗口（毫秒）。默认 60s 内每 IP 最多 RATE_LIMIT_MAX 次写请求。 */
+export const RATE_LIMIT_WINDOW_MS = envInt('GAME_RATE_LIMIT_WINDOW_MS', 60_000);
+
 /** 运行时数据目录（房间布局、faucet 发放记录）。默认放 .data/game-server。 */
 export const DATA_DIR = env('GAME_DATA_DIR', '.data/game-server');
 
