@@ -107,8 +107,8 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
  * 店门 → 回房间；广场名册牌 → 串门；鱼摊 → 钓鱼小游戏(QTE + 链上渔获)。确定性布局(自带 LCG)，刷新稳定。
  */
 export function buildTown(): Scene {
-  const w = 84;
-  const h = 56;
+  const w = 96; // 加宽:容下更松散的住宅区
+  const h = 78; // 加高:南侧扩出一片带院子的住宅区
   const cx = Math.floor(w / 2);
   const tiles: string[][] = [];
   const solid: boolean[][] = [];
@@ -180,6 +180,50 @@ export function buildTown(): Scene {
   };
   const inGap = (x: number) => x >= cx - 6 && x <= cx + 7; // 让出中央广场/竖巷
 
+  // —— 美式带院子住宅:房子 + 围一圈栅栏院子(草坪 + 通门小径 + 花坛 + 角树/灌木 + 信箱) ——
+  // 院子装饰存这里、清理后再落地(免被建筑周边散布剔除)。yard 让房子之间自然拉开间距、有留白。
+  const yardDecor: FurnitureItem[] = [];
+  const yardTrees: { x: number; y: number }[] = []; // 角树(挡路,清理后落地)
+  // 返回院子占用矩形(含围栏)供布局避免重叠。门朝南(下),院门在前墙中线。
+  const placeHouseWithYard = (style: string, hx: number, hy: number, bw: number, bh: number, m = 2) => {
+    const yx0 = hx - m;
+    const yy0 = hy - 1; // 房后只留 1 格(屋顶出檐),前院更深
+    const yx1 = hx + bw - 1 + m;
+    const yy1 = hy + bh - 1 + m; // 前院 m 格深
+    if (yx0 < 1 || yx1 > w - 2 || yy0 < 1 || yy1 > h - 2) return null;
+    place(style, hx, hy, bw, bh); // 房身(挡路 + 门交互 + 炊烟 + 门前留空)
+    const { doorCol } = buildingMeta(bw);
+    const dX = hx + doorCol;
+    const gateX = dX; // 院门对齐房门
+    // 草坪(确保院内是草,房后泥/沙也复绿)
+    for (let yy = yy0; yy <= yy1; yy++) for (let xx = yx0; xx <= yx1; xx++) if (tiles[yy]?.[xx] !== undefined && tiles[yy][xx] !== 'water') setT(xx, yy, 'grass');
+    // 通门小径(院门→房门,dirt)
+    for (let yy = hy + bh; yy <= yy1; yy++) { setT(dX, yy, 'dirt'); if (solid[yy]?.[dX] !== undefined) solid[yy][dX] = false; }
+    // 围栏(院周一圈,前墙留院门 1 格)
+    for (let xx = yx0; xx <= yx1; xx++) {
+      yardDecor.push({ kind: 'fence', x: xx, y: yy0 }); // 后栏
+      if (xx !== gateX) yardDecor.push({ kind: 'fence', x: xx, y: yy1 }); // 前栏(留门)
+    }
+    for (let yy = yy0 + 1; yy < yy1; yy++) { yardDecor.push({ kind: 'fence', x: yx0, y: yy }); yardDecor.push({ kind: 'fence', x: yx1, y: yy }); }
+    // 信箱(院门外侧一格)
+    yardDecor.push({ kind: 'mailbox', x: gateX + 1 <= yx1 ? gateX + 1 : gateX - 1, y: yy1 });
+    // 花坛(前院沿小径两侧)+ 角树/灌木(院内四角,避开小径与房身)
+    const corners: [number, number][] = [[yx0 + 1, yy1 - 1], [yx1 - 1, yy1 - 1], [yx0 + 1, yy0 + 1], [yx1 - 1, yy0 + 1]];
+    let cIdx = (hx * 13 + hy * 7) % 4;
+    for (let k = 0; k < 2; k++) { // 前两个角放树/灌木
+      const [cxx, cyy] = corners[(cIdx + k) % 4];
+      if (Math.abs(cxx - dX) <= 1) continue; // 别压小径
+      if (tiles[cyy]?.[cxx] === 'grass') yardTrees.push({ x: cxx, y: cyy });
+    }
+    cIdx++;
+    // 花坛:门前两侧各一两株花(可踩)
+    for (const fx of [dX - 1, dX + 1]) {
+      const fy = yy1 - 1;
+      if (tiles[fy]?.[fx] === 'grass') yardDecor.push({ kind: 'flower', x: fx, y: fy });
+    }
+    return { x0: yx0, y0: yy0, x1: yx1, y1: yy1 };
+  };
+
   // 西端开放式鱼摊(3 高,底贴街)
   place('fishstall', 4, streetY - 3, 4, 3);
   // 北排商铺(门朝南临主街,4..5 高)
@@ -191,8 +235,8 @@ export function buildTown(): Scene {
     place(pick(northShops), bx, streetY - 1 - (bh - 1), 4, bh);
     bx += 6 + Math.floor(rnd() * 3);
   }
-  // 南排店铺/民居(门朝南临人行道,4 高;屋顶朝主街)
-  const southShops = ['house', 'house2', 'house3', 'cottage', 'manor', 'slate', 'mossy', 'rosehouse', 'tudor', 'sandstone', 'mill'];
+  // 南排店铺/民居(门朝南临人行道,4 高;屋顶朝主街)。掺入新户型,让临街排也露多样屋顶。
+  const southShops = ['house', 'house2', 'house3', 'cottage', 'manor', 'slate', 'mossy', 'rosehouse', 'tudor', 'sandstone', 'mill', 'colonial', 'cape', 'saltbox', 'brownstone'];
   bx = 5;
   while (bx < w - 7) {
     if (inGap(bx)) { bx = cx + 8; continue; }
@@ -244,6 +288,44 @@ export function buildTown(): Scene {
     for (let yy = gy; yy < gy + 2; yy++) { furniture.push({ kind: 'fence', x: gx - 1, y: yy }); furniture.push({ kind: 'fence', x: gx + 4, y: yy }); }
     for (let yy = gy; yy < gy + 2; yy++) for (let xx = gx; xx < gx + 4; xx++) if (((xx + yy) & 1) === 0) furniture.push({ kind: 'flower', x: xx, y: yy });
   }
+
+  // —— 南侧住宅区:带院子的多户型住宅,宽松网格排布(美式 suburb 留白) ——
+  // 暖/冷屋顶交替(陶土红组 ↔ 青蓝苔绿组)看起来协调;按格确定性取户型,杜绝相邻两栋一样。
+  const resWarm = ['farmhouse', 'colonial', 'ranch', 'brownstone', 'cape', 'manor', 'sandstone'];
+  const resCool = ['cottagey', 'craftsman', 'saltbox', 'aframe', 'bungalow', 'slate', 'mossy'];
+  const resY0 = swY + 6; // 住宅区起始行(让开后院菜圃)
+  const lotW = 13; // 单宅地块宽(房 4~5 + 院 + 间距)
+  const lotH = 11; // 单宅地块高(房 4 + 前院 + 行距)
+  let lotRow = 0;
+  for (let ly = resY0; ly + lotH <= h - 3; ly += lotH, lotRow++) {
+    let lotCol = 0;
+    for (let lx = 3; lx + lotW <= w - 3; lx += lotW, lotCol++) {
+      // 地块内确定性抖动 + 选户型(相邻地块暖冷交替 + 不同 style)
+      const jx = (lotRow * 3 + lotCol * 5) % 3; // 0..2 水平抖动
+      const hx = lx + 1 + jx;
+      const bh = 4 + ((lotRow + lotCol) % 2); // 4~5 高错落
+      const bw = 4 + ((lotCol * 7 + lotRow) % 2); // 4~5 宽错落
+      const warm = (lotRow + lotCol) % 2 === 0;
+      const pool = warm ? resWarm : resCool;
+      const style = pool[(hx * 13 + ly * 7 + lotRow) % pool.length];
+      const hy = ly + 2;
+      placeHouseWithYard(style, hx, hy, bw, bh, 2);
+    }
+  }
+  // 住宅区一条主巷(横向 cobble,串起各前院门)+ 几盏路灯
+  const lane = resY0 - 1;
+  for (let x = 3; x < w - 3; x++) if (tiles[lane]?.[x] === 'grass') setT(x, lane, 'cobble');
+  for (const lx of [10, 28, cx, w - 28, w - 12]) if (tiles[lane]?.[lx] !== undefined) effects.push({ kind: 'lantern', x: lx, y: lane });
+
+  // 落地院子装饰(栅栏/花/信箱)+ 角树:在散布清理之后,免被剔除;只占空草地、不压房身/小径。
+  const onBuilding = (x: number, y: number) => buildings.some((b) => x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h);
+  for (const d of yardDecor) {
+    if (tiles[d.y]?.[d.x] === undefined) continue;
+    if (onBuilding(d.x, d.y)) continue; // 别压房身
+    if (d.kind === 'flower' && tiles[d.y][d.x] !== 'grass') continue;
+    furniture.push(d);
+  }
+  for (const t of yardTrees) if (tiles[t.y]?.[t.x] === 'grass' && !onBuilding(t.x, t.y)) furniture.push({ kind: 'bush', x: t.x, y: t.y });
 
   for (const e of effects) if (e.kind !== 'chimneySmoke' && solid[e.y]?.[e.x] !== undefined) solid[e.y][e.x] = true;
   for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;

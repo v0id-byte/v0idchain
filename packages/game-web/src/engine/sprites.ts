@@ -106,6 +106,18 @@ function furniture(kind: FurnitureKind): C {
       round(12, 4, 2, 11, '#6b4a2c'); // 右立柱
       round(2, 4, 1, 11, '#7c5836');
       break;
+    case 'mailbox': // 美式信箱:木柱 + 半圆顶铁箱 + 红旗
+      round(7, 8, 2, 7, '#6b4a2c'); // 立柱
+      round(7, 8, 1, 7, '#7c5836'); // 柱高光
+      round(4, 3, 8, 5, '#4a5a6a'); // 箱体
+      round(4, 3, 8, 1, '#6a7a8a'); // 箱顶高光
+      x.fillStyle = '#4a5a6a';
+      x.beginPath();
+      x.arc(8, 3, 4, Math.PI, 0); // 半圆顶
+      x.fill();
+      round(11, 4, 1, 3, '#c2462f'); // 红旗杆
+      round(11, 4, 2, 2, '#d8543a'); // 红旗
+      break;
   }
   return c;
 }
@@ -119,6 +131,7 @@ export function buildFurniture(): Partial<Record<FurnitureKind, C>> {
     pedestal: furniture('pedestal'),
     rug: furniture('rug'),
     fence: furniture('fence'),
+    mailbox: furniture('mailbox'),
   };
 }
 
