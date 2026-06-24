@@ -155,12 +155,17 @@ RELAY|<okey:64hex x25519 onion 公钥>|<host:port>|<bw:1 char>|<stake:0|64hex tx
 
 ## 9. Phase 1 已交付 vs 待办
 
-**已交付（本规范 §2–8，全部 selftest + 集成测试通过）**：ntor 握手、定长 cell 洋葱、链上中继目录、telescoping 多跳电路、独立 cell 平面、SSRF 防护、前向防重放（n=0 边界已修）、nonce 上限、粗粒度电路数上限（`MAX_CIRCUITS=2048`）。
+**已交付（全部 selftest + 集成测试通过）**：ntor 握手、定长 cell 洋葱、链上中继目录、telescoping 多跳电路、独立 cell 平面、SSRF 防护、前向防重放（n=0 边界已修）、nonce 上限、粗粒度电路数上限（`MAX_CIRCUITS=2048`）、**TCP 流层（出口 CONNECT + 双向字节流 + 默认 deny-all 出口策略）**、**本地 SOCKS5 前端**、**接入 node 守护**（`v0id start --relay/--socks`：onion 密钥持久化、上链发布 `RELAY|` 描述符、`parseRelays` 选路、`GET /relays` 目录）。
 
-**这是传输库 + 测试台，尚不是可加入的网络**：`RelayNode`/`CircuitClient` 仅被集成脚本引用，**未接进 node 守护进程**（无端口绑定、无 SOCKS5、未接 `node.ts`/`api.ts`）。
+**已可作真实网络加入**（客户端匿名代理，Tor-exit 式）：
+```
+v0id start --name r1 --p2p-port 6001 --relay --relay-port 6011 --mine     # 跑一个中继（自动上链发布描述符）
+v0id start --name me --p2p-port 6002 --peers ws://… --socks --socks-port 9050   # 客户端：本地 SOCKS5
+curl --socks5 127.0.0.1:9050 http://example.com/                          # 经 3 跳洋葱电路出网（需链上 ≥3 中继）
+```
+出口默认 **deny-all**；要作出口需显式 `--exit-allow host:port,…`。**隐藏服务（.v0id 双向匿名）仍需 rendezvous（Phase 2）**——当前是客户端匿名出网，不是隐藏服务。
 
 **待办**：
-- **接入 node 守护**（启动绑定 cell 端口 + 目录解析 `parseRelays(chain)` + 本地 SOCKS5/应用入口）—— 让它从“通过测试的库”变成“可加入的网络”。
 - **DoS 加固（公网暴露前的门槛）**：按 IP/连接限速、电路 TTL + 空闲清扫、失败/死 `nextConn` 清理、`handleExtend` 连接超时（当前死下一跳会留半开电路 + 客户端 `extend()` 挂起）。
 - **Entry guards**（钉住入口抗统计去匿名）—— v1 每电路自选入口，使用越多越弱，**真实部署前必做**。
 - **后向严格防重放窗口**；**客户端响应按 circId/cmd 关联**（当前单 pending+FIFO，注入/乱序后向 cell 会让请求错配→电路 DoS）。
@@ -168,7 +173,7 @@ RELAY|<okey:64hex x25519 onion 公钥>|<host:port>|<bw:1 char>|<stake:0|64hex tx
 - **Mixnet 模式**（每跳延迟 + cover traffic，抗流量关联）—— cell 已留 `delayMs`/`cover`，Phase 5。
 - **概率支付 / staking·slashing**（$V0ID 激励，不按电路上链）—— Phase 3–4。
 
-> **独立对抗式验证（2026-06-24）**：派 general-purpose agent 复跑全部测试 + 审查密码学。结论：claims (a)–(d)（ntor 前向保密/认证、定长流加密洋葱、(key,nonce) 不重用、跨跳不可关联）**HOLDS**；测试全过；3 跳不可关联性真实成立。修复其发现的 n=0 前向重放洞与 nonce 悬崖、补粗粒度电路上限。其余（接入守护 / DoS 细加固 / guards / 后向严格防重放 / 客户端解复用健壮性）按上表纳入 Phase 2，均**已在本节诚实披露、非隐藏**。
+> **独立对抗式验证（2026-06-24）**：派 general-purpose agent 复跑全部测试 + 审查密码学。结论：claims (a)–(d)（ntor 前向保密/认证、定长流加密洋葱、(key,nonce) 不重用、跨跳不可关联）**HOLDS**；测试全过；3 跳不可关联性真实成立。修复其发现的 n=0 前向重放洞与 nonce 悬崖、补粗粒度电路上限。其余（DoS 细加固 / guards / 后向严格防重放 等）按上表纳入 Phase 2，均**已在本节诚实披露、非隐藏**。（agent 当时指出的“接入守护 / 客户端解复用健壮性”已在本轮补齐：守护接线 + 流阶段按 cmd 路由 + MAC 校验。）
 
 ---
 
@@ -178,7 +183,10 @@ RELAY|<okey:64hex x25519 onion 公钥>|<host:port>|<bw:1 char>|<stake:0|64hex tx
 corepack pnpm exec tsx scripts/onion-selftest.ts        # ntor 往返 + 认证负例 + 金标准向量
 corepack pnpm exec tsx scripts/onioncell-selftest.ts    # 三跳剥层 + 定长 + 篡改拒收 + 向量
 corepack pnpm exec tsx scripts/relays-selftest.ts        # 目录 latest-wins + 字段校验
-corepack pnpm exec tsx scripts/relay-integration.ts      # 真实 3 中继 + 客户端 e2e + 匿名属性
+corepack pnpm exec tsx scripts/relay-integration.ts      # 真实 3 中继 + 客户端 e2e + 匿名属性 + 前向防重放
+corepack pnpm exec tsx scripts/relay-stream-test.ts      # TCP 流经电路（小/大分片 + 出口策略）
+corepack pnpm exec tsx scripts/socks-demo-test.ts        # 真实 curl 经 SOCKS5 + 洋葱出网
+corepack pnpm exec tsx scripts/relay-daemon-smoke.ts     # 守护接线：挖矿→上链发布描述符→自我发现→绑端口
 corepack pnpm --filter @v0idchain/core typecheck && corepack pnpm --filter @v0idchain/node typecheck
 ```
 
