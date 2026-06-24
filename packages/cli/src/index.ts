@@ -3,7 +3,7 @@
 import { Command } from 'commander';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
-import { V0idNode, startHttpApi } from '@v0idchain/node';
+import { V0idNode, startHttpApi, RelayNode, SocksProxy, loadOrCreateOnionKey, type HopSpec } from '@v0idchain/node';
 import {
   Wallet,
   loadWallet,
@@ -11,6 +11,7 @@ import {
   loadOrCreateApiToken,
   loadApiToken,
   bytesToHex,
+  hexToBytes,
   SYMBOL,
   MIN_FEE,
   minFeeFor,
@@ -95,6 +96,12 @@ program
   .option('--mine', '启动后自动挖矿', false)
   .option('--mine-interval <ms>', '出块间隔(ms)，0=连续挖、由 PoW 难度定节奏（默认）', '0')
   .option('--webrtc', '启用 WebRTC mesh（实验性）：经种子信令打洞，与 NAT 后的对端点对点直连', false)
+  .option('--relay', '作为 .v0id 洋葱中继运行（独立 cell 端口 + 上链发布描述符）', false)
+  .option('--relay-port <port>', '洋葱中继 cell 入口端口（默认 p2p-port+10）')
+  .option('--relay-advertise <host>', '中继对外 host（公网/局域网才需要；默认 127.0.0.1）')
+  .option('--exit-allow <list>', '作出口时允许连的 host:port（逗号分隔；默认空=纯中继/守卫，不作出口）', '')
+  .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网）', false)
+  .option('--socks-port <port>', 'SOCKS5 监听端口', '9050')
   .action((o) => {
     const dataDir = o.dataDir || defaultDataDir(o.name);
     const peers = [o.peers, o.bootstrap]
@@ -132,6 +139,57 @@ program
         c.yellow(iv > 0 ? `  ⛏  自动挖矿已开启（每块间歇 ${iv}ms）` : `  ⛏  自动挖矿已开启（连续挖，出块节奏由 PoW 难度决定）`),
       );
     }
+    // ---- .v0id 洋葱中继 / SOCKS5 前端 ----
+    if (o.relay || o.socks) {
+      // 从链上目录解析中继地址 → cell 入口（用于 EXTEND 拨号 & SOCKS 选路）
+      const resolver = (id: string) => {
+        const d = node.relays().find((r) => r.address === id);
+        return d ? { host: d.host, port: d.port } : undefined;
+      };
+      if (o.relay) {
+        const relayPort = Number(o.relayPort || Number(o.p2pPort) + 10);
+        const onion = loadOrCreateOnionKey(dataDir);
+        const adHost = o.relayAdvertise || '127.0.0.1';
+        const relay = new RelayNode(node.wallet.address, onion, resolver, relayPort, '0.0.0.0');
+        const allow = String(o.exitAllow).split(',').map((s: string) => s.trim()).filter(Boolean);
+        if (allow.length) {
+          const set = new Set(allow);
+          relay.setExitPolicy((host, port) => set.has(`${host}:${port}`));
+        }
+        console.log(`  ${c.dim('中继  ')} cell:${relayPort}  okey:${bytesToHex(onion.pub).slice(0, 16)}…  出口:${allow.length ? c.yellow(allow.join(',')) : c.dim('deny-all')}`);
+        // 自动发布描述符：余额够且尚未发布时发一次（挖矿/收款后自动生效）
+        let published = false;
+        const tryPublish = () => {
+          if (published) return;
+          if (node.relays().some((r) => r.address === node.wallet.address)) {
+            published = true;
+            return;
+          }
+          if (node.bc.balanceOf(node.wallet.address) < 2) return;
+          const pub = node.publishRelay(bytesToHex(onion.pub), adHost, relayPort);
+          if (pub.ok) {
+            published = true;
+            console.log(`  ${c.green('✓ 中继描述符已上链广播（待挖块生效，全网可发现）')}`);
+          }
+        };
+        tryPublish();
+        setInterval(tryPublish, 5000).unref();
+      }
+      if (o.socks) {
+        const socksPort = Number(o.socksPort);
+        const pickHops = (): HopSpec[] => {
+          const all = node.relays();
+          if (all.length < 3) throw new Error('链上中继不足 3 个，暂无法建路');
+          const pool = [...all];
+          const chosen = [] as typeof all;
+          for (let i = 0; i < 3; i++) chosen.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+          return chosen.map((d) => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port }));
+        };
+        new SocksProxy(pickHops, socksPort);
+        console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 127.0.0.1:' + socksPort + ' … 经洋葱出网；需链上≥3 中继）')}`);
+      }
+    }
+
     console.log(c.dim('\n  Ctrl-C 退出。另开一个终端用 `v0id` 子命令操作这个节点。\n'));
 
     // 每 5s 打一行状态，挖矿时能直观看到链在前进、余额在涨

@@ -36,6 +36,9 @@ import {
   makeListing,
   BUY_PREFIX,
   DEL_PREFIX,
+  makeRelayClaim,
+  parseRelays,
+  relaysToJSON,
 } from '@v0idchain/core';
 import { P2P } from './p2p.js';
 
@@ -195,6 +198,18 @@ export class V0idNode {
   /** 昵称注册表（名字↔地址），可 JSON 序列化 */
   names() {
     return registryToJSON(parseNames(this.bc.chain));
+  }
+
+  /** 发布本节点为洋葱中继：自转 1 币 + memo `RELAY|<okey>|<host:port>|<bw>|<stake>`（挖进区块后全网可发现）。 */
+  publishRelay(onionPubHex: string, host: string, port: number): { ok: boolean; tx?: Transaction; error?: string } {
+    const r = makeRelayClaim(onionPubHex, host, port);
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, this.wallet.address, 1, r.memo!, MIN_FEE);
+  }
+
+  /** 链上中继目录（地址→描述符），可 JSON 序列化 */
+  relays() {
+    return relaysToJSON(parseRelays(this.bc.chain));
   }
 
   // ---- 链上抢红包 ----

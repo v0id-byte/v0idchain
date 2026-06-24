@@ -69,6 +69,8 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             return json(200, node.recentNewcomers());
           case '/names':
             return json(200, node.names());
+          case '/relays':
+            return json(200, node.relays());
           case '/redpackets':
             return json(200, node.redPackets());
           case '/balance': {
