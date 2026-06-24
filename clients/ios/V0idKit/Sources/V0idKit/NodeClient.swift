@@ -26,8 +26,7 @@ public final class NodeClient: ObservableObject {
     /// 当前钱包地址（设置后状态计算才有意义）。
     public var address: String?
 
-    private var task: URLSessionWebSocketTask?
-    private var session: URLSession
+    private var ws: WebSocketConn?
     private var keepAlive: Timer?
     private var reconnectWork: DispatchWorkItem?
     private var manualClose = false
@@ -46,18 +45,9 @@ public final class NodeClient: ObservableObject {
     public init(nodeURL: String) {
         self.nodeURL = nodeURL
         self.connectURL = nodeURL
-        // 绕过系统代理（Clash / Shadowrocket 等）：ws:// 长连接在 HTTP CONNECT 隧道里
-        // 会被上游代理截断（握手后不到 1s 断开）。直连更可靠；如需代理出境，
-        // 请在 Clash 里为节点域名加 DIRECT 规则。
-        let cfg = URLSessionConfiguration.default
-        cfg.connectionProxyDictionary = [
-            kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
-            kCFNetworkProxiesHTTPSEnable as AnyHashable: 0,
-            kCFNetworkProxiesSOCKSEnable as AnyHashable: 0,
-            kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
-            kCFNetworkProxiesProxyAutoDiscoveryEnable as AnyHashable: 0,
-        ]
-        self.session = URLSession(configuration: cfg)
+        // 传输层用裸 POSIX socket（WebSocketConn），不用 URLSession：后者尊重系统 HTTP/SOCKS
+        // 代理（Clash/mihomo），把 ws:// 握手送进代理隧道，代理一抖就断。裸 socket 直连内核
+        // TCP 栈，绕过系统代理。详见 WebSocket.swift。
         self.backupURLs = UserDefaults.standard.stringArray(forKey: "v0id-peer-backup") ?? []
     }
 
@@ -97,27 +87,60 @@ public final class NodeClient: ObservableObject {
         manualClose = false
         generation += 1
         let gen = generation
-        // 必须是 ws:// 或 wss://，否则 URLSessionWebSocketTask 会抛 ObjC 异常直接崩（Swift try/catch 拦不住）。
         // 容错：用户没写 scheme（如 "localhost:6001"）就补 ws://；scheme 不对则报错不连。
-        guard let url = Self.normalizedWebSocketURL(connectURL) else {
+        guard let url = Self.normalizedWebSocketURL(connectURL), let host = url.host else {
             status = .disconnected
             let message = "节点地址无效（需 ws:// 或 wss://）：\(connectURL)"
             lastError = message
             connectionError = message
             return
         }
+        // WebSocketConn 走裸 socket，目前仅支持 ws://（wss 需 TLS，留待生产化）。
+        guard url.scheme == "ws" else {
+            status = .disconnected
+            let message = "暂仅支持 ws://（wss 待生产化）：\(connectURL)"
+            lastError = message
+            connectionError = message
+            return
+        }
+        let port = UInt16(url.port ?? 80)
         status = .connecting
         lastError = nil
-        let task = session.webSocketTask(with: url)
-        self.task = task
-        task.resume()
-        receiveLoop(gen: gen)
-        // 握手：HELLO（height=0，listen 随意——我们不被回拨）→ 要整条链 + 问邻居
-        send(.hello(address: address ?? Crypto.nullAddress, height: 0, listen: "ios-light-client"))
-        send(.queryAll)
-        send(.queryPeers)
-        status = .syncing
-        syncingStart = Date()
+        // listen 每条连接唯一：节点端用 listen 给连接判重（p2p.ts），共用常量会导致同一客户端
+        // 新旧连接互相判重 → 被 close → 立即重连 → 永久抖动、整链拉不到。规范允许 listen 为任意串。
+        let listen = "ios-light-\(UUID().uuidString.prefix(8))"
+        let conn = WebSocketConn(host: host, port: port)
+        self.ws = conn
+        conn.onOpen = { [weak self] in
+            Task { @MainActor in
+                guard let self, gen == self.generation else { return }
+                // 握手：HELLO（height=0，listen 唯一——我们不被回拨）→ 要整条链 + 问邻居
+                self.send(.hello(address: self.address ?? Crypto.nullAddress, height: 0, listen: listen))
+                self.send(.queryAll)
+                self.send(.queryPeers)
+                self.status = .syncing
+                self.syncingStart = Date()
+            }
+        }
+        conn.onText = { [weak self] text in
+            Task { @MainActor in
+                guard let self, gen == self.generation else { return } // 旧连接的回调直接丢弃
+                self.handle(text)
+            }
+        }
+        conn.onClose = { [weak self] err in
+            Task { @MainActor in
+                guard let self, gen == self.generation else { return }
+                let wasConnected = self.status == .connected
+                if let err { self.lastError = err }
+                if !wasConnected, let err {
+                    self.connectionError = "连接 \(self.connectURL) 失败：\(err)"
+                }
+                self.status = .disconnected
+                self.scheduleReconnect()
+            }
+        }
+        conn.start()
         startKeepAlive()
     }
 
@@ -141,8 +164,8 @@ public final class NodeClient: ObservableObject {
         manualClose = manual
         reconnectWork?.cancel(); reconnectWork = nil
         keepAlive?.invalidate(); keepAlive = nil
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
+        ws?.close()
+        ws = nil
         chunkBuffer = []; chunkTotal = 0   // 旧连接的残片不要带入下一次同步
         if manual { status = .disconnected }
     }
@@ -161,8 +184,7 @@ public final class NodeClient: ObservableObject {
                 } else {
                     self.send(.queryLatest)
                 }
-                // WS 协议层 ping：防运营商 NAT / 透明代理超时断连
-                self.task?.sendPing { _ in }
+                // 应用层探测即保活；WebSocketConn 会自动回应服务端 ping（防 NAT 超时断连）。
             }
         }
     }
@@ -185,49 +207,17 @@ public final class NodeClient: ObservableObject {
     // MARK: - 收发
 
     private func send(_ msg: OutgoingMessage) {
-        guard let task else { return }
+        guard let ws else { return }
         do {
             let data = try msg.jsonData()
-            let text = String(decoding: data, as: UTF8.self)
-            task.send(.string(text)) { [weak self] error in
-                if let error {
-                    Task { @MainActor in self?.lastError = "发送失败：\(error.localizedDescription)" }
-                }
-            }
+            ws.sendText(String(decoding: data, as: UTF8.self))
         } catch {
             lastError = "编码失败：\(error.localizedDescription)"
         }
     }
 
-    private func receiveLoop(gen: Int) {
-        guard let task else { return }
-        task.receive { [weak self] result in
-            Task { @MainActor in
-                guard let self, gen == self.generation else { return } // 旧连接的回调直接丢弃
-                switch result {
-                case .failure(let error):
-                    let wasConnected = self.status == .connected
-                    self.lastError = error.localizedDescription
-                    if !wasConnected {
-                        self.connectionError = "连接 \(self.connectURL) 失败：\(error.localizedDescription)"
-                    }
-                    self.status = .disconnected
-                    self.scheduleReconnect()
-                case .success(let message):
-                    self.handle(message)
-                    self.receiveLoop(gen: gen) // 继续收下一帧
-                }
-            }
-        }
-    }
-
-    private func handle(_ message: URLSessionWebSocketTask.Message) {
-        let data: Data
-        switch message {
-        case .string(let s): data = Data(s.utf8)
-        case .data(let d): data = d
-        @unknown default: return
-        }
+    private func handle(_ text: String) {
+        let data = Data(text.utf8)
         guard let parsed = IncomingMessage.parse(data) else { return }
         switch parsed {
         case .blocks(let blocks):

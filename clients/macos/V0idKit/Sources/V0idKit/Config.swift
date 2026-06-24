@@ -58,7 +58,8 @@ public enum Config {
     public static let localNode = "ws://127.0.0.1:6001"
 
     /// 引导节点：客户端从这里起步，再通过 QUERY_PEERS 发现并连上整网其它节点（不只压种子一个）。
-    public static let bootstrapNodes: [String] = [defaultSeed]
+    /// 两个种子互为备份（v0id@6001 + rpi@6201），任一挂掉客户端仍可接入。
+    public static let bootstrapNodes: [String] = [defaultSeed, "ws://mc.void1211.com:6201"]
     /// 同时保持的最大连接数（连上一批 → 整链只向其一拉、交易广播给全部、掉线自动补）。
     public static let maxPeers = 6
 }

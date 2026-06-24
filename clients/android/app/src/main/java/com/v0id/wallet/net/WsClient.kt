@@ -8,6 +8,8 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.net.Proxy
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -29,10 +31,16 @@ class WsClient(
         .pingInterval(20, TimeUnit.SECONDS)     // 保活
         .readTimeout(0, TimeUnit.MILLISECONDS)  // WS 长连，不超时
         .connectTimeout(15, TimeUnit.SECONDS)
+        // 绕过系统代理（Clash/VPN 等）：OkHttp 默认走 ProxySelector.getDefault()，会把 ws:// 长连
+        // 送进代理隧道，代理一抖就断。直连节点更可靠（同 macOS/iOS 客户端的处置）。
+        .proxy(Proxy.NO_PROXY)
         .build()
 
     private var ws: WebSocket? = null
     private var myAddress: String = ""
+    // 每条连接唯一的 HELLO listen 后缀：节点端按 listen 给连接判重（p2p.ts），同一客户端
+    // 自动重连时若沿用旧 listen，可能与服务端尚未清理的陈旧连接对撞被踢 → 永久抖动。
+    private var connToken: String = ""
 
     @Volatile var status: Status = Status.DISCONNECTED
         private set
@@ -42,6 +50,7 @@ class WsClient(
     fun connect(url: String, address: String) {
         userClosed = false
         myAddress = address
+        connToken = UUID.randomUUID().toString().take(8)   // 本次连接唯一，避免 listen 自我对撞
         setStatus(Status.CONNECTING)
         val trimmed = url.trim()
         // 强制 ws:// 或 wss:// scheme：否则 replaceFirst 对 http://attacker 或裸 host 不生效，
@@ -99,7 +108,7 @@ class WsClient(
                     .put("type", "HELLO")
                     .put("address", myAddress)
                     .put("height", 0)
-                    .put("listen", "light://$myAddress")
+                    .put("listen", "light://$myAddress/$connToken")
                     .toString(),
             )
             webSocket.send(JSONObject().put("type", "QUERY_ALL").toString())

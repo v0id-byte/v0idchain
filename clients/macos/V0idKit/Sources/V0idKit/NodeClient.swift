@@ -1,12 +1,9 @@
 // P2P 轻客户端连接池：从种子引导 → 发现对等节点（QUERY_PEERS）→ 同时连多个节点（随机挑选）。
 // 协议见 CLIENT-PROTOCOL §6，与 packages/node/src/p2p.ts 完全一致（JSON 文本帧）。
 //
-// 为什么连多个：只连种子一个节点会把整网负载全压在种子机上、且单点故障。连上一批节点后：
-//   • 整链只向**其中一个**节点 QUERY_ALL（按需，落后才拉）→ 大幅降低种子负担；
-//   • 交易广播给**所有**连接 → 传播更快、更稳；
-//   • 任一节点掉线自动补连其它已知节点。
-// 我们是纯出站叶子节点：不开 WS 服务器，对节点发来的 QUERY_LATEST / HELLO / QUERY_PEERS 一概忽略，
-// 但会消费 PEERS 来发现更多节点。
+// 传输层用 WebSocketConn（裸 POSIX socket），而非 URLSession / NWConnection：
+// 后两者都会尊重系统 HTTP/SOCKS 代理（Clash/mihomo），把 ws:// 握手送进代理隧道，
+// 代理不稳定时连接随即断开。裸 socket 直连内核 TCP 栈，绕过系统代理。详见 WebSocket.swift。
 import Foundation
 
 public enum NodeEvent: Sendable {
@@ -16,10 +13,9 @@ public enum NodeEvent: Sendable {
 }
 
 public actor NodeClient {
-    private static let maxFrame = 64 * 1024 * 1024
     private static let heartbeat: UInt64 = 5_000_000_000
     private static let maintainEvery: UInt64 = 4_000_000_000
-    private static let retryCooldown: TimeInterval = 15   // 连不上的地址冷却多久再重试（避免每 4s 抽风式重拨）
+    private static let retryCooldown: TimeInterval = 15   // 连不上的地址冷却多久再重试
 
     private let bootstrap: [String]
     private let myAddress: String
@@ -27,39 +23,27 @@ public actor NodeClient {
 
     private var running = false
     private var chain: [Block] = []
-    private var known = Set<String>()                 // 已知可连地址（种子 + 发现的；均为规范化 ws://host:port）
-    private var conns = [String: Connection]()        // 当前连接（含在途）
+    private var known = Set<String>()                 // 已知可连地址（规范化 ws://host:port）
+    private var conns = [String: Conn]()              // 当前连接（含在途）
     private var retryAfter = [String: Date]()         // 连不上的地址：此刻之前不重试
     private var lastPeers = -1                         // 上次上报的“已建立”连接数（去重，杜绝闪烁）
     private var maintainTask: Task<Void, Never>?
-    private let session: URLSession
 
     private let continuation: AsyncStream<NodeEvent>.Continuation
     public nonisolated let events: AsyncStream<NodeEvent>
 
-    private struct Connection {
-        let task: URLSessionWebSocketTask
-        var recv: Task<Void, Never>?
+    private final class Conn: @unchecked Sendable {
+        let ws: WebSocketConn
+        let listen: String      // 本条连接的 HELLO listen 值（每连接唯一，见 connect()）
         var beat: Task<Void, Never>?
-        var open = false        // 是否已成功收到过消息（= 真正建立）。peers 只数 open，避免在途/死链造成闪烁。
+        var open = false        // 是否已完成 WS 握手（= 真正建立）。peers 只数 open。
+        init(_ ws: WebSocketConn, listen: String) { self.ws = ws; self.listen = listen }
     }
 
     public init(bootstrap: [String], myAddress: String, maxPeers: Int = 6) {
         self.bootstrap = bootstrap
         self.myAddress = myAddress
         self.maxPeers = maxPeers
-        // 绕过系统代理（Clash / Shadowrocket 等）：ws:// 长连接在 HTTP CONNECT 隧道里
-        // 会被上游代理截断（握手后不到 1s 断开）。直连更可靠；若你的网络需要代理出境，
-        // 请在 Clash 规则里为 mc.void1211.com 加一条 DIRECT 规则。
-        let cfg = URLSessionConfiguration.default
-        cfg.connectionProxyDictionary = [
-            kCFNetworkProxiesHTTPEnable as AnyHashable: 0,
-            kCFNetworkProxiesHTTPSEnable as AnyHashable: 0,
-            kCFNetworkProxiesSOCKSEnable as AnyHashable: 0,
-            kCFNetworkProxiesProxyAutoConfigEnable as AnyHashable: 0,
-            kCFNetworkProxiesProxyAutoDiscoveryEnable as AnyHashable: 0,
-        ]
-        self.session = URLSession(configuration: cfg)
         var cont: AsyncStream<NodeEvent>.Continuation!
         self.events = AsyncStream { cont = $0 }
         self.continuation = cont
@@ -91,7 +75,7 @@ public actor NodeClient {
     public func broadcast(_ tx: Transaction) throws {
         let live = conns.values.filter { $0.open }
         guard !live.isEmpty else { throw NodeError.notConnected }
-        for c in live { Self.rawSend(c.task, .tx(tx)) }
+        for c in live { Self.rawSend(c.ws, .tx(tx)) }
     }
 
     /// 当前同步到的链（测试 / 调试）。
@@ -104,7 +88,7 @@ public actor NodeClient {
         while running && !Task.isCancelled {
             fillConnections()
             tick += 1
-            if tick % 10 == 0 { savePeers() }   // ~40s（10 × 4s）定期落盘
+            if tick % 10 == 0 { savePeers() }   // ~40s 定期落盘
             try? await Task.sleep(nanoseconds: Self.maintainEvery)
         }
     }
@@ -112,20 +96,20 @@ public actor NodeClient {
     private func savePeers() {
         let urls = known.filter { url in
             guard let u = URL(string: url), let h = u.host else { return false }
-            return !Self.isPrivateOrLocalHost(h)  // 只持久化公网地址（环回/私网/链路本地/ULA 一律排除）
+            return !Self.isPrivateOrLocalHost(h)  // 只持久化公网地址
         }
         UserDefaults.standard.set(Array(urls), forKey: "v0id-known-peers")
     }
 
     /// host 是否为环回/私网/链路本地/ULA（gossip 学来的命中则丢弃，防 LAN MITM）。
-    /// 对齐节点端 isPublicWsUrl 的「只放行全局单播」策略（packages/node/src/p2p.ts）。
+    /// 对齐节点端 isPublicWsUrl 策略（packages/node/src/p2p.ts）。
     static func isPrivateOrLocalHost(_ rawHost: String) -> Bool {
         var host = rawHost.lowercased()
         host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         if let pct = host.firstIndex(of: "%") { host = String(host[..<pct]) }
         if host.isEmpty || host == "localhost" { return true }
         if host.contains(":") {
-            // IPv6：只放行全局单播 2000::/3；其余（::1 / fe80 / fc,fd / ::ffff: 等）拒
+            // IPv6：只放行全局单播 2000::/3；其余拒
             let firstSeg = host.hasPrefix("::") ? "0" : (host.split(separator: ":").first.map(String.init) ?? "")
             guard let f = Int(firstSeg, radix: 16), f >= 0x2000, f <= 0x3fff else { return true }
             return false
@@ -153,80 +137,69 @@ public actor NodeClient {
 
     private func connect(_ url: String) {
         guard running, conns[url] == nil, let u = URL(string: url) else { return }
-        let task = session.webSocketTask(with: u)
-        task.maximumMessageSize = Self.maxFrame
-        conns[url] = Connection(task: task, recv: nil, beat: nil)
-        task.resume()
-        // 握手：自报家门 + 问最新块 + 问它认识谁。整链不在此拉——按需（落后时）只向一个节点 QUERY_ALL。
-        Self.rawSend(task, .hello(address: myAddress, height: max(0, chain.count - 1), listen: "macos-light"))
-        Self.rawSend(task, .queryLatest)
-        Self.rawSend(task, .queryPeers)
-        if chain.isEmpty { Self.rawSend(task, .queryAll) }   // 冷启动：向首批节点要整链（拿到即停）
-        conns[url]?.recv = Task { [weak self] in await self?.receiveLoop(url, task) }
-        conns[url]?.beat = Task { [weak self] in await self?.beatLoop(url, task) }
-        // 不在此 emitPeers：只有真正收到消息（open）才计数，避免在途/死链闪烁。
+        guard u.scheme == "ws", let host = u.host else { return }   // 仅 ws://（wss 需 TLS，留待生产化）
+        let port = UInt16(u.port ?? 80)
+        let ws = WebSocketConn(host: host, port: port)
+        // listen 每条连接唯一：节点端用 listen 给连接判重（p2p.ts），共用常量会导致同一客户端
+        // 新旧连接互相判重 → 被 close → 立即重连 → 永久抖动、整链拉不到。规范允许 listen 为任意串。
+        let c = Conn(ws, listen: "macos-light-\(UUID().uuidString.prefix(8))")
+        conns[url] = c
+        ws.onOpen  = { [weak self] in Task { await self?.onOpen(url) } }
+        ws.onText  = { [weak self] t in Task { await self?.onText(url, t) } }
+        ws.onClose = { [weak self] err in Task { await self?.onClose(url, err) } }
+        c.beat = Task { [weak self] in await self?.beatLoop(url) }
+        ws.start()
+    }
+
+    /// WS 握手完成 = 真正建立：发应用层握手 + 计入 peers。
+    private func onOpen(_ url: String) {
+        guard let c = conns[url] else { return }
+        c.open = true
+        retryAfter[url] = nil
+        Self.rawSend(c.ws, .hello(address: myAddress, height: max(0, chain.count - 1), listen: c.listen))
+        Self.rawSend(c.ws, .queryLatest)
+        Self.rawSend(c.ws, .queryPeers)
+        if chain.isEmpty { Self.rawSend(c.ws, .queryAll) }   // 冷启动：要整链
+        emitPeers()
+    }
+
+    private func onText(_ url: String, _ text: String) {
+        guard let c = conns[url] else { return }
+        handle(text, conn: c)
+    }
+
+    private func onClose(_ url: String, _ err: String?) {
+        guard let c = conns[url] else { return }
+        if !c.open, let err { continuation.yield(.error(err)) }   // 从未连上 → 报具体原因
+        disconnect(url)
     }
 
     private func disconnect(_ url: String) {
         guard let c = conns.removeValue(forKey: url) else { return }
-        c.recv?.cancel()
         c.beat?.cancel()
-        c.task.cancel(with: .goingAway, reason: nil)
-        if !c.open {
-            // 从未连上 → 冷却，避免每个 maintain tick 都对死地址重拨（churn）。
-            retryAfter[url] = Date().addingTimeInterval(Self.retryCooldown)
-        } else {
-            retryAfter[url] = nil   // 曾连上、只是掉了 → 允许尽快重连
-        }
+        c.ws.close()
+        // 从未连上 → 冷却，避免对死地址 churn；曾连上只是掉了 → 允许尽快重连。
+        retryAfter[url] = c.open ? nil : Date().addingTimeInterval(Self.retryCooldown)
         emitPeers()
     }
 
-    private func receiveLoop(_ url: String, _ task: URLSessionWebSocketTask) async {
-        while running && !Task.isCancelled {
-            do {
-                let msg = try await task.receive()
-                if conns[url]?.open == false {
-                    conns[url]?.open = true     // 首次收到消息 = 真正建立
-                    retryAfter[url] = nil
-                    emitPeers()
-                }
-                let text: String
-                switch msg {
-                case .string(let s): text = s
-                case .data(let d): text = String(decoding: d, as: UTF8.self)
-                @unknown default: continue
-                }
-                handle(text, from: task)
-            } catch {
-                if running {
-                    // 从未连上就报错（让 UI 能显示具体原因，而非永远只说"连接中…"）。
-                    if conns[url]?.open == false {
-                        continuation.yield(.error("连接 \(url) 失败：\(error.localizedDescription)"))
-                    }
-                    disconnect(url)
-                }
-                return
-            }
-        }
-    }
-
-    private func beatLoop(_ url: String, _ task: URLSessionWebSocketTask) async {
+    private func beatLoop(_ url: String) async {
         while running && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: Self.heartbeat)
             if Task.isCancelled { return }
-            Self.rawSend(task, .queryLatest)   // 应用层心跳：探最新块（落后才会触发整链补拉）
-            task.sendPing { _ in }             // WS 协议层 ping：防运营商 NAT / 透明代理超时断连
+            guard let c = conns[url], c.open else { continue }
+            Self.rawSend(c.ws, .queryLatest)   // 应用层心跳：探最新块（落后才触发整链补拉）+ 保活 NAT
         }
     }
 
     // ---- 收消息 ----
-    private func handle(_ text: String, from task: URLSessionWebSocketTask) {
+    private func handle(_ text: String, conn: Conn) {
         guard let data = text.data(using: .utf8),
               let env = try? JSONDecoder().decode(TypeEnvelope.self, from: data) else { return }
         switch env.type {
         case "BLOCKS":
             guard let payload = try? JSONDecoder().decode(BlocksEnvelope.self, from: data) else { return }
-            handleBlocks(payload.blocks, from: task)
+            handleBlocks(payload.blocks, conn: conn)
         case "PEERS":
             guard let payload = try? JSONDecoder().decode(PeersEnvelope.self, from: data) else { return }
             handlePeers(payload.peers)
@@ -235,14 +208,11 @@ public actor NodeClient {
         }
     }
 
-    private func handleBlocks(_ blocks: [Block], from task: URLSessionWebSocketTask) {
+    private func handleBlocks(_ blocks: [Block], conn: Conn) {
         guard let first = blocks.first else { return }
         if first.index == 0 {
             // 整链（QUERY_ALL 回应）：更长则采纳（信任所连节点，符合规范 MVP）。
-            if blocks.count > chain.count {
-                chain = blocks
-                emitChain()
-            }
+            if blocks.count > chain.count { chain = blocks; emitChain() }
         } else {
             // 增量 / 探测：能干净接到链顶则追加；否则若对方更高 → 只向该节点补拉整链。
             var changed = false
@@ -250,8 +220,7 @@ public actor NodeClient {
                 if nb.index == chain.count && nb.prevHash == chain.last?.hash {
                     chain.append(nb); changed = true
                 } else if nb.index >= chain.count {
-                    Self.rawSend(task, .queryAll)
-                    break
+                    Self.rawSend(conn.ws, .queryAll); break
                 }
             }
             if changed { emitChain() }
@@ -262,8 +231,7 @@ public actor NodeClient {
         var added = false
         for raw in urls {
             guard let url = Self.normalize(raw) else { continue }
-            // 丢弃私网/环回/链路本地 peer：否则 LAN MITM 投递 PEERS 帧即可把自己（如 ws://10.0.0.5:6001）
-            // 注入 known 并被自动连接（此前 handlePeers 完全不过滤，仅 savePeers 持久化时才挡 localhost/127）。
+            // 丢弃私网/环回/链路本地 peer（防 LAN MITM 通过 PEERS 帧注入自己）。
             if let h = URL(string: url)?.host, Self.isPrivateOrLocalHost(h) { continue }
             if !known.contains(url) { known.insert(url); added = true }
         }
@@ -272,7 +240,7 @@ public actor NodeClient {
 
     private func emitChain() { continuation.yield(.chain(chain)) }
 
-    /// 只数“已建立”的连接，且仅在数字变化时上报 → 杜绝在途/死链反复触发的闪烁。
+    /// 只数“已建立”的连接，且仅在数字变化时上报 → 杜绝闪烁。
     private func emitPeers() {
         let n = conns.values.filter { $0.open }.count
         guard n != lastPeers else { return }
@@ -280,7 +248,7 @@ public actor NodeClient {
         continuation.yield(.peers(n))
     }
 
-    /// 规范化地址为 ws://host:port（去 path/尾斜杠、小写 scheme+host）→ 同一节点的不同写法去重，避免重复连接 + 重复广播。
+    /// 规范化地址为 ws://host:port → 同一节点不同写法去重，避免重复连接 + 重复广播。
     private nonisolated static func normalize(_ raw: String) -> String? {
         let t = raw.trimmingCharacters(in: .whitespaces)
         guard let u = URL(string: t), let scheme = u.scheme?.lowercased(),
@@ -289,10 +257,10 @@ public actor NodeClient {
         return "\(scheme)://\(host)\(port)"
     }
 
-    // ---- 发送（无需 actor 状态，nonisolated）----
-    private nonisolated static func rawSend(_ task: URLSessionWebSocketTask, _ msg: OutMsg) {
+    // ---- 发送 ----
+    private nonisolated static func rawSend(_ ws: WebSocketConn, _ msg: OutMsg) {
         guard let data = try? JSONEncoder().encode(msg) else { return }
-        task.send(.string(String(decoding: data, as: UTF8.self))) { _ in }
+        ws.sendText(String(decoding: data, as: UTF8.self))
     }
 }
 
