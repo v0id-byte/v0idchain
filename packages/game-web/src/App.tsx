@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createMessage,
   makePetMint,
+  makePetBreed,
+  makePetEvolve,
   PET_HATCH_COST,
+  PET_BREED_COST,
+  PET_EVO_COST,
+  MAX_EVO,
   MIN_FEE,
   sha256Hex,
   petTraits,
@@ -95,11 +100,11 @@ function computeGardenStage(plot: GardenPlot): 0 | 1 | 2 | 3 {
   return 0;
 }
 
-function PetSprite({ gene, size = 88 }: { gene: string; size?: number }) {
+function PetSprite({ gene, size = 88, evo = 0 }: { gene: string; size?: number; evo?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    if (ref.current) renderPet(ref.current, gene, size);
-  }, [gene, size]);
+    if (ref.current) renderPet(ref.current, gene, size, evo);
+  }, [gene, size, evo]);
   return <canvas ref={ref} className="sprite" style={{ width: size, height: size }} />;
 }
 
@@ -422,6 +427,51 @@ export default function App() {
       }),
     [runReveal, wallet.address],
   );
+
+  // 繁育子崽 → 揭晓（子基因继承双亲 byte2-6，稀有度仍由出块后 seed 事后确定）。供 PetsPanel 调用。
+  const breedReveal = useCallback(
+    (aId: string, bId: string): Promise<boolean> => {
+      const made = makePetBreed(aId, bId);
+      if (!made.ok || !made.memo) { setStatus(made.error ?? '繁育参数无效'); return Promise.resolve(false); }
+      setMenuOpen(false);
+      return runReveal({
+        label: '繁育',
+        memo: made.memo,
+        burn: PET_BREED_COST,
+        to: wallet.address,
+        resolve: async (txid) => {
+          const ps = await api.pets(wallet.address).catch(() => [] as Pet[]);
+          const p = ps.find((x) => x.id === txid);
+          if (!p) return null;
+          const t = petTraits(p.gene);
+          return { kind: 'pet', gene: p.gene, rarity: t.rarity, name: `${RARITY_LABEL[t.rarity]}崽`, sub: '新生 · 继承双亲特征' };
+        },
+      });
+    },
+    [runReveal, wallet.address],
+  );
+
+  // 进化/培育（轻量动作，无完整 gacha 揭晓——不产新稀有度，只升阶）。
+  const evolvePet = useCallback(async (petId: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const made = makePetEvolve(petId);
+      if (!made.ok || !made.memo) throw new Error(made.error ?? '进化参数无效');
+      setStatus('培育进化：签名 + 烧币…');
+      const { nonce } = await api.nonce(wallet.address);
+      const tx = createMessage(wallet, wallet.address, made.memo, nonce, PET_EVO_COST, MIN_FEE);
+      const r = await api.submitTx(tx);
+      setStatus('已广播，等矿工打包…');
+      const ok = await waitConfirmed(r.txid);
+      await refresh();
+      setStatus(ok ? '🌟 进化 +1 阶！' : '已广播，稍后生效');
+    } catch (e) {
+      setStatus(`进化失败：${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, refresh, wallet]);
 
   const FRUIT_ICON: Record<FruitKind, string> = { apple: '🍎', orange: '🍊', berry: '🫐', golden_apple: '✨🍎' };
   const FRUIT_REGEN_MS = 90_000; // 果子再生时间（90 秒游戏内时间）
@@ -988,7 +1038,7 @@ export default function App() {
             {tab === 'codex' ? (
               <Codex pets={pets} fish={fish} crops={farm?.crops ?? []} mines={mines} address={wallet.address} name={name} />
             ) : tab === 'pets' ? (
-              <PetsPanel pets={pets} balance={balance} busy={busy} onHatch={hatch} status={status} />
+              <PetsPanel pets={pets} balance={balance} busy={busy} onHatch={hatch} onBreed={breedReveal} onEvolve={evolvePet} status={status} />
             ) : tab === 'fish' ? (
               <FishPanel fish={fish} canFish={nearby?.type === 'fishing'} onFish={() => { setMenuOpen(false); setFishingOpen(true); }} />
             ) : tab === 'farm' ? (
@@ -1234,32 +1284,81 @@ function PetsPanel({
   balance,
   busy,
   onHatch,
+  onBreed,
+  onEvolve,
   status,
 }: {
   pets: Pet[];
   balance: number | null;
   busy: boolean;
   onHatch: () => void;
+  onBreed: (a: string, b: string) => void;
+  onEvolve: (petId: string) => void;
   status: string;
 }) {
-  const canAfford = (balance ?? 0) >= PET_HATCH_COST + MIN_FEE;
+  const bal = balance ?? 0;
+  const canHatch = bal >= PET_HATCH_COST + MIN_FEE;
+  const canEvoBal = bal >= PET_EVO_COST + MIN_FEE;
   const samples = useMemo(() => Array.from({ length: 6 }, (_, i) => sha256Hex(`v0id-sample-${i}`)), []);
+  const [sel, setSel] = useState<string[]>([]);
+  const toggle = (id: string) =>
+    setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : s.length >= 2 ? [s[1], id] : [...s, id]));
+  const canBreed = sel.length === 2 && bal >= PET_BREED_COST + MIN_FEE;
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>我的崽</h2>
-        <button className="primary" disabled={busy || !canAfford} onClick={onHatch}>
-          {canAfford ? `孵化（烧 ${PET_HATCH_COST}）` : `余额不足（需 ${PET_HATCH_COST}）`}
+        <button className="primary" disabled={busy || !canHatch} onClick={onHatch}>
+          {canHatch ? `孵化（烧 ${PET_HATCH_COST}）` : `余额不足（需 ${PET_HATCH_COST}）`}
         </button>
       </div>
       {pets.length === 0 ? (
         <p className="empty">还没有崽。孵化一只由链上基因生成、独一无二的像素宠物吧。</p>
       ) : (
-        <div className="pet-grid">
-          {pets.map((p) => (
-            <PetCard key={p.id} pet={p} />
-          ))}
-        </div>
+        <>
+          <p className="note" style={{ marginTop: 0 }}>
+            点两只崽选为双亲 → 繁育出继承它们腹色/眼睛/花纹/配饰的子崽（稀有度仍是出块后随机，<strong>选不出传说</strong>）。每只可培育进化至 {MAX_EVO} 阶。
+          </p>
+          <div className="pet-grid">
+            {pets.map((p) => {
+              const t = petTraits(p.gene);
+              const evo = p.evo ?? 0;
+              const selected = sel.includes(p.id);
+              return (
+                <div
+                  key={p.id}
+                  className={`pet-card rarity-${t.rarity}${selected ? ' pet-selected' : ''}`}
+                  onClick={() => toggle(p.id)}
+                  style={{ cursor: 'pointer' }}
+                  title="点选为双亲"
+                >
+                  <PetSprite gene={p.gene} size={84} evo={evo} />
+                  <div className="pet-meta">
+                    <span className={`tag tag-${t.rarity}`}>{RARITY_LABEL[t.rarity]}</span>
+                    {p.parents && <span className="tag pet-bred" title="繁育而生">子</span>}
+                  </div>
+                  <button
+                    className="mini-btn"
+                    disabled={busy || evo >= MAX_EVO || !canEvoBal}
+                    onClick={(e) => { e.stopPropagation(); onEvolve(p.id); }}
+                    title={evo >= MAX_EVO ? '已满阶' : `培育进化（烧 ${PET_EVO_COST}）`}
+                  >
+                    {evo >= MAX_EVO ? `★ ${evo} 满阶` : `培育 ↑ ${evo}/${MAX_EVO}`}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {sel.length > 0 && (
+            <div className="breed-bar">
+              <span className="breed-info">双亲 {sel.length}/2</span>
+              <button className="primary" disabled={!canBreed || busy} onClick={() => { onBreed(sel[0], sel[1]); setSel([]); }}>
+                {sel.length < 2 ? '再选一只' : canBreed ? `繁育（烧 ${PET_BREED_COST}）` : `余额不足（需 ${PET_BREED_COST}）`}
+              </button>
+              <button className="ghost-btn" onClick={() => setSel([])}>清空</button>
+            </div>
+          )}
+        </>
       )}
       {status && status !== '就绪' && <p className="panel-status">{busy ? <i className="spin" /> : null}{status}</p>}
       <h3>图鉴 · 基因决定长相</h3>

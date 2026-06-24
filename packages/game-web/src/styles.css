@@ -624,3 +624,24 @@ button.dir-go:hover { text-decoration: underline; }
 }
 .codex-bar-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #a98bff); transition: width .3s ease; }
 .codex-bar-num { width: 56px; flex: none; text-align: right; font-size: 12px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+
+/* ════════════════ 宠物繁育 / 进化 ════════════════ */
+.pet-card.pet-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.tag.pet-bred { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.mini-btn {
+  margin-top: 2px; width: 100%;
+  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+  padding: 4px 6px; border-radius: 8px; font: inherit; font-size: 11px; cursor: pointer;
+}
+.mini-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.mini-btn:disabled { opacity: .5; cursor: not-allowed; }
+.breed-bar {
+  display: flex; align-items: center; gap: 10px; margin-top: 12px;
+  background: var(--panel-2); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 12px; padding: 10px 14px;
+}
+.breed-info { color: var(--muted); font-size: 13px; }
+.breed-bar .primary { margin-left: auto; }

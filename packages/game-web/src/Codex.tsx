@@ -18,11 +18,11 @@ function mineRarity(r: MineAsset['traits']['rarity']): Rarity {
   return r === 'legendary' ? 'legendary' : r === 'epic' ? 'epic' : r === 'rare' || r === 'uncommon' ? 'rare' : 'common';
 }
 
-function PetSp({ gene, size = 64 }: { gene: string; size?: number }) {
+function PetSp({ gene, size = 64, evo = 0 }: { gene: string; size?: number; evo?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    if (ref.current) renderPet(ref.current, gene, size);
-  }, [gene, size]);
+    if (ref.current) renderPet(ref.current, gene, size, evo);
+  }, [gene, size, evo]);
   return <canvas ref={ref} className="sprite" style={{ width: size, height: size }} />;
 }
 function FishSp({ catchHash, size = 64 }: { catchHash: string; size?: number }) {
@@ -138,9 +138,10 @@ export default function Codex({
           const t = petTraits(p.gene);
           return (
             <div key={p.id} className={`pet-card rarity-${t.rarity}`}>
-              <PetSp gene={p.gene} />
+              <PetSp gene={p.gene} evo={p.evo ?? 0} />
               <div className="pet-meta">
                 <span className={`tag tag-${t.rarity}`}>{RARITY_LABEL[t.rarity]}</span>
+                {p.parents && <span className="tag pet-bred" title="繁育而生">子</span>}
               </div>
             </div>
           );
