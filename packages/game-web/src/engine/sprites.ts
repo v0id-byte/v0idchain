@@ -1,5 +1,6 @@
 // 程序化占位精灵（后续 Task #11 换 Kenney CC0）。全部 16px 瓦片，离屏生成 + 缓存。
 // 角色用“胶囊 + 朝向眼睛 + 2 帧上下微跳”，和崽的程序化像素同一调性。
+import { V, shade, propVolume, topEllipse, bevelBox, bhash } from './shade-kit.js';
 export const TILE = 16;
 export type Dir = 'down' | 'up' | 'left' | 'right';
 
@@ -159,17 +160,19 @@ function furniture(kind: FurnitureKind): C {
       break;
     // ───────── 场景专属道具（R2）：统一左上受光 + 顶面/rim/AO，告别占位件 ─────────
     case 'piling': // 码头木桩：粗木柱 + 顶切面 + 缆绳环 + 水线
-      round(5, 2, 6, 1, '#7a5230');   // 顶切面（受光环）
       round(5, 3, 6, 11, '#5e3c20');  // 柱身
       round(5, 3, 1, 11, '#7a4e2c');  // 左 rim 高光
       round(10, 3, 1, 11, '#3f2814'); // 右暗面
       round(6, 5, 1, 7, '#6a4524');   // 木纹
       round(8, 6, 1, 6, '#4a2e16');   // 木纹2
+      topEllipse(x, 8, 3, 3, 1.6, '#5e3c20'); // 锯切顶面（受光浅椭圆 ⇒ 圆柱 3D 顶）
       round(4, 8, 8, 2, '#3a2614');   // 缆绳环（深）
       round(4, 8, 8, 1, '#6a5236');   // 绳高光
-      round(5, 13, 6, 2, '#2e3a44');  // 水线（湿暗）
+      round(5, 12, 6, 2, shade('#2e3a44', V.ao)); // 水线（湿暗带，加深）
+      round(5, 12, 6, 1, '#46606e');  // 水线上沿反光（1px 提亮）
       break;
     case 'shell': // 沙滩贝壳（可踩装饰，扇贝）
+      round(7, 13, 4, 1, 'rgba(60,46,34,0.26)'); // 接地接触 AO（先画，贝身盖上）
       round(6, 9, 5, 4, '#f0d9c4');   // 扇贝身
       round(6, 9, 5, 1, '#fbeede');   // 顶高光
       round(7, 10, 1, 3, '#d9b59a');  // 扇纹
@@ -179,35 +182,52 @@ function furniture(kind: FurnitureKind): C {
       break;
     case 'driftwood': // 漂流木（横卧漂白枯木）
       round(2, 8, 12, 4, '#b7a890');  // 木身
-      round(2, 8, 12, 1, '#cdbfa6');  // 顶高光
-      round(2, 11, 12, 1, '#8f8068'); // 底暗
-      round(2, 9, 12, 1, '#a3937a');  // 纹
-      round(2, 8, 2, 4, '#7a6d58');   // 左端断面
-      round(12, 8, 2, 4, '#7a6d58');  // 右端断面
-      round(5, 8, 1, 4, '#9a8b72');   // 裂
+      round(2, 8, 12, 1, shade('#b7a890', V.rim));  // 顶 rim 高光
+      round(2, 11, 12, 1, shade('#b7a890', V.ao));  // 底 AO（圆柱压暗）
+      round(4, 9, 8, 1, '#a3937a');   // 纹
+      round(6, 9, 1, 1, '#5d5141');   // 节疤1（暗结）
+      round(9, 10, 1, 1, '#5d5141');  // 节疤2
+      // 左端 end-grain 同心年轮
+      x.fillStyle = '#7a6d58'; x.beginPath(); x.ellipse(3, 10, 1.6, 2, 0, 0, Math.PI * 2); x.fill();
+      x.fillStyle = shade('#7a6d58', V.rim); x.beginPath(); x.ellipse(3, 10, 0.9, 1.2, 0, 0, Math.PI * 2); x.fill();
+      // 右端 end-grain 同心年轮
+      x.fillStyle = '#7a6d58'; x.beginPath(); x.ellipse(13, 10, 1.6, 2, 0, 0, Math.PI * 2); x.fill();
+      x.fillStyle = shade('#7a6d58', V.rim); x.beginPath(); x.ellipse(13, 10, 0.9, 1.2, 0, 0, Math.PI * 2); x.fill();
       break;
     case 'brokenColumn': // 残破石柱：断顶 + 凹槽 + 基座青苔
-      round(4, 5, 8, 2, '#9a9588');   // 柱头（残）
-      round(4, 7, 8, 8, '#88837a');   // 柱身
-      round(4, 7, 1, 8, '#a7a294');   // 左 rim
-      round(11, 7, 1, 8, '#605c54');  // 右暗
+      round(4, 6, 8, 9, '#88837a');   // 柱身
+      round(4, 6, 1, 9, '#a7a294');   // 左 rim
+      round(11, 6, 1, 9, '#605c54');  // 右暗
       round(6, 7, 1, 8, '#6f6a62');   // 凹槽线
-      round(8, 7, 1, 8, '#6f6a62');   // 凹槽线2
-      round(5, 5, 1, 2, '#a9a497');   // 断口参差
-      round(9, 4, 1, 3, '#a9a497');   // 断口参差2
-      round(7, 6, 1, 1, '#605c54');   // 断口缺
+      round(7, 7, 1, 8, shade('#88837a', V.side)); // 凹槽内阴影（1px ⇒ 显圆）
+      round(9, 7, 1, 8, '#6f6a62');   // 凹槽线2
+      round(10, 7, 1, 8, shade('#88837a', V.side)); // 凹槽2内阴影
+      topEllipse(x, 8, 6, 4, 2, '#88837a'); // 断裂截面（受光浅椭圆，显断口朝天）
+      round(6, 5, 1, 1, shade('#88837a', V.topHi)); // 骨料亮点
+      round(9, 6, 1, 1, shade('#88837a', V.topHi)); // 骨料亮点2
+      round(8, 6, 1, 1, shade('#88837a', V.side));  // 截面暗砾
       round(4, 13, 8, 2, '#73706a');  // 基座
+      round(4, 14, 8, 1, shade('#73706a', V.ao));   // 基座接地 AO
       round(4, 12, 2, 1, '#5f7d3c');  // 青苔
       round(9, 13, 2, 1, '#4c6630');  // 青苔2
       break;
-    case 'rubble': // 碎石堆（小障碍）
-      round(3, 10, 10, 4, '#8a857a'); // 底堆
-      round(3, 10, 10, 1, '#a39e92'); // 顶高光
-      round(4, 8, 4, 3, '#959084');   // 上块
-      round(4, 8, 4, 1, '#aaa498');   // 上块顶高光
-      round(9, 9, 3, 2, '#7c776e');   // 右块
-      round(6, 12, 2, 1, '#5f5b54');  // 缝影
-      round(5, 9, 1, 1, '#5f7d3c');   // 青苔点
+    case 'rubble': // 碎石堆（3 块独立石头：各自顶亮 + 底暗 + 块间缝隙）
+      // 左后石
+      round(3, 10, 5, 4, '#8a857a');
+      round(3, 10, 5, 1, shade('#8a857a', V.rim));  // 顶高光
+      round(3, 13, 5, 1, shade('#8a857a', V.ao));   // 底 AO
+      round(3, 10, 1, 4, shade('#8a857a', V.leftHi)); // 左受光
+      // 右石（独立色调，与左石错开）
+      round(9, 11, 4, 3, '#7c776e');
+      round(9, 11, 4, 1, shade('#7c776e', V.rim));  // 顶高光
+      round(9, 13, 4, 1, shade('#7c776e', V.ao));   // 底 AO
+      round(8, 11, 1, 3, shade('#8a857a', V.ao));   // 左↔右两石之间缝隙影
+      // 前顶小石（压在两石之上）
+      round(5, 7, 5, 4, '#959084');
+      round(5, 7, 5, 1, shade('#959084', V.topHi)); // 顶受光棱
+      round(5, 10, 5, 1, shade('#959084', V.ao));   // 底 AO（投到下方石上）
+      round(5, 7, 1, 4, shade('#959084', V.leftHi)); // 左受光
+      round(6, 8, 1, 1, '#5f7d3c');   // 青苔点
       break;
     case 'standingStone': // 立石（森林石圈）：竖巨石 + 青苔 + 符文
       round(5, 1, 7, 2, '#7d8a90');   // 顶
@@ -220,6 +240,7 @@ function furniture(kind: FurnitureKind): C {
       round(4, 3, 5, 2, '#5f7d3c');   // 顶青苔
       round(4, 12, 3, 2, '#4c6630');  // 基青苔
       round(10, 11, 2, 1, '#5f7d3c'); // 青苔点
+      round(5, 15, 7, 1, 'rgba(40,46,50,0.30)'); // 接地接触 AO
       break;
     case 'stall': // 集市货摊：条纹布棚 + 柜台 + 货物
       round(1, 2, 14, 4, '#c2462f');  // 布棚底（红）
@@ -228,6 +249,8 @@ function furniture(kind: FurnitureKind): C {
       round(1, 6, 14, 1, '#7a2c1c');  // 棚下影
       round(2, 6, 1, 8, '#6b4a2c');   // 左柱
       round(13, 6, 1, 8, '#6b4a2c');  // 右柱
+      round(13, 6, 1, 8, shade('#6b4a2c', V.side)); // 右柱暗面（背光侧 1px）
+      round(2, 8, 12, 1, 'rgba(18,10,6,0.34)'); // 棚下 AO：投到货物/柜台上的 1px 暗影
       round(2, 11, 12, 3, '#9a6a3a'); // 柜台
       round(2, 11, 12, 1, '#b5824a'); // 台面高光
       round(2, 13, 12, 1, '#6b4524'); // 台底 AO
@@ -237,7 +260,9 @@ function furniture(kind: FurnitureKind): C {
       break;
     // ───────── 门口主题陈列道具（R3 生活感，按店铺类型摆门口） ─────────
     case 'flowerBucket': // 花店：木桶插花
-      round(5, 9, 6, 5, '#8a6038'); round(5, 9, 6, 1, '#a87c4a'); round(5, 13, 6, 1, '#5e3c20');
+      round(5, 9, 6, 5, '#8a6038'); round(5, 13, 6, 1, shade('#8a6038', V.ao)); // 桶身 + 底 AO
+      round(5, 9, 6, 1, shade('#8a6038', V.topFace)); round(5, 9, 6, 1, '#bd8c54'); // 桶口面 + 受光高光 rim
+      round(5, 9, 1, 5, shade('#8a6038', V.leftHi)); round(10, 9, 1, 5, shade('#8a6038', V.side)); // 左受光 / 右暗
       round(6, 10, 1, 3, '#6b4a2c'); round(9, 10, 1, 3, '#6b4a2c'); // 桶箍
       round(5, 6, 2, 2, '#e07aa8'); round(8, 5, 2, 2, '#f2c63a'); round(10, 7, 2, 2, '#e0584a'); // 花
       round(6, 8, 1, 2, '#4a8a4a'); round(9, 7, 1, 2, '#4a8a4a'); round(11, 8, 1, 1, '#4a8a4a'); // 茎
@@ -251,20 +276,25 @@ function furniture(kind: FurnitureKind): C {
       break;
     case 'coalPile': // 铁匠铺：煤堆 + 余烬
       round(3, 10, 10, 4, '#33333b'); round(4, 8, 5, 3, '#3e3e48'); round(8, 9, 4, 2, '#2a2a33');
-      round(4, 8, 5, 1, '#58585f'); round(8, 9, 4, 1, '#4c4c56'); // 受光面
+      round(3, 10, 10, 1, shade('#33333b', V.rim)); // 整堆顶 rim 棱
+      round(4, 8, 5, 1, '#58585f'); round(8, 9, 4, 1, '#4c4c56'); // 块受光面
+      round(4, 8, 1, 1, '#6c6c78'); round(8, 9, 1, 1, '#62626e'); // 块左上受光高光
       round(5, 9, 1, 1, '#6c6c78'); round(9, 10, 1, 1, '#60606c'); // 反光点
       round(7, 11, 1, 1, '#e8843a'); round(6, 12, 1, 1, '#c8542a'); // 余烬(forge 暖光)
       round(3, 13, 10, 1, '#1a1a20'); // 底 AO
       break;
     case 'kegStack': // 酒馆/客栈：叠桶
-      round(3, 10, 10, 4, '#9a6a3a'); round(3, 10, 10, 1, '#b5824a'); round(3, 13, 10, 1, '#5e3a18');
+      round(3, 10, 10, 4, '#9a6a3a'); round(3, 10, 10, 1, '#b5824a'); round(3, 13, 10, 1, shade('#9a6a3a', V.ao));
       round(3, 11, 10, 1, '#6b4524'); round(4, 10, 1, 4, '#3a2a16'); round(11, 10, 1, 4, '#3a2a16');
-      round(6, 6, 5, 4, '#a8743f'); round(6, 6, 5, 1, '#c08a4a'); round(6, 9, 5, 1, '#6b4524');
-      round(7, 6, 1, 4, '#3a2a16'); round(9, 6, 1, 4, '#3a2a16');
+      round(6, 6, 5, 4, '#a8743f'); round(6, 9, 5, 1, '#6b4524'); // 上桶身 + 底箍影
+      round(7, 6, 1, 4, '#3a2a16'); round(9, 6, 1, 4, '#3a2a16'); // 桶箍竖
+      topEllipse(x, 8, 6, 2.5, 1.4, '#a8743f'); // 上桶口椭圆顶（受光 ⇒ 圆桶 3D）
       break;
     case 'cropSack': // 杂货/磨坊：谷物麻袋
-      round(3, 8, 5, 6, '#c2a86a'); round(3, 8, 5, 1, '#d4bd80'); round(3, 13, 5, 1, '#9a8450'); round(4, 7, 3, 1, '#8a7038');
-      round(8, 9, 5, 5, '#b89a5e'); round(8, 9, 5, 1, '#cab074'); round(8, 13, 5, 1, '#90784a'); round(9, 8, 3, 1, '#8a7038');
+      round(3, 8, 5, 6, '#c2a86a'); round(3, 8, 5, 1, '#d4bd80'); round(3, 13, 5, 1, shade('#c2a86a', V.ao));
+      round(4, 7, 3, 1, '#8a7038'); round(4, 8, 3, 1, shade('#c2a86a', V.deepSeam)); // 束口 + 口下 cinch 折痕影
+      round(8, 9, 5, 5, '#b89a5e'); round(8, 9, 5, 1, '#cab074'); round(8, 13, 5, 1, shade('#b89a5e', V.ao));
+      round(9, 8, 3, 1, '#8a7038'); round(9, 9, 3, 1, shade('#b89a5e', V.deepSeam)); // 束口 + cinch 折痕影
       round(5, 11, 1, 1, '#e8c86a'); round(10, 11, 1, 1, '#e8c86a'); // 漏谷
       break;
     case 'bookStack': // 书店：书堆
