@@ -590,6 +590,30 @@ function drawShutters(ctx: CanvasRenderingContext2D, wx: number, wy: number, col
   }
 }
 
+// 窗「有人住」处理（§5.2 生活感）：暖色室内光晕(lit) 或 冷玻璃(灭) + 顶部窗帘幔 + 玻璃 specular 高光。
+// 叠在 Kenney 窗件之上(仅 atlas 就绪时调用)；lit 由格位 hash 确定 ⇒ 一栋房有的亮有的暗，不整齐划一。
+function windowDressing(ctx: CanvasRenderingContext2D, dx: number, dy: number, lit: boolean) {
+  if (lit) {
+    ctx.fillStyle = 'rgba(255,198,105,0.36)'; ctx.fillRect(dx + 3, dy + 4, 10, 9); // 暖光晕
+    ctx.fillStyle = 'rgba(255,228,156,0.5)'; ctx.fillRect(dx + 5, dy + 6, 6, 5); // 内核更亮
+  } else {
+    ctx.fillStyle = 'rgba(44,64,82,0.28)'; ctx.fillRect(dx + 3, dy + 4, 10, 9); // 冷玻璃(没开灯)
+  }
+  ctx.fillStyle = '#b5503f'; ctx.fillRect(dx + 3, dy + 3, 10, 2); // 窗帘幔头(暖布)
+  ctx.fillStyle = 'rgba(255,236,210,0.5)'; ctx.fillRect(dx + 3, dy + 3, 10, 1); // 幔头高光
+  ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(dx + 4, dy + 5, 1, 1); // 玻璃 specular
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillRect(dx + 5, dy + 6, 1, 1);
+}
+
+// 门细节（§5.2）：黄铜把手高光 + 门框左上 bevel 高光/右下暗 + 门槛磨损。叠在 Kenney 门件之上。
+function doorDressing(ctx: CanvasRenderingContext2D, dx: number, dy: number) {
+  ctx.fillStyle = '#f2d27a'; ctx.fillRect(dx + 11, dy + 8, 1, 1); // 把手高光
+  ctx.fillStyle = '#caa14a'; ctx.fillRect(dx + 11, dy + 9, 1, 1);
+  ctx.fillStyle = 'rgba(255,240,210,0.28)'; ctx.fillRect(dx + 2, dy + 1, 1, T - 1); ctx.fillRect(dx + 2, dy + 1, T - 4, 1); // 框左/上 bevel 高光
+  ctx.fillStyle = 'rgba(30,20,12,0.3)'; ctx.fillRect(dx + T - 3, dy + 2, 1, T - 2); // 框右暗
+  ctx.fillStyle = 'rgba(80,60,40,0.5)'; ctx.fillRect(dx + 3, dy + T - 1, T - 6, 1); // 门槛磨损
+}
+
 const cache = new Map<string, HTMLCanvasElement>();
 
 /** 拼装某风格 w×h 建筑（按签名缓存）。门/窗需图集就绪;未就绪先出无门窗版,图集到位后自然重拼。 */
@@ -630,6 +654,7 @@ export function buildingCanvas(styleId: string, w: number, h: number, variant = 
     px(ctx, Math.round(W / 2) - 5, Math.round(H * 0.34), 10, Math.round(H * 0.28), trim);
     px(ctx, Math.round(W / 2) - 4, Math.round(H * 0.34) + 1, 8, Math.round(H * 0.28) - 2, '#6a8aa0');
     stamp(ctx, s.door, doorCol * T, H - T);
+    if (ready) doorDressing(ctx, doorCol * T, H - T);
     if (s.chimney) drawChimney(ctx, Math.round(W * 0.78), Math.round(T * 1.0));
     cache.set(key, cv);
     return cv;
@@ -665,15 +690,18 @@ export function buildingCanvas(styleId: string, w: number, h: number, variant = 
     if (!winAt(c)) continue;
     frameShadow(ctx, c * T, winRow);
     stamp(ctx, s.window, c * T, winRow);
+    if (ready) windowDressing(ctx, c * T, winRow, bhash(c * 3 + 1, 7) > 0.28);
     if (s.shutters) drawShutters(ctx, c * T, winRow, s.shutters);
     if (twoFloor) {
       frameShadow(ctx, c * T, lowerRow);
       stamp(ctx, s.window, c * T, lowerRow);
+      if (ready) windowDressing(ctx, c * T, lowerRow, bhash(c * 3 + 5, 13) > 0.28);
       if (s.shutters) drawShutters(ctx, c * T, lowerRow, s.shutters);
     }
   }
   frameShadow(ctx, doorCol * T, H - T);
   stamp(ctx, s.door, doorCol * T, H - T);
+  if (ready) doorDressing(ctx, doorCol * T, H - T);
 
   if (s.awning) drawAwning(ctx, H - T - 6, W, s.awning); // 棚在门楣上方
   if (s.porch) drawPorch(ctx, W, H, s.porch); // 前廊(柱+平棚),压在门窗带下沿
