@@ -150,23 +150,25 @@ program
         const relayPort = Number(o.relayPort || Number(o.p2pPort) + 10);
         const onion = loadOrCreateOnionKey(dataDir);
         const adHost = o.relayAdvertise || '127.0.0.1';
+        const onionPubHex = bytesToHex(onion.pub);
         const relay = new RelayNode(node.wallet.address, onion, resolver, relayPort, '0.0.0.0');
         const allow = String(o.exitAllow).split(',').map((s: string) => s.trim()).filter(Boolean);
         if (allow.length) {
           const set = new Set(allow);
           relay.setExitPolicy((host, port) => set.has(`${host}:${port}`));
         }
-        console.log(`  ${c.dim('中继  ')} cell:${relayPort}  okey:${bytesToHex(onion.pub).slice(0, 16)}…  出口:${allow.length ? c.yellow(allow.join(',')) : c.dim('deny-all')}`);
+        console.log(`  ${c.dim('中继  ')} cell:${relayPort}  okey:${onionPubHex.slice(0, 16)}…  出口:${allow.length ? c.yellow(allow.join(',')) : c.dim('deny-all')}`);
         // 自动发布描述符：余额够且尚未发布时发一次（挖矿/收款后自动生效）
         let published = false;
         const tryPublish = () => {
           if (published) return;
-          if (node.relays().some((r) => r.address === node.wallet.address)) {
+          const existing = node.relays().find((r) => r.address === node.wallet.address);
+          if (existing && existing.onionPubHex === onionPubHex && existing.host === adHost && existing.port === relayPort) {
             published = true;
             return;
           }
           if (node.bc.balanceOf(node.wallet.address) < 2) return;
-          const pub = node.publishRelay(bytesToHex(onion.pub), adHost, relayPort);
+          const pub = node.publishRelay(onionPubHex, adHost, relayPort);
           if (pub.ok) {
             published = true;
             console.log(`  ${c.green('✓ 中继描述符已上链广播（待挖块生效，全网可发现）')}`);

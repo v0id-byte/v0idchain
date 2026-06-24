@@ -37,14 +37,18 @@ export class RelayCircuitTable {
   private incoming = new Map<string, RelayCircuit>(); // key = prevCirc（前向 cell 的 circId）
   private outgoing = new Map<string, RelayCircuit>(); // key = nextCirc（后向 cell 的 circId）
 
-  add(circ: RelayCircuit): void {
+  add(circ: RelayCircuit): boolean {
+    if (this.incoming.has(circ.prevCirc)) return false;
     this.incoming.set(circ.prevCirc, circ);
+    return true;
   }
   /** 延伸成功后登记下一跳 circId（使后向 cell 能按 nextCirc 找回本电路）。 */
-  linkNext(circ: RelayCircuit, nextConn: CellLink, nextCirc: string): void {
+  linkNext(circ: RelayCircuit, nextConn: CellLink, nextCirc: string): boolean {
+    if (circ.nextConn || circ.nextCirc || this.outgoing.has(nextCirc)) return false;
     circ.nextConn = nextConn;
     circ.nextCirc = nextCirc;
     this.outgoing.set(nextCirc, circ);
+    return true;
   }
   byPrev(circId: string): RelayCircuit | undefined {
     return this.incoming.get(circId);
@@ -74,6 +78,10 @@ export function makeBwdBase(rand3: Uint8Array): number {
   return ((rand3[0] << 16) | (rand3[1] << 8) | rand3[2]) >>> 0;
 }
 
+function isValidCellCounter(n: number): boolean {
+  return Number.isSafeInteger(n) && n >= 0 && n < MAX_CELL_CTR;
+}
+
 export type ForwardAction =
   | { kind: 'self'; cmd: number; data: Uint8Array } // 剥到本跳：是给我的命令（EXTEND / DATA-to-exit）
   | { kind: 'forward'; body: Uint8Array } // 还要往下一跳转发
@@ -82,7 +90,7 @@ export type ForwardAction =
 /** 中继处理一个**前向** cell：剥掉本跳一层，判断“给我”还是“转发”。同时做前向计数器防重放 + nonce 上限防护。 */
 export function relayForward(circ: RelayCircuit, bodyHex: Uint8Array, n: number): ForwardAction {
   // 防重放：n 必须严格增（maxFwdCtr 初始 -1 → 首个 n=0 也接受、之后 n=0 重放即丢）。并拒绝逼近 2^53 浮点悬崖的 n。
-  if (n <= circ.maxFwdCtr || n > MAX_CELL_CTR) return { kind: 'drop' };
+  if (!isValidCellCounter(n) || n <= circ.maxFwdCtr) return { kind: 'drop' };
   circ.maxFwdCtr = n;
   const peeled = applyLayer(circ.keys.encForward, nonceFromCounter(n), bodyHex);
   const mine = unpackCellBody(peeled, circ.keys.macForward);
@@ -91,7 +99,8 @@ export function relayForward(circ: RelayCircuit, bodyHex: Uint8Array, n: number)
 }
 
 /** 中继处理一个**后向** cell（来自下一跳）：加上本跳一层，得到要发给 prev 的 body。 */
-export function relayAddBackwardLayer(circ: RelayCircuit, bodyHex: Uint8Array, n: number): Uint8Array {
+export function relayAddBackwardLayer(circ: RelayCircuit, bodyHex: Uint8Array, n: number): Uint8Array | null {
+  if (!isValidCellCounter(n)) return null;
   return applyLayer(circ.keys.encBackward, nonceFromCounter(n), bodyHex);
 }
 

@@ -48,9 +48,8 @@ async function main() {
   );
   check('curl 经 SOCKS5 + 3 跳洋葱电路取回 HTTP 响应', out.includes('Hello via onion'));
   check('HTTP 服务确实被电路出口访问到（仅出口策略放行的目标可达）', sawRequest === true);
-  // 注：电路计数是事后读取、会被 curl 关闭后的 teardown 竞争影响，仅作信息打印；
-  //     非竞争的“3 跳不可关联”断言在 relay-integration.ts。
-  console.log(`  · 三中继电路计数（事后、可能已 teardown）= [${relays.map((r) => r.circuits).join(',')}]`);
+  await new Promise((r) => setTimeout(r, 300));
+  check('curl 关闭后三跳电路全部释放', relays.every((r) => r.circuits === 0));
 
   socks.close();
   for (const r of relays) void r.close();

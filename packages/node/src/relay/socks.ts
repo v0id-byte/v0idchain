@@ -36,6 +36,7 @@ function makeReader(sock: Socket) {
 
 // SOCKS5 应答（10 字节）：VER REP RSV ATYP=IPv4 BND.ADDR=0 BND.PORT=0
 const reply = (rep: number) => Buffer.from([5, rep, 0, 1, 0, 0, 0, 0, 0, 0]);
+const MAX_CONNECT_ATTEMPTS = 3;
 
 export class SocksProxy {
   private server: Server;
@@ -84,20 +85,26 @@ export class SocksProxy {
     const port = (pb[0] << 8) | pb[1];
 
     // 3) 建电路 + 开流
-    const hops = this.pickHops();
-    const client = new CircuitClient();
-    try {
-      await client.connect(hops[0]);
-      await client.extend(hops[1]);
-      await client.extend(hops[2]);
-      const ok = await client.beginStream(target, port);
-      if (!ok) {
-        sock.write(reply(0x05)); // 连接被拒（出口策略/目标拒）
-        return void sock.destroy();
+    let client: CircuitClient | null = null;
+    for (let attempt = 0; attempt < MAX_CONNECT_ATTEMPTS; attempt++) {
+      const hops = this.pickHops();
+      const c = new CircuitClient();
+      try {
+        await c.connect(hops[0]);
+        await c.extend(hops[1]);
+        await c.extend(hops[2]);
+        const ok = await c.beginStream(target, port);
+        if (ok) {
+          client = c;
+          break;
+        }
+      } catch {
+        // 换一条路再试；最后统一回 SOCKS 失败。
       }
-    } catch {
-      sock.write(reply(0x01)); // 一般失败（建路失败等）
-      client.close();
+      c.close();
+    }
+    if (!client) {
+      sock.write(reply(0x05)); // 连接被拒（出口策略/目标拒/建路失败）
       return void sock.destroy();
     }
     sock.write(reply(0x00)); // 成功
@@ -108,7 +115,14 @@ export class SocksProxy {
     client.onData((b) => sock.write(Buffer.from(b)));
     client.onEnd(() => sock.end());
     sock.on('data', (d) => client.write(new Uint8Array(d)));
-    sock.on('close', () => client.endStream());
-    sock.on('error', () => client.close());
+    let closed = false;
+    const closeCircuit = (sendEnd: boolean) => {
+      if (closed) return;
+      closed = true;
+      if (sendEnd) client.endStream();
+      client.close();
+    };
+    sock.on('close', () => closeCircuit(true));
+    sock.on('error', () => closeCircuit(false));
   }
 }

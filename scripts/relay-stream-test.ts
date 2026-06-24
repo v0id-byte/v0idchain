@@ -21,8 +21,11 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label: string) =>
 async function main() {
   // 本地 TCP echo 服务（= 出口要连的“目标”）
   const ECHO_PORT = 7799;
+  const BANNER_PORT = 7800;
   const echo = createServer((s) => s.on('data', (d) => s.write(d)));
+  const banner = createServer((s) => s.write('READY'));
   await new Promise<void>((r) => echo.listen(ECHO_PORT, '127.0.0.1', () => r()));
+  await new Promise<void>((r) => banner.listen(BANNER_PORT, '127.0.0.1', () => r()));
 
   // 3 中继
   const ports = [7741, 7742, 7743];
@@ -34,7 +37,7 @@ async function main() {
   const resolve: RelayResolver = (id) => dir.get(id);
   const relays = nodes.map((n) => new RelayNode(n.id, n.onion, resolve, n.port, n.host));
   // 出口策略：只允许连本地 echo 服务（默认 deny-all，这里显式放行）
-  relays[2].setExitPolicy((host, port) => host === '127.0.0.1' && port === ECHO_PORT);
+  relays[2].setExitPolicy((host, port) => host === '127.0.0.1' && (port === ECHO_PORT || port === BANNER_PORT));
   await new Promise((r) => setTimeout(r, 150));
 
   const hops: HopSpec[] = nodes.map((n) => ({ id: n.id, onionPub: n.onion.pub, host: n.host, port: n.port }));
@@ -81,11 +84,32 @@ async function main() {
   const denied = await withTimeout(c2.beginStream('127.0.0.1', 9999), 5000, 'denied');
   check('出口策略拒绝未授权目标(返回未连通)', denied === false);
 
+  // 服务端在 onData 注册前立刻发 banner，也不能丢首包。
+  const c3 = new CircuitClient();
+  await withTimeout(c3.connect(hops[0]), 5000, 'c3 connect');
+  await withTimeout(c3.extend(hops[1]), 5000, 'c3 extend1');
+  await withTimeout(c3.extend(hops[2]), 5000, 'c3 extend2');
+  const bannerConnected = await withTimeout(c3.beginStream('127.0.0.1', BANNER_PORT), 5000, 'banner beginStream');
+  check('banner 服务 CONNECT 成功', bannerConnected === true);
+  await new Promise((r) => setTimeout(r, 100));
+  const bannerRecv: number[] = [];
+  let resolveBanner: (() => void) | null = null;
+  const bannerWait = new Promise<void>((r) => (resolveBanner = r));
+  c3.onData((b) => {
+    for (const v of b) bannerRecv.push(v);
+    if (resolveBanner && bannerRecv.length >= 5) resolveBanner();
+  });
+  await withTimeout(bannerWait, 5000, 'banner data');
+  check('onData 晚注册仍收到首包 banner', dec(Uint8Array.from(bannerRecv)) === 'READY');
+
   client.endStream();
   client.close();
   c2.close();
+  c3.endStream();
+  c3.close();
   for (const r of relays) void r.close(); // 不 await：出口 TCP/出站连接交给 process.exit 收尾，避免 echo.close 等待挂起
   echo.close();
+  banner.close();
   // 经 pipe 输出会块缓冲，process.exit 可能截断 → 显式 flush 末行再退出。
   process.stdout.write(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}\n`, () => process.exit(failures === 0 ? 0 : 1));
 }

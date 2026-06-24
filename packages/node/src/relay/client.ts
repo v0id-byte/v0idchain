@@ -47,7 +47,9 @@ export class CircuitClient {
   private streaming = false;
   private connectWaiter: ((ok: boolean) => void) | null = null;
   private dataCb: ((b: Uint8Array) => void) | null = null;
+  private dataQueue: Uint8Array[] = [];
   private endCb: (() => void) | null = null;
+  private ended = false;
 
   private onMsg(m: CellMsg): void {
     if (!this.streaming) {
@@ -60,6 +62,14 @@ export class CircuitClient {
       return;
     }
     // 流阶段：仅期待后向 RELAY cell；解封后按 cmd 路由，MAC 失败即丢 → 注入/乱序 cell 无法令流错配。
+    if (m.t === 'DESTROY') {
+      const w = this.connectWaiter;
+      this.connectWaiter = null;
+      w?.(false);
+      this.ended = true;
+      this.endCb?.();
+      return;
+    }
     if (m.t !== 'RELAY' || m.d !== 'b') return;
     const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
     if (!inner) return;
@@ -67,8 +77,13 @@ export class CircuitClient {
       const w = this.connectWaiter;
       this.connectWaiter = null;
       w?.(inner.data[0] === 0);
-    } else if (inner.cmd === CMD_DATA) this.dataCb?.(inner.data);
-    else if (inner.cmd === CMD_END) this.endCb?.();
+    } else if (inner.cmd === CMD_DATA) {
+      if (this.dataCb) this.dataCb(inner.data);
+      else this.dataQueue.push(inner.data);
+    } else if (inner.cmd === CMD_END) {
+      this.ended = true;
+      this.endCb?.();
+    }
   }
   private nextCell(): Promise<CellMsg> {
     return new Promise((res) => {
@@ -78,7 +93,7 @@ export class CircuitClient {
     });
   }
   private sendCell(m: CellMsg): void {
-    this.ws!.send(encodeCell(m));
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(encodeCell(m));
   }
   private keys(): CircuitKeys[] {
     return this.hops.map((h) => h.keys);
@@ -157,10 +172,12 @@ export class CircuitClient {
   /** 出口→客户端 流数据回调。 */
   onData(cb: (b: Uint8Array) => void): void {
     this.dataCb = cb;
+    for (const b of this.dataQueue.splice(0)) cb(b);
   }
   /** 流关闭（出口 TCP close）回调。 */
   onEnd(cb: () => void): void {
     this.endCb = cb;
+    if (this.ended) cb();
   }
   /** 主动关流（通知出口 end）。 */
   endStream(): void {
