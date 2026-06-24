@@ -8,12 +8,17 @@ import {
   type CircuitKeys,
   hexToBytes,
   bytesToHex,
+  utf8ToBytes,
   addressToPublicKeyHex,
   wrapForward,
   unwrapBackward,
   CMD_EXTEND,
   CMD_DATA,
   CMD_EXTENDED,
+  CMD_BEGIN,
+  CMD_CONNECTED,
+  CMD_END,
+  CELL_DATA_LEN,
 } from '@v0idchain/core';
 import { type CellMsg, decodeCell, encodeCell } from './cells.js';
 
@@ -39,13 +44,31 @@ export class CircuitClient {
   private fwdN = 0; // 前向单调计数器（nonce 源 + 各跳防重放）
   private pending: ((m: CellMsg) => void) | null = null;
   private buffered: CellMsg[] = [];
+  private streaming = false;
+  private connectWaiter: ((ok: boolean) => void) | null = null;
+  private dataCb: ((b: Uint8Array) => void) | null = null;
+  private endCb: (() => void) | null = null;
 
   private onMsg(m: CellMsg): void {
-    if (this.pending) {
-      const p = this.pending;
-      this.pending = null;
-      p(m);
-    } else this.buffered.push(m);
+    if (!this.streaming) {
+      // 建路阶段：请求/响应（CREATED / 后向 EXTENDED）
+      if (this.pending) {
+        const p = this.pending;
+        this.pending = null;
+        p(m);
+      } else this.buffered.push(m);
+      return;
+    }
+    // 流阶段：仅期待后向 RELAY cell；解封后按 cmd 路由，MAC 失败即丢 → 注入/乱序 cell 无法令流错配。
+    if (m.t !== 'RELAY' || m.d !== 'b') return;
+    const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
+    if (!inner) return;
+    if (inner.cmd === CMD_CONNECTED) {
+      const w = this.connectWaiter;
+      this.connectWaiter = null;
+      w?.(inner.data[0] === 0);
+    } else if (inner.cmd === CMD_DATA) this.dataCb?.(inner.data);
+    else if (inner.cmd === CMD_END) this.endCb?.();
   }
   private nextCell(): Promise<CellMsg> {
     return new Promise((res) => {
@@ -109,6 +132,41 @@ export class CircuitClient {
     const inner = unwrapBackward(this.keys(), t, hexToBytes(resp.b), resp.n);
     if (!inner || inner.cmd !== CMD_DATA) throw new Error('DATA 响应非法/MAC 失败');
     return inner.data;
+  }
+
+  /** 开流：让出口 CONNECT 到 host:port。返回是否连通（出口策略可能拒）。 */
+  async beginStream(host: string, port: number): Promise<boolean> {
+    this.streaming = true;
+    const t = this.hops.length - 1;
+    const n = this.fwdN++;
+    const target = utf8ToBytes(`${host}:${port}`);
+    this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, CMD_BEGIN, target, n)) });
+    return new Promise<boolean>((res) => {
+      this.connectWaiter = res;
+    });
+  }
+  /** 向流写字节（按 ≤485B 分片为多个 cell，保序）。 */
+  write(data: Uint8Array): void {
+    const t = this.hops.length - 1;
+    for (let o = 0; o < data.length; o += CELL_DATA_LEN) {
+      const n = this.fwdN++;
+      const chunk = data.subarray(o, o + CELL_DATA_LEN);
+      this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, CMD_DATA, chunk, n)) });
+    }
+  }
+  /** 出口→客户端 流数据回调。 */
+  onData(cb: (b: Uint8Array) => void): void {
+    this.dataCb = cb;
+  }
+  /** 流关闭（出口 TCP close）回调。 */
+  onEnd(cb: () => void): void {
+    this.endCb = cb;
+  }
+  /** 主动关流（通知出口 end）。 */
+  endStream(): void {
+    const t = this.hops.length - 1;
+    const n = this.fwdN++;
+    this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, CMD_END, new Uint8Array(0), n)) });
   }
 
   get hopCount(): number {

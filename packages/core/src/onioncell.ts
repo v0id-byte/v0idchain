@@ -24,9 +24,12 @@ const HEADER_LEN = RECOGNIZED_LEN + CMD_LEN + LEN_LEN; // 11
 export const CELL_DATA_LEN = CELL_BODY_LEN - HEADER_LEN - MAC_LEN;
 
 // relay 命令（body 内 cmd 字节）。EXTEND/EXTENDED 是**加密 cell 内的命令**而非明文线缆 cell——否则拓扑泄露。
-export const CMD_DATA = 1; // 应用数据（到/来自出口）
+export const CMD_DATA = 1; // 应用/流数据（到/来自出口）。流模式下即 TCP 字节分片
 export const CMD_EXTEND = 2; // 延伸电路：data = nextHopId(32) ‖ clientEph(32) = 64B（下一跳 onion 公钥客户端已从目录知道、本地绑进 AUTH，无需上送）
 export const CMD_EXTENDED = 3; // 延伸应答：data = serverEph(32) ‖ auth(32) = 64B
+export const CMD_BEGIN = 4; // 客户端→出口：开流，data = UTF8 "host:port"（CONNECT 目标）
+export const CMD_CONNECTED = 5; // 出口→客户端：data[0]=0 已连通 / 非 0 失败（出口策略拒或连接失败）
+export const CMD_END = 6; // 任一方向：流关闭
 
 /**
  * cell 计数器上限。nonceFromCounter 用 JS 浮点数运算，超过 2^53 会丢精度 → 相邻计数器映射到同一 nonce

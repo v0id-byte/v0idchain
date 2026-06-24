@@ -5,6 +5,7 @@
 // 它**永远不知道**更深各跳的密钥与内容。这正是洋葱路由的匿名性来源：没有任何单跳同时知道两端 + 全路径。
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes } from 'node:crypto';
+import { connect, type Socket } from 'node:net';
 import {
   ntorServer,
   type OnionKeypair,
@@ -14,6 +15,10 @@ import {
   CMD_EXTEND,
   CMD_EXTENDED,
   CMD_DATA,
+  CMD_BEGIN,
+  CMD_CONNECTED,
+  CMD_END,
+  CELL_DATA_LEN,
 } from '@v0idchain/core';
 import { type CellMsg, decodeCell, encodeCell } from './cells.js';
 import {
@@ -28,8 +33,10 @@ import {
 
 /** 目录解析器：中继地址 → 其 cell 入口 host:port。生产用 parseRelays(chain)，测试可注入静态 map。 */
 export type RelayResolver = (id: string) => { host: string; port: number } | undefined;
-/** 出口投递回调：收到面向本节点(出口)的 DATA → 业务处理 + reply 走原电路后向回客户端。 */
+/** 出口投递回调（数据报模式，用于自检/echo）：收到面向本节点(出口)的 DATA → 业务处理 + reply 走原电路后向。 */
 export type ExitHandler = (data: Uint8Array, reply: (resp: Uint8Array) => void) => void;
+/** 出口策略：是否允许本中继作出口连到 host:port。默认 deny-all（中继不当无意识开放出口）。 */
+export type ExitPolicy = (host: string, port: number) => boolean;
 
 let LID = 0;
 const mintCirc = () => randomBytes(8).toString('hex');
@@ -41,6 +48,8 @@ export class RelayNode {
   private table = new RelayCircuitTable();
   private idPub: Uint8Array;
   private exitHandler?: ExitHandler;
+  private exitPolicy: ExitPolicy = () => false; // 默认 deny-all
+  private streams = new Map<RelayCircuit, Socket>(); // 出口：电路 → 其 TCP 流（v1 每电路 1 条流）
 
   constructor(
     readonly id: string, // 本中继钱包地址 0x..（= ntor relayId）
@@ -56,6 +65,10 @@ export class RelayNode {
 
   onExit(h: ExitHandler): void {
     this.exitHandler = h;
+  }
+  /** 设置出口策略（允许作出口连到哪些 host:port）。不设 = deny-all。 */
+  setExitPolicy(p: ExitPolicy): void {
+    this.exitPolicy = p;
   }
   get circuits(): number {
     return this.table.size;
@@ -137,10 +150,17 @@ export class RelayNode {
               circ.nextConn.send({ t: 'RELAY', c: circ.nextCirc, d: 'f', n: m.n, b: bytesToHex(act.body) });
             return;
           }
-          // act.kind === 'self'：是给我的命令
+          // act.kind === 'self'：是给我的命令（本跳是终点/出口）
           if (act.cmd === CMD_EXTEND) this.handleExtend(circ, act.data);
-          else if (act.cmd === CMD_DATA && this.exitHandler)
-            this.exitHandler(act.data, (resp) => this.sendBackward(circ, CMD_DATA, resp));
+          else if (act.cmd === CMD_BEGIN) this.handleBegin(circ, act.data);
+          else if (act.cmd === CMD_DATA) {
+            const s = this.streams.get(circ);
+            if (s) s.write(Buffer.from(act.data)); // 流模式：写到出口 TCP
+            else if (this.exitHandler) this.exitHandler(act.data, (resp) => this.sendBackward(circ, CMD_DATA, resp)); // 数据报/echo 模式
+          } else if (act.cmd === CMD_END) {
+            this.streams.get(circ)?.end();
+            this.streams.delete(circ);
+          }
           return;
         }
         // 后向：来自下一跳，加本跳一层送回 prev
@@ -154,6 +174,8 @@ export class RelayNode {
         const circ = this.table.byPrev(m.c) ?? this.table.byNext(m.c);
         if (!circ) return;
         this.table.remove(circ);
+        this.streams.get(circ)?.destroy();
+        this.streams.delete(circ);
         if (circ.nextConn && circ.nextCirc) circ.nextConn.send({ t: 'DESTROY', c: circ.nextCirc });
         return;
       }
@@ -172,6 +194,36 @@ export class RelayNode {
     const nextCirc = mintCirc();
     this.table.linkNext(circ, next, nextCirc);
     next.send({ t: 'CREATE', c: nextCirc, x }); // 缓冲到 open 后发
+  }
+
+  // BEGIN 数据 = UTF8 "host:port"。按出口策略拨号 TCP，连通后回 CONNECTED(0)、桥接双向字节流。
+  private handleBegin(circ: RelayCircuit, data: Uint8Array): void {
+    if (this.streams.has(circ)) return; // v1 每电路 1 条流
+    const target = new TextDecoder().decode(data);
+    const i = target.lastIndexOf(':');
+    const host = i > 0 ? target.slice(0, i) : '';
+    const port = Number(target.slice(i + 1));
+    if (i <= 0 || !Number.isInteger(port) || port < 1 || port > 65535 || !this.exitPolicy(host, port)) {
+      this.sendBackward(circ, CMD_CONNECTED, Uint8Array.of(1)); // 拒绝/非法
+      return;
+    }
+    const sock = connect(port, host);
+    sock.on('connect', () => {
+      this.streams.set(circ, sock);
+      this.sendBackward(circ, CMD_CONNECTED, Uint8Array.of(0));
+    });
+    sock.on('data', (buf: Buffer) => {
+      for (let o = 0; o < buf.length; o += CELL_DATA_LEN)
+        this.sendBackward(circ, CMD_DATA, new Uint8Array(buf.subarray(o, o + CELL_DATA_LEN)));
+    });
+    sock.on('close', () => {
+      if (this.streams.has(circ)) this.sendBackward(circ, CMD_END, new Uint8Array(0));
+      this.streams.delete(circ);
+    });
+    sock.on('error', () => {
+      if (!this.streams.has(circ)) this.sendBackward(circ, CMD_CONNECTED, Uint8Array.of(1)); // 连接失败
+      this.streams.delete(circ);
+    });
   }
 
   private sendBackward(circ: RelayCircuit, cmd: number, data: Uint8Array): void {
