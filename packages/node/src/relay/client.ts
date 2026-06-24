@@ -58,8 +58,30 @@ export class CircuitClient {
   private dataQueue: Uint8Array[] = [];
   private endCb: (() => void) | null = null;
   private ended = false;
+  // 会合模式（Phase 2B-c）：电路常开，按 cmd 把解封后的后向 cell 派发到注册的回调。与 streaming/hsing 互斥。
+  private rdvMode = false;
+  private rdvHandlers = new Map<number, (data: Uint8Array) => void>();
+  private rdvDestroyCb: (() => void) | null = null;
+  // 后向 cell 解封前的去重：客户端按 n 单调记忆，重放（同/旧 n）即丢（后向防重放为客户端侧 best-effort）。
+  private bwdMaxN = -1;
 
   private onMsg(m: CellMsg): void {
+    if (this.rdvMode) {
+      if (m.t === 'DESTROY') {
+        this.ended = true;
+        const cb = this.rdvDestroyCb;
+        this.rdvDestroyCb = null;
+        cb?.();
+        return;
+      }
+      if (m.t !== 'RELAY' || m.d !== 'b') return;
+      if (m.n <= this.bwdMaxN) return; // 后向重放/乱序 → 丢
+      const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
+      if (!inner) return; // MAC 失败 → 丢
+      this.bwdMaxN = m.n;
+      this.rdvHandlers.get(inner.cmd)?.(inner.data);
+      return;
+    }
     if (this.hsing) {
       // HS 请求模式：只期待后向 RELAY cell；解封后路由 CMD_HS_RESP/CMD_HS_END 到在途请求。
       if (m.t === 'DESTROY') {
@@ -266,6 +288,41 @@ export class CircuitClient {
         },
       };
       this.sendHsRequest(CMD_HS_FETCH, msg);
+    });
+  }
+
+  // ---- 会合平面（Phase 2B-c）：电路常开，向终点跳发控制/数据命令，按 cmd 派发后向应答 ----
+
+  /** 进入会合模式（电路常开）。之后所有后向 cell 经 MAC 校验后按 cmd 派发到 onRdv 注册的回调。 */
+  enterRdvMode(): void {
+    this.rdvMode = true;
+  }
+  /** 注册某后向 cmd 的处理回调（如 CMD_INTRODUCE2 / CMD_RENDEZVOUS2 / CMD_RDV_DATA）。 */
+  onRdv(cmd: number, cb: (data: Uint8Array) => void): void {
+    this.rdvHandlers.set(cmd, cb);
+  }
+  /** 电路被销毁（对端/链路断）时的通知（用于会合通道收尾）。 */
+  onRdvDestroy(cb: () => void): void {
+    this.rdvDestroyCb = cb;
+    if (this.ended) cb();
+  }
+  /** 向终点跳发一个前向命令（面向终点跳，单 cell；data ≤ CELL_DATA_LEN）。会合控制/数据均经此发出。 */
+  sendToTerminus(cmd: number, data: Uint8Array): void {
+    const t = this.hops.length - 1;
+    const n = this.fwdN++;
+    this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, cmd, data, n)) });
+  }
+  /**
+   * 发一个前向命令并等待某个特定后向 cmd 的应答（建立请求/应答语义，如 ESTABLISH_*→*_ESTABLISHED）。
+   * 须先 enterRdvMode()。命中 awaitCmd → resolve(data)；超时由调用方 withTimeout 兜。
+   */
+  sendAwaitRdv(sendCmd: number, sendData: Uint8Array, awaitCmd: number): Promise<Uint8Array> {
+    return new Promise<Uint8Array>((res) => {
+      this.rdvHandlers.set(awaitCmd, (data) => {
+        this.rdvHandlers.delete(awaitCmd);
+        res(data);
+      });
+      this.sendToTerminus(sendCmd, sendData);
     });
   }
 
