@@ -89,7 +89,7 @@ export default function Gallery() {
   }, []);
   return (
     <div style={{ width: '100vw', height: '100vh', overflow: 'auto', background: '#15131c' }}>
-      <canvas ref={ref} width={1180} height={1700} style={{ display: 'block', margin: '0 auto', imageRendering: 'pixelated' }} />
+      <canvas ref={ref} width={1180} height={1700} style={{ display: 'block', margin: '0 auto', imageRendering: 'pixelated', width: '1180px', height: '1700px', maxWidth: 'none' }} />
     </div>
   );
 }
