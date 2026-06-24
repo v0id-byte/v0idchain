@@ -29,13 +29,6 @@ export interface MineAsset {
   traits: { rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'; purity: number };
 }
 
-export interface FeedEvent {
-  from: string;
-  type: string;
-  memo?: string;
-  height?: number;
-}
-
 /** 铸造矿洞发现证明的 memo 字符串 */
 export function makeMineDiscovery(depth: number, x: number, y: number, kind: MineAssetKind): string {
   return `MINE_DISC|${kind}|${depth}|${x}|${y}`;

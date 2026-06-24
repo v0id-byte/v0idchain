@@ -61,6 +61,11 @@ function mineRevealRarity(r: MineAsset['traits']['rarity']): Rarity {
   return r === 'legendary' ? 'legendary' : r === 'epic' ? 'epic' : r === 'rare' || r === 'uncommon' ? 'rare' : 'common';
 }
 
+/** 矿洞 5 档稀有度中文标签（含 uncommon；纯度档，与崽/鱼/作物的 4 档前导 0 比特稀有度不同源）。 */
+const MINE_RARITY_LABEL: Record<MineAsset['traits']['rarity'], string> = {
+  common: '普通', uncommon: '优良', rare: '稀有', epic: '史诗', legendary: '传说',
+};
+
 function addSlot(prev: InventorySlot[], slot: InventorySlot, unique = false): InventorySlot[] {
   const next = [...prev];
   if (!unique) {
@@ -1319,7 +1324,7 @@ function MinePanel({ mines }: { mines: MineAsset[] }) {
             <div key={m.id} className={`pet-card rarity-${m.traits.rarity}`}>
               <div className="mine-icon">{m.icon}</div>
               <div className="pet-meta">
-                <span className={`tag tag-${m.traits.rarity}`}>{RARITY_LABEL[m.traits.rarity]}</span>
+                <span className={`tag tag-${mineRevealRarity(m.traits.rarity)}`}>{MINE_RARITY_LABEL[m.traits.rarity]}</span>
                 <strong style={{ fontSize: 12 }}>{m.label}</strong>
               </div>
               <code title={m.id}>{m.type === 'discovery' ? `第 ${m.depth} 层 · 纯度 ${m.traits.purity}` : `材料 ×${m.count}`}</code>
@@ -1340,8 +1345,8 @@ function WalletPanel({ address, name, balance }: { address: string; name: string
   const [err, setErr] = useState('');
   const doImport = () => {
     const r = importPrivateKey(pk);
-    if (r.ok) window.location.reload(); // 全应用以新钱包重载
-    else setErr(r.error ?? '导入失败');
+    if (r) window.location.reload(); // 全应用以新钱包重载
+    else setErr('私钥无效（需 64 位十六进制 hex）');
   };
   return (
     <div className="panel">

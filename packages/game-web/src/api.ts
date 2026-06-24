@@ -57,7 +57,8 @@ export const api = {
     send<{ layout: string; hash: string }>('PUT', '/api/room', { address, layout, versionTx }),
   mines: (address: string) => get<MineAsset[]>(`/api/mines?address=${address}`),
   feed: (address: string, limit: number) => get<{ events: FeedEvent[] }>(`/api/feed?address=${address}&limit=${limit}`),
-  visit: (address: string) => get<{ address: string; name?: string }>(`/api/visit?address=${address}`),
+  visit: (address: string, target?: string) =>
+    get<{ address: string; name?: string }>(`/api/visit?address=${address}${target ? `&target=${target}` : ''}`),
 };
 
 /** 轮询一笔交易直到确认（或超时）。给“处理中 → 已到账”的体验。 */
