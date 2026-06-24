@@ -248,9 +248,18 @@ export function buildTown(
   // —— 主街(横向鹅卵石,3 格高) + 竖向连接巷 + 南排前人行道 ——
   const streetY = Math.floor(h / 2) - 1;
   const swY = streetY + 7; // 南排店门前人行道行
-  fill(2, streetY, w - 3, streetY + 2, 'cobble');
-  fill(cx, 3, cx + 1, h - 4, 'cobble');
-  fill(2, swY, w - 3, swY, 'cobble');
+  fill(2, streetY, w - 3, streetY + 2, 'cobble'); // 主街核心(3 高·直, 保证门连通)
+  // 主街上下沿有机起伏：偶尔向草地凸出一格,破除 CAD 直边(纯铺面,不动碰撞)
+  for (let x = 2; x < w - 2; x++) {
+    if (Math.sin(x * 0.19) > 0.5 && tiles[streetY - 1]?.[x] === 'grass') setT(x, streetY - 1, 'cobble');
+    if (Math.sin(x * 0.23 + 1.5) > 0.5 && tiles[streetY + 3]?.[x] === 'grass') setT(x, streetY + 3, 'cobble');
+  }
+  // 中央竖向大道：正弦蜿蜒 2 宽鹅卵石(在无建筑的 gap 内;cobble=纯视觉,行走无碍)。南至住宅区前止。
+  for (let y = 3; y <= swY + 1; y++) {
+    const ax = cx + Math.round(Math.sin(y * 0.12) * 2 + Math.sin(y * 0.37));
+    for (let x = ax; x <= ax + 1; x++) if (tiles[y]?.[x] === 'grass') setT(x, y, 'cobble');
+  }
+  fill(2, swY, w - 3, swY, 'cobble'); // 南排店前人行道(直, 门连通)
   // 中央石板广场
   fill(cx - 5, streetY - 1, cx + 6, streetY + 5, 'stone');
 
@@ -572,6 +581,17 @@ export function buildTown(
     { fx: [{ kind: 'torch', x: cx + 11, y: 5 }, { kind: 'torch', x: cx + 17, y: 5 }],
       fu: [{ kind: 'deadTree', x: cx + 11, y: 7 }, { kind: 'deadTree', x: cx + 17, y: 7 }] },
     '神秘废墟 →', 'ruins');
+
+  // 软化路↔草硬边：草地靠路的格确定性嵌入路面碎块(外溢) ⇒ 路缘有机融入,不再 CAD 直角(纯视觉,不动碰撞)。
+  const isPath = (tt?: string) => tt === 'cobble' || tt === 'stone';
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    if (tiles[y][x] !== 'grass' || solid[y][x]) continue;
+    const n = isPath(tiles[y - 1]?.[x]) ? tiles[y - 1][x]
+      : isPath(tiles[y + 1]?.[x]) ? tiles[y + 1][x]
+      : isPath(tiles[y]?.[x - 1]) ? tiles[y][x - 1]
+      : isPath(tiles[y]?.[x + 1]) ? tiles[y][x + 1] : null;
+    if (n && ((x * 92821 + y * 53987) % 100) < 16) setT(x, y, n);
+  }
 
   return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, crops: townCrops, mineObjects, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
 }

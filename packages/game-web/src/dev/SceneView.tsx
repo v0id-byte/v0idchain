@@ -32,11 +32,18 @@ export default function SceneView() {
       const scale = Math.max(1, Math.min(3, Number(params.get('s')) || 2));
       const S = scale * TILE;
       const sc = buildScene(id);
+      // 可选区域裁剪 ?rx&ry&rw&rh（瓦片坐标）：只渲染一块、画布恰好那么大 ⇒ 免滚动直接截图。
+      const num = (k: string, def: number) => { const v = Number(params.get(k)); return params.get(k) !== null && Number.isFinite(v) ? v : def; };
+      const rx = num('rx', 0), ry = num('ry', 0), rw = num('rw', sc.w), rh = num('rh', sc.h);
       const cv = ref.current;
-      cv.width = sc.w * S;
-      cv.height = sc.h * S;
+      cv.width = rw * S;
+      cv.height = rh * S;
+      cv.style.width = rw * S + 'px';
+      cv.style.height = rh * S + 'px';
+      cv.style.maxWidth = 'none';
       const ctx = cv.getContext('2d')!;
       ctx.imageSmoothingEnabled = false;
+      ctx.translate(-rx * S, -ry * S);
       const furn = buildFurniture() as Record<string, HTMLCanvasElement | undefined>;
       const t = 0.6; // 静帧时间（火苗/水波定格在一个好看相位）
 
