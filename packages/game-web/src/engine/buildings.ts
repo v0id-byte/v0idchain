@@ -114,15 +114,49 @@ function frameShadow(ctx: CanvasRenderingContext2D, dx: number, dy: number) {
   ctx.fillRect(dx + T, dy + 1, 1, T); // 右沿投影(影朝右)
 }
 
+// —— 像素纹理用确定性 hash + 4×4 Bayer 抖动（保持 buildingCanvas 缓存稳定，绝不用 Math.random）——
+function bhash(x: number, y: number): number {
+  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) ^ 0x5bd1e995;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+const BBAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const bdith = (x: number, y: number) => (BBAYER[((y & 3) * 4) + (x & 3)] + 0.5) / 16;
+
 // 灰泥 + 木骨架墙（Tudor 风:角柱 + 上中下横梁 + 斜撑）。
-// 体积(克制版, RENDER-3D-FEEL §7-D)：底色保持灰泥亮色不变暗，立体靠"边缘"而非压暗大面——
-// 内墙field 顶部受光(+6) / 极淡底部暗带(-6) → 左上 rim 高光(+10) + 右侧极淡暗面(-7) + 底部 AO 暗线(-9)。
+// §7-D 体积靠"边缘"。表面纹理(R2 升级)：灰泥不再平涂——叠 Bayer 抖动颗粒 + 麻点 + 底部风化污渍带 + 稀疏裂纹，
+// 让墙面"有呼吸/有故事"；再覆盖原木骨架(含沿梁木纹) + rim + AO。
 function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, beam: string) {
   px(ctx, 0, y0, W, H, wall);
-  px(ctx, 1, y0 + 1, W - 2, H - 1, shade(wall, 6)); // 内墙提亮一点(顶部受光基调)
-  // 极淡的上→下渐变：只把"靠近底部 ~28%"的内墙轻轻压暗一档(-6, 仍远高于 180)，整墙保持均匀亮。
-  const fade = Math.max(2, Math.round(H * 0.28));
-  px(ctx, 1, y0 + H - 1 - fade, W - 2, fade, shade(wall, -6));
+  // 灰泥表面：低频斑块(成片老化不均，破除大面平整) + 高频颗粒 + 麻点。上半受光偏亮、下半偏暗。
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      const lit = (1 - y / H) * 0.5;
+      const w = lit + bdith(x, y) - 0.5;
+      const n = bhash(x * 2 + 7, y * 3 + 1);
+      const blot = bhash(Math.floor(x / 5) + 3, Math.floor(y / 5) + 1); // 低频斑块
+      if (n < 0.04) px(ctx, x, y0 + y, 1, 1, shade(wall, -12)); // 灰泥麻点/小孔
+      else if (blot < 0.13) px(ctx, x, y0 + y, 1, 1, shade(wall, -8)); // 老灰泥暗斑(成片)
+      else if (blot > 0.9) px(ctx, x, y0 + y, 1, 1, shade(wall, 8)); // 受光亮斑(成片)
+      else if (w > 0.42) px(ctx, x, y0 + y, 1, 1, shade(wall, 6)); // 受光抖动亮
+      else if (w < -0.14) px(ctx, x, y0 + y, 1, 1, shade(wall, -5)); // 背光抖动暗
+    }
+  }
+  // 底部风化污渍带（雨痕/积灰，越往下越脏）。
+  const stain = Math.max(3, Math.round(H * 0.26));
+  for (let y = H - stain; y < H - 1; y++)
+    for (let x = 1; x < W - 1; x++) {
+      const f = (y - (H - stain)) / stain;
+      if (bhash(x * 5 + 3, y) < 0.08 + f * 0.22) px(ctx, x, y0 + y, 1, 1, shade(wall, -8 - Math.round(f * 9)));
+    }
+  // 稀疏竖直裂纹（灰泥风化）。
+  for (let i = 0, n = Math.max(2, Math.round(W / 24)); i < n; i++) {
+    const cxk = 4 + Math.floor(bhash(i * 13 + 1, 9) * (W - 8));
+    const top = 3 + Math.floor(bhash(i, 4) * H * 0.4);
+    const len = Math.round(H * (0.18 + bhash(i, 7) * 0.3));
+    for (let k = 0; k < len && top + k < H - 1; k++) px(ctx, cxk + (bhash(i, k) < 0.3 ? 1 : 0), y0 + top + k, 1, 1, shade(wall, -16));
+  }
+  // —— 木骨架（Tudor 框架 + 沿梁/立柱木纹）——
   const b = 2;
   px(ctx, 0, y0, b, H, beam); // 左柱
   px(ctx, W - b, y0, b, H, beam); // 右柱
@@ -130,6 +164,8 @@ function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H:
   px(ctx, 0, y0 + H - b, W, b, beam); // 底梁
   const mid = y0 + Math.floor(H * 0.46);
   px(ctx, 0, mid, W, b, beam); // 中梁
+  for (let x = 1; x < W; x += 3) { px(ctx, x, y0 + 1, 1, 1, shade(beam, x % 2 ? 9 : -10)); px(ctx, x, mid, 1, 1, shade(beam, x % 2 ? 9 : -10)); } // 横梁木纹
+  for (let y = y0 + 2; y < y0 + H; y += 3) { px(ctx, 0, y, 1, 1, shade(beam, y % 2 ? 9 : -10)); px(ctx, W - 1, y, 1, 1, shade(beam, y % 2 ? -10 : 9)); } // 立柱木纹
   // 斜撑(下半墙,左右各一)
   const steps = Math.floor(H * 0.4);
   for (let i = 0; i < steps; i++) {
@@ -145,17 +181,40 @@ function drawTimberWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H:
   px(ctx, 0, y0 + H - 1, W, 1, shade(beam, -16)); // 底梁下沿 AO 暗线(墙根压实, 焊在地上)
 }
 
-// 错缝石墙。体积(克制版, §7-D)：石面底色保持亮色，靠边缘雕体积——
-// 顶部 rim 高光(+16) + 左沿 rim(+9) + 右沿极淡暗面(-7) + 底部 AO 暗线(-12)；底部 ~26% 极淡压暗(-6)。
+// 错缝石砌墙（R2 升级）：逐块石头——每块确定性取明度档(亮/中/暗) + 块内颗粒抖动 + 顶高光/左高光/右底暗，
+// 深缝坐实；底部缝隙长青苔。§7-D 体积既靠"边缘"也靠"逐块" ⇒ 告别平涂大砖。seam 形参保留(深缝底色基)。
 function drawStoneWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, seam: string) {
-  px(ctx, 0, y0, W, H, wall);
-  // 极淡上→下渐变：仅底部 ~26% 轻压一档(-6, 灰泥石仍远高于 180)，整面保持均匀亮。
-  const fade = Math.max(2, Math.round(H * 0.26));
-  px(ctx, 0, y0 + H - fade, W, fade, shade(wall, -6));
-  for (let ry = y0 + 4; ry < y0 + H; ry += 4) {
-    px(ctx, 0, ry, W, 1, seam); // 横缝
-    const off = (((ry - y0) / 4) % 2) * 4;
-    for (let rx = off; rx < W; rx += 8) px(ctx, rx, ry - 3, 1, 3, shade(seam, 8)); // 错位竖缝
+  px(ctx, 0, y0, W, H, shade(seam, -22)); // 深缝底（块之间露出 = 缝）
+  const bh = 5; // 砖高
+  let row = 0;
+  for (let yy = y0; yy < y0 + H; yy += bh, row++) {
+    const rowOff = (row % 2) * 5; // 错缝
+    for (let sx = -rowOff; sx < W; sx += 8) {
+      const x = sx + 1;
+      const bw = 6 + Math.round(bhash(row * 3 + 1, sx) * 3); // 6~9，长短不一
+      const w = Math.min(bw, W - x - 1);
+      const yb = yy + 1;
+      const hb = Math.min(bh - 1, y0 + H - yb - 1);
+      if (w <= 1 || hb <= 1 || x >= W - 1) continue;
+      const v = bhash(sx * 3 + 2, row * 7 + 5);
+      const tone = v > 0.66 ? 8 : v > 0.33 ? 0 : -9; // 每块明度档
+      const rowLit = 4 - Math.round(((yy - y0) / H) * 9); // 整墙上亮下暗
+      const base = shade(wall, tone + rowLit);
+      px(ctx, x, yb, w, hb, base);
+      for (let py = 0; py < hb; py++) for (let pxx = 0; pxx < w; pxx++) // 块内石面颗粒
+        if (bhash((x + pxx) * 2 + 1, (yb + py) * 3) < 0.1) px(ctx, x + pxx, yb + py, 1, 1, shade(base, py < hb / 2 ? 6 : -7));
+      px(ctx, x, yb, w, 1, shade(base, 15)); // 顶高光
+      px(ctx, x, yb, 1, hb, shade(base, 8)); // 左高光
+      px(ctx, x + w - 1, yb, 1, hb, shade(base, -13)); // 右暗
+      px(ctx, x, yb + hb - 1, w, 1, shade(base, -17)); // 底暗(坐实缝)
+    }
+  }
+  // 底部缝隙青苔（确定性几簇，只在下 ~30%）。
+  for (let i = 0, n = Math.max(3, Math.round(W / 14)); i < n; i++) {
+    const mx = 2 + Math.floor(bhash(i * 9 + 3, 5) * (W - 4));
+    const my = y0 + H - 2 - Math.floor(bhash(i, 8) * Math.min(11, H * 0.3));
+    for (const [ox, oy, c] of [[0, 0, '#5f7d3c'], [1, 0, '#6f8f48'], [0, -1, '#4c6630'], [-1, 0, '#5a7a3a'], [0, 1, '#3f5a28']] as [number, number, string][])
+      if (mx + ox > 0 && mx + ox < W - 1 && my + oy > y0 && my + oy < y0 + H) px(ctx, mx + ox, my + oy, 1, 1, c);
   }
   // —— 体积边缘(1px 硬边)：左上受光 + 右侧极淡暗面 + 底部 AO ——
   px(ctx, 0, y0, W, 1, shade(wall, 16)); // 顶高光(受光上沿)
