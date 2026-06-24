@@ -16,7 +16,7 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font: 14px/1.5 ui-monospace, "Courier New", Courier, monospace;
   overflow: hidden;
 }
 
@@ -31,49 +31,54 @@ body {
 }
 .hud-left { display: flex; align-items: center; gap: 10px; pointer-events: auto; }
 .hud-left > * {
-  background: rgba(20, 18, 30, .72); border: 1px solid var(--line);
-  padding: 5px 11px; border-radius: 999px; font-size: 13px; backdrop-filter: blur(6px);
+  background: #141218; border: 2px solid var(--line);
+  padding: 5px 11px; font-size: 13px;
+  box-shadow: 3px 3px 0 #000;
 }
 .hud-place { font-weight: 600; }
 .hud-bal { color: var(--legendary); font-weight: 650; }
 .hud-name { color: var(--accent); font-weight: 600; }
-.hud-addr { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.hud-addr { color: var(--muted); font-family: ui-monospace, "Courier New", monospace; font-size: 12px; }
 .hud-menu {
   pointer-events: auto; cursor: pointer;
-  background: rgba(20, 18, 30, .72); border: 1px solid var(--line); color: var(--text);
-  padding: 7px 14px; border-radius: 10px; font: inherit; font-size: 13px; backdrop-filter: blur(6px);
+  background: #141218; border: 2px solid var(--line); color: var(--text);
+  padding: 7px 14px; font: inherit; font-size: 13px;
+  box-shadow: 3px 3px 0 #000;
 }
 .hud-menu:hover { border-color: var(--accent); }
+.hud-menu:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
 
 .hud-hint {
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
   display: flex; gap: 14px; align-items: center;
-  background: rgba(20, 18, 30, .72); border: 1px solid var(--line);
-  padding: 6px 14px; border-radius: 999px; font-size: 12px; color: var(--muted);
-  backdrop-filter: blur(6px); pointer-events: none; max-width: 92vw; flex-wrap: wrap; justify-content: center;
+  background: #141218; border: 2px solid var(--line);
+  padding: 6px 14px; font-size: 12px; color: var(--muted);
+  pointer-events: none; max-width: 92vw; flex-wrap: wrap; justify-content: center;
+  box-shadow: 3px 3px 0 #000;
 }
 .hud-status { color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 
 /* ---- Menu modal ---- */
 .menu-backdrop {
-  position: absolute; inset: 0; background: rgba(8, 7, 12, .55);
-  display: grid; place-items: center; backdrop-filter: blur(2px); z-index: 10;
+  position: absolute; inset: 0; background: rgba(8, 7, 12, .72);
+  display: grid; place-items: center; z-index: 10;
 }
 .menu {
   width: min(560px, 92vw); max-height: 86vh; overflow: auto;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, .5);
+  background: var(--panel); border: 2px solid var(--line);
+  box-shadow: 8px 8px 0 #000;
 }
 .menu-tabs {
   display: flex; gap: 6px; align-items: center;
-  padding: 12px 14px; border-bottom: 1px solid var(--line); position: sticky; top: 0;
-  background: var(--panel); border-radius: 18px 18px 0 0;
+  padding: 12px 14px; border-bottom: 2px solid var(--line); position: sticky; top: 0;
+  background: var(--panel);
 }
 .menu-tabs button {
-  background: transparent; border: 1px solid transparent; color: var(--muted);
-  padding: 7px 16px; border-radius: 9px; font: inherit; font-weight: 600; cursor: pointer;
+  background: transparent; border: 2px solid transparent; color: var(--muted);
+  padding: 7px 16px; font: inherit; font-weight: 600; cursor: pointer;
 }
 .menu-tabs button.on { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.menu-tabs button:hover:not(.on) { color: var(--text); border-color: var(--line); }
 .menu-tabs .menu-close { margin-left: auto; color: var(--muted); padding: 7px 12px; }
 .menu-tabs .menu-close:hover { color: var(--text); }
 
@@ -90,25 +95,31 @@ h3 { font-size: 13px; margin: 18px 0 10px; color: var(--muted); font-weight: 600
 .kv { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .kv .k { color: var(--muted); width: 56px; flex: none; font-size: 13px; }
 .kv .v { font-size: 14px; }
-.kv .addr { font-family: ui-monospace, Menlo, monospace; font-size: 12px; word-break: break-all; }
+.kv .addr { font-family: ui-monospace, "Courier New", monospace; font-size: 12px; word-break: break-all; }
 .wallet-actions { display: flex; gap: 8px; margin-top: 14px; }
 .wallet-actions button {
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  padding: 8px 14px; border-radius: 9px; font: inherit; cursor: pointer;
+  background: var(--panel-2); border: 2px solid var(--line); color: var(--text);
+  padding: 8px 14px; font: inherit; cursor: pointer;
+  box-shadow: 3px 3px 0 #000;
 }
 .wallet-actions button:hover { border-color: var(--accent); }
+.wallet-actions button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
 
 button.primary {
-  background: var(--accent); color: #fff; border: none;
-  padding: 9px 16px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--accent); color: #fff;
+  border: 2px solid color-mix(in srgb, var(--accent) 70%, #fff);
+  padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  box-shadow: 4px 4px 0 #000;
 }
 button.primary:hover:not(:disabled) { background: #7a5bff; }
-button.primary:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
+button.primary:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #000; }
+button.primary:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; box-shadow: none; }
 
 .pet-grid { display: flex; flex-wrap: wrap; gap: 10px; }
 .pet-card {
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel-2); border: 2px solid var(--line);
   padding: 9px; display: flex; flex-direction: column; align-items: center; gap: 7px;
+  box-shadow: 3px 3px 0 #000;
 }
 .pet-card.rarity-rare { border-color: color-mix(in srgb, var(--rare) 45%, var(--line)); }
 .pet-card.rarity-epic { border-color: color-mix(in srgb, var(--epic) 50%, var(--line)); }
@@ -116,12 +127,13 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .sprite { image-rendering: pixelated; }
 .mine-icon { font-size: 42px; line-height: 1; padding: 10px 0 4px; }
 .pet-meta { display: flex; align-items: center; gap: 7px; }
-.pet-meta code { color: var(--muted); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
-.tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--line); color: var(--muted); }
+.pet-meta code { color: var(--muted); font-size: 11px; font-family: ui-monospace, "Courier New", monospace; }
+.tag { font-size: 11px; padding: 2px 7px; background: var(--line); color: var(--muted); }
 .tag-rare { background: color-mix(in srgb, var(--rare) 22%, transparent); color: var(--rare); }
 .tag-epic { background: color-mix(in srgb, var(--epic) 22%, transparent); color: var(--epic); }
 .tag-legendary { background: color-mix(in srgb, var(--legendary) 22%, transparent); color: var(--legendary); }
 
+/* 保留 spinner border-radius:50% （功能性旋转指示器，非装饰）*/
 .spin {
   width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid var(--line); border-top-color: var(--accent);
@@ -135,17 +147,20 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .editor-bar {
   position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
   width: min(880px, 94vw);
-  background: rgba(20, 18, 30, .92); border: 1px solid var(--line); border-radius: 14px;
-  padding: 10px 12px; backdrop-filter: blur(8px); z-index: 8;
+  background: #141218; border: 2px solid var(--line);
+  padding: 10px 12px; z-index: 8;
+  box-shadow: 6px 6px 0 #000;
 }
 .editor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .editor-label { color: var(--muted); font-size: 13px; }
 .editor-tip { color: var(--muted); font-size: 12px; margin-left: 6px; }
 .editor-actions { display: flex; gap: 8px; margin-left: auto; }
 .theme-btn, .erase-btn, .done-btn {
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  padding: 6px 12px; border-radius: 9px; font: inherit; font-size: 13px; cursor: pointer;
+  background: var(--panel-2); border: 2px solid var(--line); color: var(--text);
+  padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  box-shadow: 3px 3px 0 #000;
 }
+.theme-btn:active, .erase-btn:active, .done-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
 .theme-btn.on, .erase-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .theme-btn:hover, .erase-btn:hover, .done-btn:hover { border-color: var(--accent); }
 
@@ -154,15 +169,16 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 }
 .palette-item {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 3px;
-  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
-  padding: 6px 8px; border-radius: 10px; cursor: pointer; font-size: 11px; min-width: 52px;
+  background: var(--panel); border: 2px solid var(--line); color: var(--muted);
+  padding: 6px 8px; cursor: pointer; font-size: 11px; min-width: 52px;
+  box-shadow: 2px 2px 0 #000;
 }
 .palette-item canvas { image-rendering: pixelated; }
 .palette-item.on { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
 .palette-item:hover { border-color: var(--accent); }
 .editor-pub { color: var(--text); font-size: 13px; margin-top: 8px; }
 
-/* 农场种植：作物选择器（横向 wrap，复用 palette-item 样式） */
+/* 农场种植：作物选择器 */
 .crop-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .crop-pick canvas { image-rendering: pixelated; }
 
@@ -171,13 +187,14 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .fish-score { margin-left: 12px; color: var(--muted); font-size: 12px; }
 .fishing-panel { display: flex; flex-direction: column; align-items: stretch; }
 .fishing-stage {
-  position: relative; height: 168px; border-radius: 14px; overflow: hidden;
+  position: relative; height: 168px; overflow: hidden;
   background: linear-gradient(180deg, #16344a 0%, #0e2336 60%, #0a1b2a 100%);
-  border: 1px solid var(--line); display: grid; place-items: center;
+  border: 2px solid var(--line); display: grid; place-items: center;
 }
 .fishing-stage.phase-bite { animation: stageShake .5s ease infinite; }
 @keyframes stageShake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
 .bobber-wrap { position: relative; width: 60px; height: 90px; }
+/* 浮标保留 border-radius:50%（游戏内视觉效果，非 UI 圆角）*/
 .bobber {
   position: absolute; left: 50%; top: 24px; width: 12px; height: 12px; margin-left: -6px;
   border-radius: 50%; background: #e8503a; box-shadow: 0 0 0 2px #fff inset, 0 2px 0 #b8362a;
@@ -186,6 +203,7 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .bobber.bite { animation: bobBite .28s ease-in-out infinite; background: #ffce3d; }
 @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
 @keyframes bobBite { 0%,100% { transform: translateY(0); } 50% { transform: translateY(11px); } }
+/* 涟漪保留 border-radius:50%（游戏水面视觉效果）*/
 .ripple {
   position: absolute; left: 50%; top: 40px; width: 30px; height: 8px; margin-left: -15px;
   border: 1px solid rgba(255,255,255,.28); border-radius: 50%;
@@ -196,8 +214,8 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 @keyframes catchPop { 0% { transform: scale(.2) translateY(20px); opacity: 0; } 100% { transform: scale(1) translateY(0); opacity: 1; } }
 
 .tension-bar {
-  position: relative; height: 16px; margin: 12px 0 0; border-radius: 999px;
-  background: var(--panel-2); border: 1px solid var(--line); overflow: hidden;
+  position: relative; height: 16px; margin: 12px 0 0;
+  background: var(--panel-2); border: 2px solid var(--line); overflow: hidden;
 }
 .tension-green {
   position: absolute; top: 0; bottom: 0;
@@ -206,14 +224,14 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 }
 .tension-pointer {
   position: absolute; top: -2px; bottom: -2px; width: 4px; margin-left: -2px;
-  background: var(--legendary); border-radius: 2px; box-shadow: 0 0 6px var(--legendary);
+  background: var(--legendary); box-shadow: 0 0 6px var(--legendary);
 }
 .fish-hint { text-align: center; color: var(--text); font-size: 13px; margin: 12px 0 4px; min-height: 18px; }
 
 .catch-card { margin-top: 8px; }
 .catch-meta {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  background: var(--panel-2); border: 2px solid var(--line); padding: 10px 12px;
 }
 .catch-meta.rarity-rare { border-color: color-mix(in srgb, var(--rare) 45%, var(--line)); }
 .catch-meta.rarity-epic { border-color: color-mix(in srgb, var(--epic) 50%, var(--line)); }
@@ -221,14 +239,17 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .catch-meta strong { font-size: 15px; }
 .fish-size { color: var(--muted); font-size: 12px; }
 .fish-preview-note { color: var(--muted); font-size: 11px; }
-.fish-id { color: var(--muted); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+.fish-id { color: var(--muted); font-size: 11px; font-family: ui-monospace, "Courier New", monospace; }
 .catch-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
 .ghost-btn {
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  padding: 9px 16px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--panel-2); border: 2px solid var(--line); color: var(--text);
+  padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  box-shadow: 3px 3px 0 #000;
 }
 .ghost-btn:hover:not(:disabled) { border-color: var(--accent); }
+.ghost-btn:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
 .ghost-btn:disabled { color: var(--muted); cursor: not-allowed; }
+/* 钓鱼咬钩脉冲（游戏反馈动画，保留 glow）*/
 .bite-btn { animation: bitePulse .5s ease infinite; }
 @keyframes bitePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,206,61,.6); } 50% { box-shadow: 0 0 0 6px rgba(255,206,61,0); } }
 
@@ -236,18 +257,18 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .dir-list { display: flex; flex-direction: column; gap: 8px; }
 .dir-item {
   display: flex; align-items: center; justify-content: space-between;
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  padding: 11px 14px; border-radius: 11px; font: inherit; cursor: pointer; text-align: left;
+  background: var(--panel-2); border: 2px solid var(--line); color: var(--text);
+  padding: 11px 14px; font: inherit; cursor: pointer; text-align: left;
+  box-shadow: 3px 3px 0 #000;
 }
 .dir-item:hover { border-color: var(--accent); }
+.dir-item:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
 .dir-name { font-weight: 600; }
 .dir-go { color: var(--accent); font-size: 13px; }
 
 /* ---- 触屏控件（虚拟方向键 / 交互键 / 触屏 HUD） ---- */
-/* 默认隐藏：桌面用键盘。仅 pointer:coarse（手机/平板）显示，见底部 @media。 */
 .tc-hud, .tc-dpad, .tc-action { display: none; }
 
-/* 安全区变量：刘海/底部 home indicator 避让（无刘海设备 env() 退化为 0）。 */
 :root {
   --sa-l: env(safe-area-inset-left, 0px);
   --sa-r: env(safe-area-inset-right, 0px);
@@ -257,19 +278,16 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 
 .inv-toast {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  background: rgba(20, 18, 30, .94); border: 1px solid var(--line); color: var(--text);
-  padding: 12px 20px; border-radius: 12px; font-size: 14px; font-weight: 600;
-  z-index: 20; backdrop-filter: blur(8px); box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+  background: #0d0c15; border: 2px solid var(--line); color: var(--text);
+  padding: 12px 20px; font-size: 14px; font-weight: 600;
+  z-index: 20; box-shadow: 6px 6px 0 #000;
   animation: invPop .2s ease both;
 }
 @keyframes invPop { from { opacity: 0; transform: translate(-50%, -46%); } to { opacity: 1; transform: translate(-50%, -50%); } }
 
 @media (pointer: coarse) {
-  /* 触屏：禁画布默认手势（缩放/滚动），方向/交互键各自 touch-action:none 防误触。
-     根容器用 manipulation 去掉双击缩放延迟，但保留菜单/调色板的滚动手势。 */
   .game-root { touch-action: manipulation; }
   .game-canvas { touch-action: none; }
-  /* HUD 文字/按钮禁选中，避免长按弹放大镜/选择菜单（输入框/可复制地址除外）。 */
   .hud, .tc-hud, .tc-dpad, .tc-action, .hud-hint, .editor-bar {
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   }
@@ -279,7 +297,6 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
     position: absolute;
     top: calc(8px + var(--sa-t)); right: calc(10px + var(--sa-r));
   }
-  /* 触屏时桌面右上角文字按钮多余 → 由触屏 HUD 接管，隐藏旧的避免重叠/挤压。 */
   .hud-right { display: none; }
 
   .tc-hud-btn, .tc-dir, .tc-action {
@@ -287,13 +304,13 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
     touch-action: none; cursor: pointer; font: inherit;
   }
   .tc-hud-btn {
-    width: 46px; height: 46px; border-radius: 12px;
-    background: rgba(20, 18, 30, .82); border: 1px solid var(--line); color: var(--text);
-    font-size: 20px; line-height: 1; display: grid; place-items: center; backdrop-filter: blur(6px);
+    width: 46px; height: 46px;
+    background: #141218; border: 2px solid var(--line); color: var(--text);
+    font-size: 20px; line-height: 1; display: grid; place-items: center;
+    box-shadow: 3px 3px 0 #000;
   }
-  .tc-hud-btn:active { background: var(--accent); border-color: var(--accent); transform: scale(.94); }
+  .tc-hud-btn:active { background: var(--accent); border-color: var(--accent); transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
 
-  /* 左下虚拟方向键：3×3 网格摆十字，每个箭头独立按住（多点 → 斜向）。 */
   .tc-dpad {
     display: grid; z-index: 9; pointer-events: auto;
     grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 6px;
@@ -301,37 +318,35 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
     left: calc(16px + var(--sa-l)); bottom: calc(20px + var(--sa-b));
   }
   .tc-dir {
-    width: 56px; height: 56px; border: 1px solid var(--line); color: var(--text);
-    background: rgba(20, 18, 30, .74); backdrop-filter: blur(6px);
-    font-size: 18px; display: grid; place-items: center; border-radius: 12px;
+    width: 56px; height: 56px; border: 2px solid var(--line); color: var(--text);
+    background: #141218;
+    font-size: 18px; display: grid; place-items: center;
+    box-shadow: 3px 3px 0 #000;
   }
-  .tc-dir.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .tc-up { grid-area: 1 / 2; border-radius: 14px 14px 8px 8px; }
-  .tc-left { grid-area: 2 / 1; border-radius: 14px 8px 8px 14px; }
-  .tc-right { grid-area: 2 / 3; border-radius: 8px 14px 14px 8px; }
-  .tc-down { grid-area: 3 / 2; border-radius: 8px 8px 14px 14px; }
+  .tc-dir.on { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 1px 1px 0 #000; }
+  .tc-up { grid-area: 1 / 2; }
+  .tc-left { grid-area: 2 / 1; }
+  .tc-right { grid-area: 2 / 3; }
+  .tc-down { grid-area: 3 / 2; }
 
-  /* 右下大圆交互键 = E/确认。 */
+  /* 右下大方交互键（像素风方块按钮，不用圆形）*/
   .tc-action {
     display: grid; place-items: center; z-index: 9; pointer-events: auto;
-    width: 84px; height: 84px; border-radius: 50%;
-    background: radial-gradient(circle at 50% 38%, #9a7dff, var(--accent));
-    border: 2px solid color-mix(in srgb, var(--accent) 60%, #fff 10%); color: #fff;
-    font-size: 26px; font-weight: 700; box-shadow: 0 6px 18px rgba(139, 109, 255, .4);
+    width: 84px; height: 84px;
+    background: var(--accent);
+    border: 3px solid color-mix(in srgb, var(--accent) 60%, #fff 20%); color: #fff;
+    font-size: 26px; font-weight: 700; box-shadow: 6px 6px 0 #000;
     position: absolute;
     right: calc(24px + var(--sa-r)); bottom: calc(34px + var(--sa-b));
   }
-  .tc-action:active { transform: scale(.92); box-shadow: 0 3px 10px rgba(139, 109, 255, .5); }
+  .tc-action:active { transform: translate(4px, 4px); box-shadow: 2px 2px 0 #000; }
 
-  /* 移动提示在触屏无意义（无键盘），藏掉省空间；状态提示仍走 panel/toast。 */
   .hud-hint { display: none; }
 
-  /* HUD 信息条让开顶部安全区，过窄时允许换行不挤爆。 */
   .hud { padding: calc(8px + var(--sa-t)) calc(12px + var(--sa-r)) 8px calc(12px + var(--sa-l)); }
   .hud-left { flex-wrap: wrap; gap: 6px; }
 }
 
-/* 窄屏（手机竖屏）：菜单/编辑器浮层占满宽度更好按，按钮加大到 ≥44px 触摸目标。 */
 @media (max-width: 560px) {
   .menu { width: 94vw; max-height: 88vh; }
   .menu-tabs button { padding: 9px 14px; }
@@ -341,7 +356,7 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
   .wallet-actions button, .editor-actions button, button.primary, .ghost-btn { min-height: 44px; }
 }
 
-/* ---- 名册项：点名字看主页 / 点「进去看看」串门（两枚内联按钮） ---- */
+/* ---- 名册项 ---- */
 .dir-name-btn, button.dir-go {
   background: transparent; border: none; font: inherit; cursor: pointer; padding: 2px 0;
 }
@@ -349,47 +364,52 @@ button.primary:disabled { background: var(--line); color: var(--muted); cursor: 
 .dir-name-btn:hover { color: var(--accent); }
 button.dir-go:hover { text-decoration: underline; }
 
-/* ---- 世界动态流（镇中心公告牌） ---- */
+/* ---- 世界动态流（镇中心公告牌）---- */
 .feed-list { display: flex; flex-direction: column; gap: 6px; }
 .feed-item {
   display: flex; align-items: center; gap: 9px; width: 100%;
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  padding: 9px 12px; border-radius: 11px; font: inherit; text-align: left; cursor: pointer;
+  background: var(--panel-2); border: 2px solid var(--line); color: var(--text);
+  padding: 9px 12px; font: inherit; text-align: left; cursor: pointer;
+  box-shadow: 2px 2px 0 #000;
 }
 .feed-item:hover { border-color: var(--accent); }
+.feed-item:active { transform: translate(2px, 2px); box-shadow: none; }
 .feed-ico { font-size: 16px; flex: none; width: 20px; text-align: center; }
 .feed-txt { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed-item .tag { flex: none; }
 .feed-ago { color: var(--muted); font-size: 11px; flex: none; }
 
-/* ---- 玩家主页（炫耀卡） ---- */
+/* ---- 玩家主页（炫耀卡）---- */
 .profile-card { display: flex; flex-direction: column; gap: 12px; }
 .pf-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pf-name { font-size: 18px; font-weight: 700; word-break: break-all; }
 .pf-badge {
-  font-size: 11px; padding: 3px 9px; border-radius: 999px; flex: none;
+  font-size: 11px; padding: 3px 9px; flex: none;
   background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .pf-bal { font-size: 24px; font-weight: 700; color: var(--legendary); }
 .pf-bal em { font-size: 12px; font-style: normal; color: var(--muted); margin-left: 2px; }
 .pf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pf-stat {
   display: flex; flex-direction: column; gap: 3px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px; padding: 9px 12px;
+  background: var(--panel-2); border: 2px solid var(--line); padding: 9px 12px;
+  box-shadow: 2px 2px 0 #000;
 }
 .pf-k { color: var(--muted); font-size: 12px; }
 .pf-v { font-size: 14px; font-weight: 600; }
 .pf-visit { align-self: flex-start; }
 
-/* ---- 钱包导入（用已有私钥登录） ---- */
+/* ---- 钱包导入（用已有私钥登录）---- */
 .wallet-import {
-  margin-top: 12px; padding: 12px; border-radius: 12px;
-  background: var(--panel-2); border: 1px solid var(--line);
+  margin-top: 12px; padding: 12px;
+  background: var(--panel-2); border: 2px solid var(--line);
+  box-shadow: 3px 3px 0 #000;
 }
 .pk-input {
-  width: 100%; margin: 8px 0; padding: 9px 11px; border-radius: 9px;
-  background: var(--bg); border: 1px solid var(--line); color: var(--text);
-  font-family: ui-monospace, Menlo, monospace; font-size: 12px; resize: vertical; word-break: break-all;
+  width: 100%; margin: 8px 0; padding: 9px 11px;
+  background: var(--bg); border: 2px solid var(--line); color: var(--text);
+  font-family: ui-monospace, "Courier New", monospace; font-size: 12px; resize: vertical; word-break: break-all;
 }
 .pk-input:focus { outline: none; border-color: var(--accent); }
 .panel-status.err { color: #ff6b6b; }
@@ -398,15 +418,15 @@ button.dir-go:hover { text-decoration: underline; }
 .hotbar {
   position: absolute; bottom: calc(12px + var(--sa-b)); left: 50%; transform: translateX(-50%);
   display: flex; gap: 4px; z-index: 10; pointer-events: auto;
-  background: rgba(16, 14, 24, .88); border: 1px solid var(--line);
-  border-radius: 14px; padding: 5px; backdrop-filter: blur(8px);
-  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+  background: #141218; border: 2px solid var(--line);
+  padding: 5px;
+  box-shadow: 4px 4px 0 #000;
 }
 .hotbar-slot {
-  width: 46px; height: 46px; border-radius: 10px; border: 1.5px solid var(--line);
+  width: 46px; height: 46px; border: 2px solid var(--line);
   background: var(--panel-2); display: flex; flex-direction: column; align-items: center;
   justify-content: center; cursor: pointer; font: inherit; color: var(--text);
-  position: relative; transition: border-color .12s, background .12s;
+  position: relative;
 }
 .hotbar-slot:hover { border-color: var(--accent); background: var(--panel); }
 .hotbar-slot.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -415,19 +435,17 @@ button.dir-go:hover { text-decoration: underline; }
 .hotbar-count {
   position: absolute; bottom: 2px; right: 4px;
   font-size: 10px; font-weight: 700; color: #fff;
-  text-shadow: 0 1px 2px #000;
+  text-shadow: 1px 1px 0 #000;
 }
 .hotbar-num { color: var(--muted); font-size: 12px; font-weight: 600; }
 .hotbar-dur {
   position: absolute; bottom: 3px; left: 4px; right: 4px; height: 3px;
-  background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden;
+  background: rgba(255,255,255,.12); overflow: hidden;
 }
-.hotbar-dur-fill { height: 100%; border-radius: 2px; transition: width .2s; }
+.hotbar-dur-fill { height: 100%; transition: width .2s; }
 
 /* ---- 张力条增强（钓鱼 QTE）---- */
-.tension-danger {
-  animation: tensionShake .15s ease infinite;
-}
+.tension-danger { animation: tensionShake .15s ease infinite; }
 @keyframes tensionShake {
   0%,100% { transform: translateX(0); }
   25% { transform: translateX(-2px); }
@@ -442,7 +460,6 @@ button.dir-go:hover { text-decoration: underline; }
 @keyframes zoneBreath { 0%,100% { opacity: .7; } 50% { opacity: 1; } }
 .fish-hint.hint-good { color: #4cdb7a; font-weight: 600; }
 
-/* 触屏：快捷栏在 D-pad 上方 + 右侧居中 */
 @media (pointer: coarse) {
   .hotbar {
     bottom: calc(170px + var(--sa-b));
@@ -450,32 +467,33 @@ button.dir-go:hover { text-decoration: underline; }
   }
 }
 
-/* ── 菜地弹窗 ── */
 /* ── 田地 HUD 气泡 ── */
 .garden-hud {
   position: fixed; top: 62px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center;
-  background: rgba(12, 11, 18, .9); border: 1px solid var(--line);
-  border-radius: 14px; padding: 8px 12px; backdrop-filter: blur(10px);
+  background: #0d0c15; border: 2px solid var(--line);
+  padding: 8px 12px;
   z-index: 20; pointer-events: auto; max-width: 96vw;
   animation: fadeIn 0.12s ease;
+  box-shadow: 4px 4px 0 #000;
 }
 .garden-hud-title { font-size: 13px; color: var(--muted); white-space: nowrap; padding-right: 2px; }
 .garden-hud-btn {
   display: flex; align-items: center; gap: 5px;
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  padding: 6px 10px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 14px;
-  white-space: nowrap;
+  background: var(--panel-2); border: 2px solid var(--line); color: var(--text);
+  padding: 6px 10px; cursor: pointer; font: inherit; font-size: 14px;
+  white-space: nowrap; box-shadow: 2px 2px 0 #000;
 }
 .garden-hud-btn:hover { border-color: var(--accent); }
+.garden-hud-btn:active { transform: translate(2px, 2px); box-shadow: none; }
 .garden-hud-harvest { border-color: color-mix(in srgb, #6abf5e 50%, var(--line)); }
 .garden-hud-harvest:hover { border-color: #6abf5e; }
 .garden-hud-remove { opacity: 0.75; }
 .garden-hud-remove:hover { opacity: 1; border-color: #e55; }
 .garden-hud-key {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  background: var(--panel); border: 2px solid var(--line);
   font-size: 10px; padding: 1px 4px; color: var(--muted);
-  font-family: ui-monospace, Menlo, monospace; font-style: normal;
+  font-family: ui-monospace, "Courier New", monospace; font-style: normal;
 }
 .garden-hud-time { font-size: 11px; color: var(--muted); }
 .garden-hud-close {
@@ -487,8 +505,9 @@ button.dir-go:hover { text-decoration: underline; }
 /* ── 租售弹窗 ── */
 .rent-grid { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
 .rent-option {
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel-2); border: 2px solid var(--line);
   padding: 14px 16px; text-align: center; min-width: 110px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 3px 3px 0 #000;
 }
 .rent-option.rent-buy { border-color: #f4c43055; }
 .rent-title { font-size: 12px; color: var(--dim); }
@@ -496,17 +515,19 @@ button.dir-go:hover { text-decoration: underline; }
 
 /* ── 工具上下文提示 ── */
 .hud-tool-hint {
-  background: rgba(0,0,0,.55); border: 1px solid var(--acc);
-  color: var(--acc); padding: 2px 10px; border-radius: 8px;
+  background: #0d0c15; border: 2px solid var(--acc);
+  color: var(--acc); padding: 2px 10px;
   font-size: 13px; font-weight: 600; animation: fadeIn .15s;
+  box-shadow: 3px 3px 0 #000;
 }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* ── 租约状态 ── */
 .rent-status {
-  background: var(--panel-2); border: 1px solid var(--acc);
-  border-radius: 8px; padding: 8px 14px; margin-bottom: 12px;
+  background: var(--panel-2); border: 2px solid var(--acc);
+  padding: 8px 14px; margin-bottom: 12px;
   font-size: 13px; color: var(--acc); text-align: center;
+  box-shadow: 3px 3px 0 #000;
 }
 
 /* ════════════════ 铸造揭晓仪式（RevealOverlay）════════════════ */

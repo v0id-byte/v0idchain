@@ -12,15 +12,16 @@ import {
   type TileSet,
   type FurnitureKind,
 } from './sprites.js';
-import type { Scene, Interactable, CropSprite } from './scene.js';
+import type { Scene, Interactable, CropSprite, MineObject } from './scene.js';
 import { renderPet } from '../pet-render.js';
 import { renderCrop } from '../crop-render.js';
 import { loadAtlas, atlasReady, drawAtlasTile } from './atlas.js';
 import { tileCoord, furnitureCoord } from './tileset.js';
 import { EFFECTS, drawWaterShimmer, swayAngle, phaseOf } from './effects.js';
 import { buildingCanvas } from './buildings.js';
-import { GROUND_KINDS, drawGroundTile } from './ground.js';
+import { GROUND_KINDS, drawGroundTile, setGroundSprite } from './ground.js';
 import { treeCanvas, treeVariant, TREE_W, TREE_H } from './foliage.js';
+import { loadMineSprites, mineSprite, type MineSpriteKey } from './mine-sprites.js';
 
 const SWAY_KINDS = new Set(['flower']); // 随风轻摆的装饰（绕底部中心微旋）
 const FLAT_KINDS = new Set(['rug', 'bed', 'fence']); // 贴地/铺地类家具：不画落地接触阴影（§7-B）
@@ -87,6 +88,13 @@ export class GameEngine {
 
   start() {
     void loadAtlas(); // 异步加载 Kenney 图集；加载完成前用程序化兜底
+    void loadMineSprites().then(() => {
+      // 用像素画 PNG 替换程序化地面纹理（加载完才切，失败则保留程序化兜底）
+      const floorImg = mineSprite('caveFloor');
+      const wallImg = mineSprite('caveWall');
+      if (floorImg) setGroundSprite('caveFloor', floorImg);
+      if (wallImg) setGroundSprite('caveWall', wallImg);
+    });
     this.input.attach();
     this.canvas.addEventListener('pointerdown', this.onClickBound);
     this.last = performance.now();
@@ -292,6 +300,139 @@ export class GameEngine {
     ctx.restore();
   }
 
+  private drawMineObject(o: MineObject, dx: number, dy: number, S: number) {
+    const ctx = this.ctx;
+    const u = S / 16;
+
+    if (o.kind === 'mineEntrance') {
+      this.drawContactShadow(dx + S / 2, dy + S * 0.95, S * 2.35);
+      const im = mineSprite('mineEntrance');
+      if (im) {
+        // 48×48 PNG → 3S×3S display, centre on tile, bottom at dy+S
+        ctx.drawImage(im, dx - S, dy - S * 2, S * 3, S * 3);
+      } else {
+        // programmatic fallback
+        const bx = dx - 18 * u;
+        const by = dy - 16 * u;
+        ctx.save();
+        ctx.translate(bx, by);
+        ctx.fillStyle = '#39323d';
+        ctx.fillRect(5 * u, 13 * u, 26 * u, 14 * u);
+        ctx.fillStyle = '#5c5362';
+        ctx.fillRect(3 * u, 16 * u, 4 * u, 10 * u);
+        ctx.fillRect(29 * u, 16 * u, 4 * u, 10 * u);
+        ctx.fillRect(7 * u, 10 * u, 22 * u, 6 * u);
+        ctx.fillStyle = '#7a6e7f';
+        ctx.fillRect(8 * u, 8 * u, 5 * u, 5 * u);
+        ctx.fillRect(15 * u, 6 * u, 7 * u, 5 * u);
+        ctx.fillRect(24 * u, 9 * u, 5 * u, 5 * u);
+        ctx.fillStyle = '#17121d';
+        ctx.beginPath();
+        ctx.ellipse(18 * u, 19 * u, 11 * u, 12 * u, 0, Math.PI, 0);
+        ctx.rect(7 * u, 18 * u, 22 * u, 9 * u);
+        ctx.fill();
+        const glow = 0.65 + Math.sin(this.time * 5) * 0.16;
+        ctx.fillStyle = `rgba(255, 199, 91, ${glow})`;
+        ctx.fillRect(4 * u, 18 * u, 2 * u, 5 * u);
+        ctx.fillRect(30 * u, 18 * u, 2 * u, 5 * u);
+        ctx.fillStyle = '#2d2015';
+        ctx.fillRect(10 * u, 28 * u, 16 * u, 5 * u);
+        ctx.fillStyle = '#f3d486';
+        ctx.font = `${Math.max(8, Math.round(4 * u))}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('MINE', 18 * u, 30.5 * u);
+        ctx.restore();
+      }
+      return;
+    }
+
+    if (o.kind === 'ore') {
+      const oreKey = `ore_${o.oreKind ?? 'copper'}` as MineSpriteKey;
+      const im = mineSprite(oreKey);
+      if (im) {
+        ctx.drawImage(im, dx, dy, S, S);
+      } else {
+        const oreColor: Record<string, string> = {
+          copper: '#b87333', iron: '#9aa0a6', silver: '#d8e2ee', gold: '#f4c430',
+          amethyst: '#a35cff', void_crystal: '#3fd7ff', starcore: '#ffe78a', ancient_relic: '#d8a15d',
+        };
+        const col = oreColor[o.oreKind ?? 'copper'] ?? '#b87333';
+        ctx.fillStyle = 'rgba(8,7,12,.22)';
+        ctx.fillRect(dx + 3 * u, dy + 3 * u, 10 * u, 10 * u);
+        ctx.fillStyle = col;
+        for (let i = 0; i < 5; i++) {
+          const px = dx + (4 + ((o.x * 5 + o.y * 3 + i * 7) % 8)) * u;
+          const py = dy + (4 + ((o.x * 2 + o.y * 7 + i * 5) % 8)) * u;
+          ctx.fillRect(px, py, Math.max(1, 2 * u), Math.max(1, 2 * u));
+        }
+        ctx.fillStyle = 'rgba(255,255,255,.45)';
+        ctx.fillRect(dx + 7 * u, dy + 4 * u, Math.max(1, u), Math.max(1, u));
+      }
+      return;
+    }
+
+    if (o.kind === 'chest') {
+      this.drawContactShadow(dx + S / 2, dy + S * 0.82, S * 0.72);
+      const im = mineSprite('mineChest');
+      if (im) {
+        ctx.drawImage(im, dx, dy, S, S);
+      } else {
+        ctx.fillStyle = '#5b351c';
+        ctx.fillRect(dx + 3 * u, dy + 6 * u, 10 * u, 7 * u);
+        ctx.fillStyle = '#8a5a2a';
+        ctx.fillRect(dx + 3 * u, dy + 4 * u, 10 * u, 4 * u);
+        ctx.fillStyle = '#d7b46a';
+        ctx.fillRect(dx + 7 * u, dy + 7 * u, 2 * u, 3 * u);
+      }
+      return;
+    }
+
+    if (o.kind === 'monster') {
+      this.drawContactShadow(dx + S / 2, dy + S * 0.85, S * 0.58);
+      const im = mineSprite('mineMonster_basic');
+      if (im) {
+        ctx.drawImage(im, dx, dy, S, S);
+      } else {
+        const bob = Math.sin(this.time * 4 + (o.variant ?? 0)) * u;
+        ctx.fillStyle = '#4b315f';
+        ctx.beginPath();
+        ctx.ellipse(dx + S / 2, dy + 9 * u + bob, 5 * u, 4 * u, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#9dff8f';
+        ctx.fillRect(dx + 6 * u, dy + 8 * u + bob, 1.5 * u, 1.5 * u);
+        ctx.fillRect(dx + 9 * u, dy + 8 * u + bob, 1.5 * u, 1.5 * u);
+        ctx.fillStyle = '#211529';
+        ctx.fillRect(dx + 5 * u, dy + 12 * u + bob, 6 * u, u);
+      }
+      return;
+    }
+
+    // stairsDown / stairsUp / exit
+    this.drawContactShadow(dx + S / 2, dy + S * 0.84, S * 0.65);
+    const stairKey = o.kind === 'stairsDown' ? 'stairsDown' : o.kind === 'stairsUp' ? 'stairsUp' : 'mineExit';
+    const stairIm = mineSprite(stairKey as MineSpriteKey);
+    if (stairIm) {
+      ctx.drawImage(stairIm, dx, dy, S, S);
+    } else if (o.kind === 'stairsDown') {
+      ctx.fillStyle = '#15131d';
+      ctx.fillRect(dx + 3 * u, dy + 4 * u, 10 * u, 9 * u);
+      ctx.fillStyle = '#635a72';
+      for (let i = 0; i < 4; i++) ctx.fillRect(dx + (3 + i) * u, dy + (5 + i * 2) * u, (10 - i * 2) * u, u);
+    } else if (o.kind === 'stairsUp') {
+      ctx.fillStyle = '#5f566c';
+      for (let i = 0; i < 5; i++) ctx.fillRect(dx + (3 + i) * u, dy + (11 - i * 2) * u, (10 - i * 2) * u, u);
+      ctx.fillStyle = '#d5c98b';
+      ctx.fillRect(dx + 7 * u, dy + 2 * u, 2 * u, 5 * u);
+    } else {
+      ctx.fillStyle = '#241d2c';
+      ctx.fillRect(dx + 3 * u, dy + 4 * u, 10 * u, 10 * u);
+      ctx.fillStyle = '#8f7d57';
+      ctx.fillRect(dx + 7 * u, dy + 3 * u, 2 * u, 11 * u);
+      ctx.fillRect(dx + 4 * u, dy + 7 * u, 8 * u, 2 * u);
+    }
+  }
+
   /** 昼夜光照 1=正午 0=午夜（~180s 一天，余弦平滑；起始为白天）。__daylight 可覆盖用于调试。 */
   private daylight(): number {
     const o = (window as unknown as { __daylight?: number }).__daylight;
@@ -436,6 +577,13 @@ export class GameEngine {
         ds.push({ y: c.y, draw: () => { this.drawContactShadow(dx + S / 2, dy + S - 2, S * 0.42); ctx.drawImage(img, dx, dy, S, S); } });
       }
     }
+    if (this.scene.mineObjects) {
+      for (const o of this.scene.mineObjects) {
+        const dx = Math.round(o.x * S - camX);
+        const dy = Math.round(o.y * S - camY);
+        ds.push({ y: o.y, draw: () => this.drawMineObject(o, dx, dy, S) });
+      }
+    }
     if (this.petCanvas && this.petFollowEnabled) {
       // 跟随：画在 petFollowX/Y（任意场景）。移动时轻微上下浮动，给点活物感。
       const fx = this.petFollowX;
@@ -508,6 +656,23 @@ export class GameEngine {
         ctx.fillStyle = g;
         ctx.fillRect(gx - r, gy - r, r * 2, r * 2);
       }
+      ctx.restore();
+    }
+
+    if (this.scene.id.startsWith('mine:')) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(3, 2, 8, 0.34)';
+      ctx.fillRect(0, 0, cssW, cssH);
+      ctx.globalCompositeOperation = 'destination-out';
+      const gx = this.px * S - camX;
+      const gy = (this.py - 0.2) * S - camY;
+      const r = 4.8 * S;
+      const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+      g.addColorStop(0, 'rgba(0,0,0,0.95)');
+      g.addColorStop(0.5, 'rgba(0,0,0,0.55)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(gx - r, gy - r, r * 2, r * 2);
       ctx.restore();
     }
 

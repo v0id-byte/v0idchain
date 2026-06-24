@@ -1,8 +1,9 @@
 // React ↔ 引擎的桥：建画布、起引擎、转交互/点击回调。门切场景在这里;编辑时家具/主题变化就地重建房间。
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { GameEngine } from '../engine/game';
-import { buildRoom, buildTown, buildFarm, type Interactable, type FurnitureItem, type GardenStateEntry } from '../engine/scene';
+import { buildRoom, buildTown, buildFarm, buildBeach, buildForest, buildNightMarket, buildRuins, type Interactable, type FurnitureItem, type GardenStateEntry } from '../engine/scene';
 import { buildNpcRoom } from '../engine/npc-rooms';
+import { buildMine, type MineLayerState } from '../engine/mine';
 import type { RoomThemeId } from '../engine/tileset';
 import type { FarmView } from '@v0idchain/core/browser';
 
@@ -19,12 +20,12 @@ interface Props {
   depletedFruits?: ReadonlySet<string>; // 已摘取的果树 id，传给 buildTown 过滤
   choppedTrees?: ReadonlySet<string>;   // 已砍倒的果树 id，从 buildTown 移除
   gardenState?: ReadonlyMap<string, GardenStateEntry>; // 田地格状态（阶段/作物/精灵）
+  mineState?: MineLayerState;
   onToggleMenu: () => void;
   onInteract: (it: Interactable) => void;
   onNearby?: (it: Interactable | null) => void;
   onSceneChange?: (id: string) => void;
   onTileClick?: (tx: number, ty: number, sceneId: string) => void;
-  mineState?: Record<string, unknown>; // 矿洞挖掘状态（传入引擎；暂未使用）
 }
 
 // 触屏控件经此句柄把方向/交互推给引擎（与键盘走同一条 update() 逻辑，桌面零回归）。
@@ -57,6 +58,11 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
     const buildScene = (id: string, spawnOverride?: { x: number; y: number }) => {
       if (id === 'town') return buildTown(propsRef.current.depletedFruits, propsRef.current.choppedTrees, spawnOverride, propsRef.current.gardenState);
       if (id === 'farm') return buildFarm(propsRef.current.farm ?? null);
+      if (id === 'beach') return buildBeach();
+      if (id === 'forest') return buildForest();
+      if (id === 'nightmarket') return buildNightMarket();
+      if (id === 'ruins') return buildRuins();
+      if (id.startsWith('mine:')) return buildMine(Number(id.slice(5)) || 1, propsRef.current.mineState ?? { mined: new Set(), openedChests: new Set(), defeatedMonsters: new Set() });
       if (id.startsWith('npc:')) return buildNpcRoom(id.slice(4));
       return buildCurrentRoom();
     };
@@ -136,6 +142,11 @@ const GameView = forwardRef<GameHandle, Props>(function GameView(props, ref) {
       engineRef.current.setScene(buildTown(props.depletedFruits, props.choppedTrees, undefined, props.gardenState), false);
     }
   }, [props.depletedFruits, props.choppedTrees, props.gardenState]);
+  useEffect(() => {
+    if (engineRef.current && sceneRef.current.startsWith('mine:')) {
+      engineRef.current.setScene(buildMine(Number(sceneRef.current.slice(5)) || 1, props.mineState ?? { mined: new Set(), openedChests: new Set(), defeatedMonsters: new Set() }), false);
+    }
+  }, [props.mineState]);
 
   return <canvas ref={canvasRef} className="game-canvas" />;
 });

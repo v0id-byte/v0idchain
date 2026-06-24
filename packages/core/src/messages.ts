@@ -6,6 +6,7 @@ import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX } from './config.
 import { PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX } from './pets.js';
 import { FISH_PREFIX } from './fishing.js';
 import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
+import { MINE_PREFIX } from './mining.js';
 
 export interface ChainMessage {
   txid: string;
@@ -15,21 +16,6 @@ export interface ChainMessage {
   burn: number; // 这条消息烧掉的 $V0ID
   timestamp: number;
   height: number; // 所在区块高度
-}
-
-/**
- * 城镇动态流事件 —— 游戏服务器「活动流」的客户端契约（非共识层；游戏便利层）。
- * ⚠️ 当前 game-server 尚未实现 /api/feed（客户端 catch 兜底为空数组），此类型先统一两处消费端字段命名：
- * App(refresh) 读 actor/text/timestamp，TownBoard 读 from/memo —— 两套别名暂并存，待 feed 端点落地后归一。
- */
-export interface FeedEvent {
-  type: string; // 事件类型（如 'message'）
-  from: string; // 发起地址（TownBoard 用）
-  actor: string; // 发起地址别名（App.refresh 用，语义同 from）
-  text: string; // 正文（App.refresh 用，语义同 memo）
-  memo?: string; // 正文（TownBoard 用）
-  timestamp: number; // 时间戳（App.refresh 用）
-  height?: number; // 所在区块高度
 }
 
 /** 一笔交易是否“链上消息”：不转币（amount 0）但销毁了币（burn>0）。coinbase/创世天然不满足，自动排除。 */
@@ -59,7 +45,8 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(ZONE_PREFIX) ||
     memo.startsWith(PLANT_PREFIX) ||
     memo.startsWith(HARVEST_PREFIX) ||
-    memo.startsWith(CROPX_PREFIX)
+    memo.startsWith(CROPX_PREFIX) ||
+    memo.startsWith(MINE_PREFIX)
   );
 }
 

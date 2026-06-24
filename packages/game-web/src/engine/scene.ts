@@ -35,7 +35,7 @@ export interface MineRef {
   oreKind?: string;
 }
 export interface MineObject {
-  kind: 'ore' | 'chest' | 'monster' | 'stairsDown' | 'stairsUp' | 'exit';
+  kind: 'ore' | 'chest' | 'monster' | 'stairsDown' | 'stairsUp' | 'exit' | 'mineEntrance';
   x: number;
   y: number;
   oreKind?: string;
@@ -89,15 +89,31 @@ export interface Scene {
 
 /** 默认起始布置（新玩家、或还没发布过房间时）。编辑器发布后用用户布局替换。 */
 export const DEFAULT_ROOM_FURNITURE: FurnitureItem[] = [
-  { kind: 'bed', x: 9, y: 1 },
-  { kind: 'dresser', x: 1, y: 1 },
-  { kind: 'bookshelf', x: 10, y: 3 },
-  { kind: 'plant', x: 1, y: 6 },
-  { kind: 'table', x: 4, y: 5 },
-  { kind: 'chair', x: 3, y: 5 },
-  { kind: 'rug', x: 6, y: 5 },
-  { kind: 'lamp', x: 10, y: 6 },
-  { kind: 'clock', x: 5, y: 1 },
+  // 卧室区（右侧）
+  { kind: 'bed', x: 16, y: 2 },
+  { kind: 'dresser', x: 18, y: 2 },
+  { kind: 'window', x: 14, y: 1 },
+  { kind: 'clock', x: 12, y: 1 },
+  // 客厅区（中央）
+  { kind: 'sofa', x: 9, y: 7 },
+  { kind: 'table', x: 11, y: 9 },
+  { kind: 'chair', x: 10, y: 9 },
+  { kind: 'chair', x: 12, y: 9 },
+  { kind: 'rug', x: 9, y: 8 },
+  { kind: 'rug', x: 10, y: 8 },
+  { kind: 'rug', x: 11, y: 8 },
+  { kind: 'rug', x: 12, y: 8 },
+  { kind: 'lamp', x: 14, y: 7 },
+  // 书房区（左侧）
+  { kind: 'bookshelf', x: 1, y: 3 },
+  { kind: 'bookshelf', x: 1, y: 5 },
+  { kind: 'bookshelf', x: 1, y: 7 },
+  { kind: 'table', x: 4, y: 4 },
+  { kind: 'chair', x: 3, y: 4 },
+  // 装饰
+  { kind: 'plant', x: 18, y: 7 },
+  { kind: 'plant', x: 1, y: 10 },
+  { kind: 'cactus', x: 6, y: 3 },
 ];
 
 /**
@@ -106,10 +122,10 @@ export const DEFAULT_ROOM_FURNITURE: FurnitureItem[] = [
  */
 export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, theme: RoomThemeId = 'wood'): Scene {
   const th = ROOM_THEMES[theme];
-  const w = 12;
-  const h = 9;
-  const doorX = 6;
-  const farmDoorX = 9; // 第二道门洞 → 去自家农场
+  const w = 20;
+  const h = 14;
+  const doorX = 8;
+  const farmDoorX = 14; // 第二道门洞 → 去自家农场
   const tiles: string[][] = [];
   const solid: boolean[][] = [];
   for (let y = 0; y < h; y++) {
@@ -190,8 +206,8 @@ export function buildTown(
   spawnOverride?: { x: number; y: number },
   gardenState?: ReadonlyMap<string, GardenStateEntry>,
 ): Scene {
-  const w = 96; // 加宽:容下更松散的住宅区
-  const h = 78; // 加高:南侧扩出一片带院子的住宅区
+  const w = 96;
+  const h = 120; // 加高:南侧住宅区足够放 3 行带大院子的宅地
   const cx = Math.floor(w / 2);
   const tiles: string[][] = [];
   const solid: boolean[][] = [];
@@ -207,6 +223,7 @@ export function buildTown(
   const interactables: Interactable[] = [];
   const effects: EffectItem[] = [];
   const buildings: BuildingItem[] = [];
+  const mineObjects: MineObject[] = [];
 
   let seed = 73113;
   const rnd = () => {
@@ -334,9 +351,7 @@ export function buildTown(
   // 路灯沿主街
   for (const lx of [12, 26, cx - 8, cx + 9, w - 26, w - 13]) effects.push({ kind: 'lantern', x: lx, y: streetY + 2 });
 
-  // —— 边界高树 + 散布树/灌木/花 ——
-  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
-  for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+  // —— 散布树/灌木/花 ——
   for (let i = 0; i < 240; i++) {
     const x = 2 + Math.floor(rnd() * (w - 4));
     const y = 2 + Math.floor(rnd() * (h - 4));
@@ -364,6 +379,30 @@ export function buildTown(
   for (const [px, py, k] of [[cx - 5, streetY + 1, 'barrel'], [cx - 4, streetY + 1, 'crate'], [cx + 5, streetY + 1, 'crate'], [cx + 6, streetY + 1, 'barrel']] as [number, number, string][])
     furniture.push({ kind: k, x: px, y: py });
 
+  // 东侧巨型矿洞入口：从主街右端清出石质广场，避免被商铺或散布装饰盖住。
+  const mineX = w - 7;
+  const mineY = streetY + 1;
+  const mineClear = { x0: mineX - 8, y0: mineY - 5, x1: mineX + 3, y1: mineY + 4 };
+  const inMineClear = (x: number, y: number) => x >= mineClear.x0 && x <= mineClear.x1 && y >= mineClear.y0 && y <= mineClear.y1;
+  for (let i = buildings.length - 1; i >= 0; i--) {
+    const b = buildings[i];
+    if (b.x <= mineClear.x1 && b.x + b.w - 1 >= mineClear.x0 && b.y <= mineClear.y1 && b.y + b.h - 1 >= mineClear.y0) buildings.splice(i, 1);
+  }
+  for (let i = interactables.length - 1; i >= 0; i--) if (inMineClear(interactables[i].x, interactables[i].y)) interactables.splice(i, 1);
+  for (let i = furniture.length - 1; i >= 0; i--) if (inMineClear(furniture[i].x, furniture[i].y)) furniture.splice(i, 1);
+  for (let i = effects.length - 1; i >= 0; i--) if (inMineClear(effects[i].x, effects[i].y)) effects.splice(i, 1);
+  fill(mineClear.x0, mineY - 1, mineX + 1, mineY + 1, 'cobble');
+  fill(mineX - 4, mineY - 3, mineX + 2, mineY + 3, 'stone');
+  for (let y = mineClear.y0; y <= mineClear.y1; y++) {
+    for (let x = mineClear.x0; x <= mineClear.x1; x++) {
+      if (solid[y]?.[x] !== undefined) solid[y][x] = false;
+    }
+  }
+  effects.push({ kind: 'torch', x: mineX - 4, y: mineY - 2 });
+  effects.push({ kind: 'torch', x: mineX - 4, y: mineY + 2 });
+  mineObjects.push({ kind: 'mineEntrance', x: mineX, y: mineY, variant: 0 });
+  interactables.push({ x: mineX, y: mineY, type: 'door', label: '进入巨型矿洞', target: 'mine:1' });
+
   // 公共田地（两块开放大农场，无围栏；8×3 格，可直接走入种地）
   const farmBlocks: [number, number, number, number][] = [
     [4, swY + 3, 8, 3],      // 左侧公共田地
@@ -381,28 +420,33 @@ export function buildTown(
   const resWarm = ['farmhouse', 'colonial', 'ranch', 'brownstone', 'cape', 'manor', 'sandstone'];
   const resCool = ['cottagey', 'craftsman', 'saltbox', 'aframe', 'bungalow', 'slate', 'mossy'];
   const resY0 = swY + 6; // 住宅区起始行(让开后院菜圃)
-  const lotW = 13; // 单宅地块宽(房 4~5 + 院 + 间距)
-  const lotH = 11; // 单宅地块高(房 4 + 前院 + 行距)
+  const lotW = 22; // 单宅地块宽(房 4~5 + 院 m=6 两侧 + 间距)
+  const lotH = 16; // 单宅地块高(房 4~5 + 前院 m=6 + 行距)
   let lotRow = 0;
   for (let ly = resY0; ly + lotH <= h - 3; ly += lotH, lotRow++) {
     let lotCol = 0;
     for (let lx = 3; lx + lotW <= w - 3; lx += lotW, lotCol++) {
       // 地块内确定性抖动 + 选户型(相邻地块暖冷交替 + 不同 style)
-      const jx = (lotRow * 3 + lotCol * 5) % 3; // 0..2 水平抖动
-      const hx = lx + 1 + jx;
+      const jx = (lotRow * 3 + lotCol * 5) % 4; // 0..3 水平抖动
+      const hx = lx + 7 + jx; // 院子左侧留 6 格 + 抖动
       const bh = 4 + ((lotRow + lotCol) % 2); // 4~5 高错落
       const bw = 4 + ((lotCol * 7 + lotRow) % 2); // 4~5 宽错落
       const warm = (lotRow + lotCol) % 2 === 0;
       const pool = warm ? resWarm : resCool;
       const style = pool[(hx * 13 + ly * 7 + lotRow) % pool.length];
       const hy = ly + 2;
-      placeHouseWithYard(style, hx, hy, bw, bh, 2);
+      placeHouseWithYard(style, hx, hy, bw, bh, 6);
     }
   }
-  // 住宅区一条主巷(横向 cobble,串起各前院门)+ 几盏路灯
+  // 住宅区每行前院门前各一条横向 cobble 主巷 + 路灯
+  for (let row = 0; row < lotRow; row++) {
+    const laneY = resY0 + row * lotH - 1;
+    if (laneY >= 1 && laneY < h - 1) {
+      for (let x = 3; x < w - 3; x++) if (tiles[laneY]?.[x] === 'grass') setT(x, laneY, 'cobble');
+      for (const lx of [10, 28, cx, w - 28, w - 12]) if (tiles[laneY]?.[lx] !== undefined) effects.push({ kind: 'lantern', x: lx, y: laneY });
+    }
+  }
   const lane = resY0 - 1;
-  for (let x = 3; x < w - 3; x++) if (tiles[lane]?.[x] === 'grass') setT(x, lane, 'cobble');
-  for (const lx of [10, 28, cx, w - 28, w - 12]) if (tiles[lane]?.[lx] !== undefined) effects.push({ kind: 'lantern', x: lx, y: lane });
 
   // 落地院子装饰(栅栏/花/信箱)+ 角树:在散布清理之后,免被剔除;只占空草地、不压房身/小径。
   const onBuilding = (x: number, y: number) => buildings.some((b) => x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h);
@@ -451,7 +495,68 @@ export function buildTown(
     }
   }
 
-  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, crops: townCrops, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
+  // —— 四个世界入口 ——
+  // 每个门口：清空区域 → 铺特色地 → 装饰 → 门交互点。
+  const addPortal = (
+    px: number, py: number,
+    groundKind: string, clearR: number,
+    deco: { fx?: { kind: string; x: number; y: number }[]; fu?: { kind: string; x: number; y: number }[] },
+    label: string, target: string,
+  ) => {
+    // 清障
+    for (let i = furniture.length - 1; i >= 0; i--) {
+      const f = furniture[i];
+      if (Math.abs(f.x - px) <= clearR && Math.abs(f.y - py) <= clearR) furniture.splice(i, 1);
+    }
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const e = effects[i];
+      if (Math.abs(e.x - px) <= clearR && Math.abs(e.y - py) <= clearR) effects.splice(i, 1);
+    }
+    for (let i = interactables.length - 1; i >= 0; i--) {
+      const it = interactables[i];
+      if (Math.abs(it.x - px) <= clearR && Math.abs(it.y - py) <= clearR) interactables.splice(i, 1);
+    }
+    // 铺地
+    fill(px - clearR, py - clearR, px + clearR, py + clearR, groundKind);
+    for (let yy = py - clearR; yy <= py + clearR; yy++)
+      for (let xx = px - clearR; xx <= px + clearR; xx++)
+        if (solid[yy]?.[xx] !== undefined) solid[yy][xx] = false;
+    // 装饰
+    for (const e of (deco.fx ?? [])) effects.push(e as EffectItem);
+    for (const f of (deco.fu ?? [])) furniture.push(f as FurnitureItem);
+    // 门
+    interactables.push({ x: px, y: py, type: 'door', label, target });
+  };
+
+  // 森林秘境（西侧，主街以北）
+  addPortal(4, streetY - 8, 'dirt', 3,
+    { fx: [{ kind: 'lantern', x: 2, y: streetY - 9 }, { kind: 'lantern', x: 6, y: streetY - 9 }],
+      fu: [{ kind: 'tree', x: 1, y: streetY - 9 }, { kind: 'tree', x: 7, y: streetY - 9 },
+           { kind: 'bush', x: 1, y: streetY - 7 }, { kind: 'bush', x: 7, y: streetY - 7 }] },
+    '进入森林秘境 →', 'forest');
+
+  // 海滩码头（南端中央）
+  addPortal(cx, h - 6, 'sand', 4,
+    { fx: [{ kind: 'lantern', x: cx - 4, y: h - 8 }, { kind: 'lantern', x: cx + 4, y: h - 8 },
+           { kind: 'fishHang', x: cx - 2, y: h - 9 }, { kind: 'fishHang', x: cx + 2, y: h - 9 }],
+      fu: [{ kind: 'fence', x: cx - 5, y: h - 6 }, { kind: 'fence', x: cx + 5, y: h - 6 }] },
+    '去海滩码头 →', 'beach');
+
+  // 夜市广场（东北角）
+  addPortal(w - 8, 10, 'cobble', 4,
+    { fx: [{ kind: 'lantern', x: w - 12, y: 8 }, { kind: 'lantern', x: w - 4, y: 8 },
+           { kind: 'lantern', x: w - 12, y: 12 }, { kind: 'lantern', x: w - 4, y: 12 },
+           { kind: 'campfire', x: w - 8, y: 13 }],
+      fu: [{ kind: 'barrel', x: w - 12, y: 10 }, { kind: 'crate', x: w - 4, y: 10 }] },
+    '夜市广场 →', 'nightmarket');
+
+  // 神秘废墟（北侧，偏右）
+  addPortal(cx + 14, 6, 'stone', 3,
+    { fx: [{ kind: 'torch', x: cx + 11, y: 5 }, { kind: 'torch', x: cx + 17, y: 5 }],
+      fu: [{ kind: 'deadTree', x: cx + 11, y: 7 }, { kind: 'deadTree', x: cx + 17, y: 7 }] },
+    '神秘废墟 →', 'ruins');
+
+  return { id: 'town', w, h, tiles, solid, furniture, effects, buildings, interactables, crops: townCrops, mineObjects, spawn: spawnOverride ?? { x: cx, y: streetY + 1 } };
 }
 
 /**
@@ -572,4 +677,453 @@ export function buildFarm(farm: FarmView | null): Scene {
   for (const it of interactables) if (it.type !== 'door' && solid[it.y]?.[it.x] !== undefined && it.farm?.kind !== 'buy') solid[it.y][it.x] = false;
 
   return { id: 'farm', w, h, tiles, solid, furniture, effects, buildings: [], interactables, crops, spawn: { x: gateX, y: 2 } };
+}
+
+// ────────────────────────────── 海滩 / 码头 ──────────────────────────────
+export function buildBeach(): Scene {
+  const w = 80;
+  const h = 55;
+  const tiles: string[][] = [];
+  const solid: boolean[][] = [];
+  for (let y = 0; y < h; y++) {
+    tiles[y] = [];
+    solid[y] = [];
+    for (let x = 0; x < w; x++) {
+      tiles[y][x] = 'grass';
+      solid[y][x] = false;
+    }
+  }
+  const furniture: FurnitureItem[] = [];
+  const interactables: Interactable[] = [];
+  const effects: EffectItem[] = [];
+
+  const setT = (x: number, y: number, t: string) => { if (tiles[y]?.[x] !== undefined) tiles[y][x] = t; };
+  const fill = (x0: number, y0: number, x1: number, y1: number, t: string) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) setT(x, y, t);
+  };
+
+  // 边界树林
+  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); }
+  for (let y = 1; y < h; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+
+  // 草地 → 沙滩过渡（y=2~18）
+  fill(1, 1, w - 2, 17, 'grass');
+  for (let y = 8; y <= 17; y++) {
+    const t = y >= 14 ? 'sand' : 'grass';
+    fill(1, y, w - 2, y, t);
+    // 草/沙交界抖动
+    if (y >= 11 && y <= 14) {
+      for (let x = 1; x < w - 1; x++) {
+        const h2 = ((x * 131 + y * 977) % 5);
+        if ((y === 11 && h2 < 2) || (y === 13 && h2 >= 3) || (y === 12 && h2 < 3)) setT(x, y, 'sand');
+      }
+    }
+  }
+
+  // 沙滩主体（y=14~29）
+  fill(1, 14, w - 2, 29, 'sand');
+
+  // 海洋（y=30~h-1）：浅水 y=30~33，深水 y=34+
+  fill(1, 30, w - 2, h - 1, 'water');
+  for (let y = 30; y < h; y++) for (let x = 1; x < w - 1; x++) solid[y][x] = true;
+
+  // 码头木桥（石板模拟木板，从沙滩延伸入海）
+  const dockX = Math.floor(w / 2) - 2;
+  const dockW = 5;
+  fill(dockX, 22, dockX + dockW - 1, 36, 'cobble');
+  for (let y = 22; y <= 36; y++) for (let x = dockX; x < dockX + dockW; x++) solid[y][x] = false;
+  // 码头边栏（围栏）
+  for (let y = 22; y <= 35; y++) {
+    furniture.push({ kind: 'fence', x: dockX - 1, y });
+    furniture.push({ kind: 'fence', x: dockX + dockW, y });
+  }
+  // 码头路灯
+  for (const ly of [24, 28, 32]) {
+    effects.push({ kind: 'lantern', x: dockX - 1, y: ly });
+    effects.push({ kind: 'lantern', x: dockX + dockW, y: ly });
+  }
+  // 码头末端钓鱼点
+  interactables.push({ x: dockX + 2, y: 36, type: 'fishing', label: '码头垂钓' });
+
+  // 沙滩上的装饰：贝壳(花替代)/灌木/椰树
+  const beachDecor = [
+    { kind: 'bush', x: 8, y: 18 }, { kind: 'bush', x: 68, y: 19 },
+    { kind: 'bush', x: 15, y: 22 }, { kind: 'bush', x: 60, y: 21 },
+    { kind: 'tree', x: 6, y: 16 }, { kind: 'tree', x: 70, y: 16 },
+    { kind: 'tree', x: 10, y: 14 }, { kind: 'tree', x: 65, y: 14 },
+    { kind: 'flower', x: 20, y: 27 }, { kind: 'flower', x: 55, y: 26 },
+    { kind: 'flower', x: 30, y: 28 }, { kind: 'flower', x: 45, y: 27 },
+    // 鱼摊/收获箱
+    { kind: 'crate', x: 8, y: 20 }, { kind: 'barrel', x: 9, y: 20 },
+    { kind: 'crate', x: 68, y: 20 }, { kind: 'barrel', x: 67, y: 20 },
+  ];
+  for (const d of beachDecor) furniture.push(d as FurnitureItem);
+
+  // 沙滩两侧钓鱼点（岸边）
+  interactables.push({ x: 5, y: 29, type: 'fishing', label: '岸边垂钓（西）' });
+  interactables.push({ x: 72, y: 29, type: 'fishing', label: '岸边垂钓（东）' });
+
+  // 悬挂鱼装饰
+  effects.push({ kind: 'fishHang', x: 10, y: 18 });
+  effects.push({ kind: 'fishHang', x: 66, y: 18 });
+  // 篝火（沙滩）
+  effects.push({ kind: 'campfire', x: 20, y: 22 });
+  effects.push({ kind: 'campfire', x: 56, y: 22 });
+
+  // 回镇入口
+  const backX = Math.floor(w / 2);
+  fill(backX - 1, 1, backX + 1, 3, 'cobble');
+  interactables.push({ x: backX, y: 1, type: 'door', label: '← 回镇中心', target: 'town' });
+
+  for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
+  for (const e of effects) if (!(['fishHang', 'chimneySmoke'] as string[]).includes(e.kind) && solid[e.y]?.[e.x] !== undefined) solid[e.y][e.x] = true;
+
+  return { id: 'beach', w, h, tiles, solid, furniture, effects, buildings: [], interactables, spawn: { x: backX, y: 4 } };
+}
+
+// ────────────────────────────── 森林秘境 ──────────────────────────────
+export function buildForest(): Scene {
+  const w = 80;
+  const h = 60;
+  const tiles: string[][] = [];
+  const solid: boolean[][] = [];
+  for (let y = 0; y < h; y++) {
+    tiles[y] = [];
+    solid[y] = [];
+    for (let x = 0; x < w; x++) {
+      tiles[y][x] = 'grass';
+      solid[y][x] = false;
+    }
+  }
+  const furniture: FurnitureItem[] = [];
+  const interactables: Interactable[] = [];
+  const effects: EffectItem[] = [];
+
+  const setT = (x: number, y: number, t: string) => { if (tiles[y]?.[x] !== undefined) tiles[y][x] = t; };
+  const fill = (x0: number, y0: number, x1: number, y1: number, t: string) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) setT(x, y, t);
+  };
+
+  let seed = 83741;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+  // 边界实体树墙
+  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
+  for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+
+  // 密林散布（大量树/灌木）
+  for (let i = 0; i < 400; i++) {
+    const x = 2 + Math.floor(rnd() * (w - 4));
+    const y = 2 + Math.floor(rnd() * (h - 4));
+    const r = rnd();
+    furniture.push({ kind: r < 0.55 ? 'tree' : r < 0.75 ? 'bush' : r < 0.9 ? 'deadTree' : 'flower', x, y });
+  }
+
+  // 几条蜿蜒泥土小径（从入口向各方向延伸）
+  const cxF = Math.floor(w / 2);
+  const cyF = Math.floor(h / 2);
+  // 中央小径（南北）
+  for (let y = 4; y < h - 4; y++) setT(cxF, y, 'dirt');
+  // 横向小径（中央附近）
+  for (let x = 4; x < w - 4; x++) setT(x, cyF, 'dirt');
+  // 斜径（西北 → 中央）
+  for (let i = 0; i < 20; i++) { setT(cxF - 10 + i, cyF - 8 + Math.floor(i * 0.4), 'dirt'); }
+  // 斜径（东北 → 中央）
+  for (let i = 0; i < 18; i++) { setT(cxF + 6 + i, cyF - 6 + Math.floor(i * 0.3), 'dirt'); }
+
+  // 清掉小径上的树
+  for (let i = furniture.length - 1; i >= 0; i--) {
+    const f = furniture[i];
+    if (tiles[f.y]?.[f.x] === 'dirt') furniture.splice(i, 1);
+  }
+
+  // 中央林间空地（篝火 + 水池）
+  fill(cxF - 4, cyF - 3, cxF + 4, cyF + 3, 'grass');
+  for (let i = furniture.length - 1; i >= 0; i--) {
+    const f = furniture[i];
+    if (Math.abs(f.x - cxF) <= 5 && Math.abs(f.y - cyF) <= 4) furniture.splice(i, 1);
+  }
+  // 林间水潭（西侧空地）
+  const pondX = cxF - 18, pondY = cyF + 5;
+  for (let y = pondY - 4; y <= pondY + 4; y++)
+    for (let x = pondX - 6; x <= pondX + 6; x++) {
+      const dx = (x - pondX) / 1.2, dy = y - pondY;
+      if (dx * dx + dy * dy < 20) { setT(x, y, 'water'); solid[y][x] = true; }
+      else if (dx * dx + dy * dy < 26 && tiles[y]?.[x] === 'grass') setT(x, y, 'sand');
+    }
+
+  effects.push({ kind: 'campfire', x: cxF, y: cyF });
+  effects.push({ kind: 'well', x: cxF + 3, y: cyF - 1 });
+  for (const lx of [cxF - 3, cxF + 3]) effects.push({ kind: 'lantern', x: lx, y: cyF - 2 });
+
+  // 果树（隐藏在林中）
+  const forestFruits: { x: number; y: number; id: string; kind: FruitKind }[] = [
+    { x: cxF - 12, y: cyF + 8, id: 'ff_berry', kind: 'berry' },
+    { x: cxF + 14, y: cyF - 10, id: 'ff_apple', kind: 'apple' },
+    { x: cxF + 8, y: cyF + 12, id: 'ff_golden', kind: 'golden_apple' },
+  ];
+  for (const spot of forestFruits) {
+    if (tiles[spot.y]?.[spot.x] && !solid[spot.y][spot.x]) {
+      setT(spot.x, spot.y, 'grass');
+      interactables.push({ x: spot.x, y: spot.y, type: 'fruit', label: `摘${FRUIT_LABEL[spot.kind]}`, fruitId: spot.id, fruitKind: spot.kind });
+    }
+  }
+
+  // 钓鱼（水潭边）
+  interactables.push({ x: pondX + 7, y: pondY, type: 'fishing', label: '林间水潭垂钓' });
+
+  // 石头圈（神秘遗迹感）
+  const circleX = cxF + 16, circleY = cyF + 10;
+  for (const [ox, oy] of [[-2, 0], [2, 0], [0, -2], [0, 2], [-1, -1], [1, -1], [-1, 1], [1, 1]])
+    furniture.push({ kind: 'deadTree', x: circleX + ox, y: circleY + oy });
+  effects.push({ kind: 'torch', x: circleX, y: circleY });
+
+  // 回镇入口（北侧中央）
+  const backX = cxF;
+  for (let y = 1; y <= 4; y++) setT(backX, y, 'dirt');
+  // 清掉入口树
+  for (let i = furniture.length - 1; i >= 0; i--) {
+    const f = furniture[i];
+    if (Math.abs(f.x - backX) <= 1 && f.y <= 4) furniture.splice(i, 1);
+  }
+  effects.push({ kind: 'lantern', x: backX - 2, y: 2 });
+  effects.push({ kind: 'lantern', x: backX + 2, y: 2 });
+  interactables.push({ x: backX, y: 1, type: 'door', label: '← 回镇中心', target: 'town' });
+
+  for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
+  for (const e of effects) if (solid[e.y]?.[e.x] !== undefined) solid[e.y][e.x] = true;
+
+  return { id: 'forest', w, h, tiles, solid, furniture, effects, buildings: [], interactables, spawn: { x: backX, y: 3 } };
+}
+
+// ────────────────────────────── 夜市 / 集市 ──────────────────────────────
+export function buildNightMarket(): Scene {
+  const w = 88;
+  const h = 60;
+  const tiles: string[][] = [];
+  const solid: boolean[][] = [];
+  for (let y = 0; y < h; y++) {
+    tiles[y] = [];
+    solid[y] = [];
+    for (let x = 0; x < w; x++) {
+      tiles[y][x] = 'cobble';
+      solid[y][x] = false;
+    }
+  }
+  const furniture: FurnitureItem[] = [];
+  const interactables: Interactable[] = [];
+  const effects: EffectItem[] = [];
+  const buildings: BuildingItem[] = [];
+
+  const setT = (x: number, y: number, t: string) => { if (tiles[y]?.[x] !== undefined) tiles[y][x] = t; };
+  const fill = (x0: number, y0: number, x1: number, y1: number, t: string) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) setT(x, y, t);
+  };
+
+  let seed = 54321;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)];
+
+  // 边界树墙
+  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
+  for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+
+  const cx = Math.floor(w / 2);
+
+  // 地面：鹅卵石 + 石板中央广场
+  fill(cx - 10, 22, cx + 10, 38, 'stone'); // 中央表演广场
+
+  // 入口大道（南北向）
+  fill(cx - 2, 1, cx + 2, h - 2, 'cobble');
+
+  // 横向主街（两条）
+  fill(4, 14, w - 5, 16, 'cobble');
+  fill(4, 38, w - 5, 40, 'cobble');
+
+  // 摊位行（商业建筑, 四排）
+  const stallStyles = ['grocer', 'bakery', 'florist', 'tailor', 'apothecary', 'shop', 'postoffice'];
+  // 北排摊位
+  let bx = 6;
+  while (bx < w - 8) {
+    const style = pick(stallStyles);
+    buildings.push({ style, x: bx, y: 5, w: 4, h: 5, variant: (bx * 7) % 8 });
+    const { doorCol } = buildingMeta(4);
+    for (let yy = 5; yy < 10; yy++) for (let xx = bx; xx < bx + 4; xx++) if (solid[yy]?.[xx] !== undefined) solid[yy][xx] = true;
+    interactables.push({ x: bx + doorCol, y: 9, type: 'door', label: style, target: `npc:${style}` });
+    if (solid[10]?.[bx + doorCol] !== undefined) solid[10][bx + doorCol] = false;
+    bx += 7 + Math.floor(rnd() * 2);
+  }
+  // 南排摊位（面向南侧横街）
+  bx = 6;
+  while (bx < w - 8) {
+    const style = pick(stallStyles);
+    buildings.push({ style, x: bx, y: 42, w: 4, h: 5, variant: (bx * 5) % 8 });
+    const { doorCol } = buildingMeta(4);
+    for (let yy = 42; yy < 47; yy++) for (let xx = bx; xx < bx + 4; xx++) if (solid[yy]?.[xx] !== undefined) solid[yy][xx] = true;
+    interactables.push({ x: bx + doorCol, y: 46, type: 'door', label: style, target: `npc:${style}` });
+    if (solid[47]?.[bx + doorCol] !== undefined) solid[47][bx + doorCol] = false;
+    bx += 7 + Math.floor(rnd() * 2);
+  }
+
+  // 中央广场：大型篝火 + 喷泉 + 表演区路灯
+  effects.push({ kind: 'campfire', x: cx - 5, y: 30 });
+  effects.push({ kind: 'fountain', x: cx + 5, y: 30 });
+  effects.push({ kind: 'well', x: cx, y: 25 });
+  interactables.push({ x: cx, y: 32, type: 'board', label: '集市名册' });
+  for (const [lx, ly] of [[cx - 8, 23], [cx + 8, 23], [cx - 8, 37], [cx + 8, 37]])
+    effects.push({ kind: 'lantern', x: lx, y: ly });
+
+  // 灯笼成排（主街两侧）
+  for (let lx = 6; lx < w - 6; lx += 6) {
+    effects.push({ kind: 'lantern', x: lx, y: 13 });
+    effects.push({ kind: 'lantern', x: lx, y: 17 });
+    effects.push({ kind: 'lantern', x: lx, y: 37 });
+    effects.push({ kind: 'lantern', x: lx, y: 41 });
+  }
+
+  // 货物堆（桶/箱随机散落）
+  for (let i = 0; i < 20; i++) {
+    const x = 5 + Math.floor(rnd() * (w - 10));
+    const y = 18 + Math.floor(rnd() * 20);
+    if (tiles[y]?.[x] === 'cobble' || tiles[y]?.[x] === 'stone') {
+      furniture.push({ kind: rnd() < 0.5 ? 'barrel' : 'crate', x, y });
+    }
+  }
+
+  // 清掉建筑四周散布（桶/箱）
+  const nearBldg = (x: number, y: number) => buildings.some((b) => x >= b.x - 1 && x < b.x + b.w + 1 && y >= b.y - 1 && y < b.y + b.h + 1);
+  for (let i = furniture.length - 1; i >= 0; i--) {
+    const f = furniture[i];
+    if (f.kind !== 'tree' && nearBldg(f.x, f.y)) furniture.splice(i, 1);
+  }
+
+  // 回镇入口（北侧中央）
+  const backX = cx;
+  for (let i = furniture.length - 1; i >= 0; i--) {
+    const f = furniture[i];
+    if (Math.abs(f.x - backX) <= 2 && f.y <= 3) furniture.splice(i, 1);
+  }
+  effects.push({ kind: 'lantern', x: backX - 3, y: 2 });
+  effects.push({ kind: 'lantern', x: backX + 3, y: 2 });
+  interactables.push({ x: backX, y: 1, type: 'door', label: '← 回镇中心', target: 'town' });
+
+  for (const e of effects) if (solid[e.y]?.[e.x] !== undefined) solid[e.y][e.x] = true;
+  for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
+
+  return { id: 'nightmarket', w, h, tiles, solid, furniture, effects, buildings, interactables, spawn: { x: backX, y: 3 } };
+}
+
+// ────────────────────────────── 废墟 / 遗迹 ──────────────────────────────
+export function buildRuins(): Scene {
+  const w = 80;
+  const h = 58;
+  const tiles: string[][] = [];
+  const solid: boolean[][] = [];
+  for (let y = 0; y < h; y++) {
+    tiles[y] = [];
+    solid[y] = [];
+    for (let x = 0; x < w; x++) {
+      tiles[y][x] = 'grass';
+      solid[y][x] = false;
+    }
+  }
+  const furniture: FurnitureItem[] = [];
+  const interactables: Interactable[] = [];
+  const effects: EffectItem[] = [];
+
+  const setT = (x: number, y: number, t: string) => { if (tiles[y]?.[x] !== undefined) tiles[y][x] = t; };
+  const fill = (x0: number, y0: number, x1: number, y1: number, t: string) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) setT(x, y, t);
+  };
+
+  let seed = 99271;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+  const cx = Math.floor(w / 2);
+
+  // 边界树墙
+  for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
+  for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+
+  // 废墟石板地（大片）
+  fill(8, 8, w - 9, h - 9, 'stone');
+
+  // 草丛侵蚀（废墟已被植被覆盖的感觉）
+  for (let i = 0; i < 200; i++) {
+    const x = 9 + Math.floor(rnd() * (w - 18));
+    const y = 9 + Math.floor(rnd() * (h - 18));
+    if (tiles[y]?.[x] === 'stone') setT(x, y, 'grass');
+  }
+
+  // 残破城墙段（实体障碍）
+  const walls: [number, number, number, number][] = [
+    [10, 10, 18, 12], [12, 20, 14, 32], [8, 38, 20, 40],
+    [60, 10, 70, 12], [64, 20, 66, 32], [58, 38, 70, 40],
+    [30, 12, 32, 26], [46, 12, 50, 26],
+    [28, 42, 50, 44],
+  ];
+  for (const [x0, y0, x1, y1] of walls) {
+    fill(x0, y0, x1, y1, 'stone');
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (solid[y]?.[x] !== undefined) solid[y][x] = true;
+    // 墙顶装饰：零散枯树
+    if (rnd() < 0.6) furniture.push({ kind: 'deadTree', x: x0, y: y0 });
+    if (rnd() < 0.6) furniture.push({ kind: 'deadTree', x: x1, y: y1 });
+  }
+
+  // 水坑（水患遗留）
+  const pools: [number, number, number, number][] = [
+    [22, 28, 28, 34], [50, 28, 58, 34],
+  ];
+  for (const [x0, y0, x1, y1] of pools) {
+    fill(x0, y0, x1, y1, 'water');
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) solid[y][x] = true;
+    // 沙岸
+    for (const [sx, sy] of [[x0 - 1, y0], [x1 + 1, y0], [x0, y0 - 1], [x0, y1 + 1]])
+      if (tiles[sy]?.[sx] === 'grass' || tiles[sy]?.[sx] === 'stone') setT(sx, sy, 'sand');
+  }
+
+  // 中央主殿废墟（广场 + 柱子）
+  fill(cx - 8, 22, cx + 8, 36, 'stone');
+  // 柱子（用 deadTree 模拟石柱）
+  for (const [ox, oy] of [[-6, 24], [6, 24], [-6, 34], [6, 34], [-6, 29], [6, 29]])
+    furniture.push({ kind: 'deadTree', x: cx + ox, y: oy });
+  // 废墟祭坛（barrel 模拟）
+  furniture.push({ kind: 'chest', x: cx, y: 28 });
+  effects.push({ kind: 'torch', x: cx - 2, y: 27 });
+  effects.push({ kind: 'torch', x: cx + 2, y: 27 });
+  interactables.push({ x: cx, y: 28, type: 'mine_chest', label: '古老祭坛', mine: { kind: 'chest', id: 'ruins_altar', depth: 0, x: cx, y: 28 } });
+
+  // 隐藏宝箱（藏在废墙后）
+  furniture.push({ kind: 'chest', x: 14, y: 25 });
+  interactables.push({ x: 14, y: 25, type: 'mine_chest', label: '锈迹斑斑的箱子', mine: { kind: 'chest', id: 'ruins_box_w', depth: 0, x: 14, y: 25 } });
+  furniture.push({ kind: 'chest', x: 63, y: 25 });
+  interactables.push({ x: 63, y: 25, type: 'mine_chest', label: '锈迹斑斑的箱子', mine: { kind: 'chest', id: 'ruins_box_e', depth: 0, x: 63, y: 25 } });
+
+  // 散布枯树 + 灌木（废墟植被覆盖）
+  for (let i = 0; i < 80; i++) {
+    const x = 2 + Math.floor(rnd() * (w - 4));
+    const y = 2 + Math.floor(rnd() * (h - 4));
+    if (tiles[y]?.[x] === 'grass') furniture.push({ kind: rnd() < 0.4 ? 'deadTree' : 'bush', x, y });
+  }
+
+  // 火把（废墟入口两侧）
+  effects.push({ kind: 'torch', x: cx - 2, y: 8 });
+  effects.push({ kind: 'torch', x: cx + 2, y: 8 });
+
+  // 回镇入口（北侧）
+  const backX = cx;
+  fill(backX - 1, 1, backX + 1, 5, 'cobble');
+  for (let i = furniture.length - 1; i >= 0; i--) {
+    const f = furniture[i];
+    if (Math.abs(f.x - backX) <= 2 && f.y <= 6) furniture.splice(i, 1);
+  }
+  for (let y = 1; y <= 5; y++) for (let x = backX - 1; x <= backX + 1; x++) if (solid[y]?.[x] !== undefined) solid[y][x] = false;
+  interactables.push({ x: backX, y: 1, type: 'door', label: '← 回镇中心', target: 'town' });
+
+  for (const f of furniture) if (!WALKABLE.has(f.kind) && solid[f.y]?.[f.x] !== undefined) solid[f.y][f.x] = true;
+  for (const e of effects) if (solid[e.y]?.[e.x] !== undefined) solid[e.y][e.x] = true;
+  // 宝箱/祭坛交互点的格子必须可走
+  for (const it of interactables) if (it.type === 'mine_chest' && solid[it.y]?.[it.x] !== undefined) solid[it.y][it.x] = false;
+
+  return { id: 'ruins', w, h, tiles, solid, furniture, effects, buildings: [], interactables, spawn: { x: backX, y: 4 } };
 }

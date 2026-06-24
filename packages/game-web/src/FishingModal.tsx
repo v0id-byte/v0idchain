@@ -217,7 +217,10 @@ export default function FishingModal({
       case 'bite':
         return '⚡ 咬钩了！立刻按住 E 收线！';
       case 'reeling':
-        return '按住=收线（右移）· 松开=放线（左移）· 把指针稳在绿区！';
+        if (tension >= GREEN_LO && tension <= GREEN_HI) return '✅ 稳了！保持住——绿区累积中…';
+        if (tension >= 0.85) return '⚠️ 线要断了！松开放线！';
+        if (tension <= 0.08) return '⚠️ 线太松，鱼要逃了！按住收线！';
+        return '按住=收线 · 松开=放线 · 把指针稳在绿区！';
       case 'caught':
         return '🎣 上鱼！';
       case 'missed':
@@ -252,14 +255,20 @@ export default function FishingModal({
           </div>
 
           {/* 张力条（仅 reeling 显示） */}
-          {phase === 'reeling' && (
-            <div className="tension-bar">
-              <div className="tension-green" style={{ left: `${GREEN_LO * 100}%`, width: `${(GREEN_HI - GREEN_LO) * 100}%` }} />
-              <div className="tension-pointer" style={{ left: `${tension * 100}%` }} />
-            </div>
-          )}
+          {phase === 'reeling' && (() => {
+            const inZone = tension >= GREEN_LO && tension <= GREEN_HI;
+            const danger = tension >= 0.85 || tension <= 0.08;
+            const ptrColor = inZone ? '#4cdb7a' : danger ? '#e84040' : '#f0c040';
+            return (
+              <div className={`tension-bar${danger ? ' tension-danger' : ''}`}>
+                <div className="tension-green" style={{ left: `${GREEN_LO * 100}%`, width: `${(GREEN_HI - GREEN_LO) * 100}%`, opacity: inZone ? 1 : 0.6 }} />
+                <div className="tension-pointer" style={{ left: `${tension * 100}%`, background: ptrColor, boxShadow: `0 0 6px ${ptrColor}` }} />
+                {inZone && <div className="tension-zone-glow" style={{ left: `${GREEN_LO * 100}%`, width: `${(GREEN_HI - GREEN_LO) * 100}%` }} />}
+              </div>
+            );
+          })()}
 
-          <p className="fish-hint">{hint}</p>
+          <p className={`fish-hint${phase === 'reeling' && tension >= GREEN_LO && tension <= GREEN_HI ? ' hint-good' : ''}`}>{hint}</p>
 
           {/* 结算卡 */}
           {phase === 'caught' && (
