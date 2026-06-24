@@ -722,20 +722,22 @@ export function buildBeach(): Scene {
 
   // 沙滩主体（y=14~29）
   fill(1, 14, w - 2, 29, 'sand');
+  // 海岸湿沙带（沙↔水交界，潮湿一档 + 贝壳碎）
+  fill(1, 28, w - 2, 29, 'sandWet');
 
   // 海洋（y=30~h-1）：浅水 y=30~33，深水 y=34+
   fill(1, 30, w - 2, h - 1, 'water');
   for (let y = 30; y < h; y++) for (let x = 1; x < w - 1; x++) solid[y][x] = true;
 
-  // 码头木桥（石板模拟木板，从沙滩延伸入海）
+  // 码头栈桥（木栈道，从沙滩延伸入海）
   const dockX = Math.floor(w / 2) - 2;
   const dockW = 5;
-  fill(dockX, 22, dockX + dockW - 1, 36, 'cobble');
+  fill(dockX, 22, dockX + dockW - 1, 36, 'plank');
   for (let y = 22; y <= 36; y++) for (let x = dockX; x < dockX + dockW; x++) solid[y][x] = false;
-  // 码头边栏（围栏）
-  for (let y = 22; y <= 35; y++) {
-    furniture.push({ kind: 'fence', x: dockX - 1, y });
-    furniture.push({ kind: 'fence', x: dockX + dockW, y });
+  // 码头木桩（两侧每 3 格一根，替代占位围栏）
+  for (let y = 22; y <= 35; y += 3) {
+    furniture.push({ kind: 'piling', x: dockX - 1, y });
+    furniture.push({ kind: 'piling', x: dockX + dockW, y });
   }
   // 码头路灯
   for (const ly of [24, 28, 32]) {
@@ -745,15 +747,17 @@ export function buildBeach(): Scene {
   // 码头末端钓鱼点
   interactables.push({ x: dockX + 2, y: 36, type: 'fishing', label: '码头垂钓' });
 
-  // 沙滩上的装饰：贝壳(花替代)/灌木/椰树
+  // 沙滩上的装饰：贝壳/漂流木/灌木/椰树
   const beachDecor = [
     { kind: 'bush', x: 8, y: 18 }, { kind: 'bush', x: 68, y: 19 },
     { kind: 'bush', x: 15, y: 22 }, { kind: 'bush', x: 60, y: 21 },
     { kind: 'tree', x: 6, y: 16 }, { kind: 'tree', x: 70, y: 16 },
     { kind: 'tree', x: 10, y: 14 }, { kind: 'tree', x: 65, y: 14 },
-    { kind: 'flower', x: 20, y: 27 }, { kind: 'flower', x: 55, y: 26 },
-    { kind: 'flower', x: 30, y: 28 }, { kind: 'flower', x: 45, y: 27 },
-    // 鱼摊/收获箱
+    { kind: 'shell', x: 20, y: 27 }, { kind: 'shell', x: 55, y: 26 },
+    { kind: 'shell', x: 30, y: 28 }, { kind: 'shell', x: 45, y: 27 },
+    { kind: 'shell', x: 26, y: 25 }, { kind: 'shell', x: 50, y: 24 }, { kind: 'shell', x: 38, y: 29 },
+    { kind: 'driftwood', x: 16, y: 26 }, { kind: 'driftwood', x: 62, y: 25 },
+    // 收获箱
     { kind: 'crate', x: 8, y: 20 }, { kind: 'barrel', x: 9, y: 20 },
     { kind: 'crate', x: 68, y: 20 }, { kind: 'barrel', x: 67, y: 20 },
   ];
@@ -810,6 +814,9 @@ export function buildForest(): Scene {
   // 边界实体树墙
   for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
   for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
+
+  // 林地苔藓地面（整片铺 grassForest，随后由小径/空地/水潭覆盖；空地保留亮草作对比）
+  fill(0, 0, w - 1, h - 1, 'grassForest');
 
   // 密林散布（大量树/灌木）
   for (let i = 0; i < 400; i++) {
@@ -872,10 +879,10 @@ export function buildForest(): Scene {
   // 钓鱼（水潭边）
   interactables.push({ x: pondX + 7, y: pondY, type: 'fishing', label: '林间水潭垂钓' });
 
-  // 石头圈（神秘遗迹感）
+  // 立石圈（神秘遗迹感，专属立石替代占位枯树）
   const circleX = cxF + 16, circleY = cyF + 10;
   for (const [ox, oy] of [[-2, 0], [2, 0], [0, -2], [0, 2], [-1, -1], [1, -1], [-1, 1], [1, 1]])
-    furniture.push({ kind: 'deadTree', x: circleX + ox, y: circleY + oy });
+    furniture.push({ kind: 'standingStone', x: circleX + ox, y: circleY + oy });
   effects.push({ kind: 'torch', x: circleX, y: circleY });
 
   // 回镇入口（北侧中央）
@@ -972,6 +979,8 @@ export function buildNightMarket(): Scene {
   interactables.push({ x: cx, y: 32, type: 'board', label: '集市名册' });
   for (const [lx, ly] of [[cx - 8, 23], [cx + 8, 23], [cx - 8, 37], [cx + 8, 37]])
     effects.push({ kind: 'lantern', x: lx, y: ly });
+  // 条纹布棚货摊（广场两侧，给夜市自己的货摊辨识度）
+  for (const sy of [24, 30, 36]) { furniture.push({ kind: 'stall', x: cx - 9, y: sy }); furniture.push({ kind: 'stall', x: cx + 9, y: sy }); }
 
   // 灯笼成排（主街两侧）
   for (let lx = 6; lx < w - 6; lx += 6) {
@@ -1045,14 +1054,14 @@ export function buildRuins(): Scene {
   for (let x = 0; x < w; x++) { furniture.push({ kind: 'tree', x, y: 0 }); furniture.push({ kind: 'tree', x, y: h - 1 }); }
   for (let y = 1; y < h - 1; y++) { furniture.push({ kind: 'tree', x: 0, y }); furniture.push({ kind: 'tree', x: w - 1, y }); }
 
-  // 废墟石板地（大片）
-  fill(8, 8, w - 9, h - 9, 'stone');
+  // 废墟石板地（大片，裂石变体：裂缝 + 缝隙青苔 + 缺块露土）
+  fill(8, 8, w - 9, h - 9, 'stoneRuins');
 
   // 草丛侵蚀（废墟已被植被覆盖的感觉）
   for (let i = 0; i < 200; i++) {
     const x = 9 + Math.floor(rnd() * (w - 18));
     const y = 9 + Math.floor(rnd() * (h - 18));
-    if (tiles[y]?.[x] === 'stone') setT(x, y, 'grass');
+    if (tiles[y]?.[x] === 'stoneRuins') setT(x, y, 'grass');
   }
 
   // 残破城墙段（实体障碍）
@@ -1065,9 +1074,9 @@ export function buildRuins(): Scene {
   for (const [x0, y0, x1, y1] of walls) {
     fill(x0, y0, x1, y1, 'stone');
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (solid[y]?.[x] !== undefined) solid[y][x] = true;
-    // 墙顶装饰：零散枯树
-    if (rnd() < 0.6) furniture.push({ kind: 'deadTree', x: x0, y: y0 });
-    if (rnd() < 0.6) furniture.push({ kind: 'deadTree', x: x1, y: y1 });
+    // 墙头碎石堆（残破感）
+    if (rnd() < 0.6) furniture.push({ kind: 'rubble', x: x0, y: y0 });
+    if (rnd() < 0.6) furniture.push({ kind: 'rubble', x: x1, y: y1 });
   }
 
   // 水坑（水患遗留）
@@ -1083,10 +1092,10 @@ export function buildRuins(): Scene {
   }
 
   // 中央主殿废墟（广场 + 柱子）
-  fill(cx - 8, 22, cx + 8, 36, 'stone');
-  // 柱子（用 deadTree 模拟石柱）
+  fill(cx - 8, 22, cx + 8, 36, 'stoneRuins');
+  // 残破石柱（专属断柱替代占位枯树）
   for (const [ox, oy] of [[-6, 24], [6, 24], [-6, 34], [6, 34], [-6, 29], [6, 29]])
-    furniture.push({ kind: 'deadTree', x: cx + ox, y: oy });
+    furniture.push({ kind: 'brokenColumn', x: cx + ox, y: oy });
   // 废墟祭坛（barrel 模拟）
   furniture.push({ kind: 'chest', x: cx, y: 28 });
   effects.push({ kind: 'torch', x: cx - 2, y: 27 });
