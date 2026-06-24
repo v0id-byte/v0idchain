@@ -13,6 +13,7 @@ import {
   parseDescriptor,
   descriptorId,
   responsibleHsDirs,
+  verifyDescriptorPublishable,
   ed25519,
   sha256,
 } from '../packages/core/src/hsdesc.js';
@@ -129,6 +130,20 @@ const serviceOnionPubHex = '12'.repeat(32);
   const sigBytes = hexToBytes(desc.sig);
   sigBytes[5] ^= 0xff;
   check('翻 desc.sig 一字节 → null', parseDescriptor(addr, { ...desc, sig: hex(sigBytes) }) === null);
+}
+
+// ---- 7b. verifyDescriptorPublishable：合法 desc → true；篡改 enc/sig → false（HSDir 不持 A 也能拒垃圾）----
+{
+  const desc = buildDescriptor(SEED, TP, introPoints, serviceOnionPubHex);
+  check('verifyDescriptorPublishable(合法 desc) == true', verifyDescriptorPublishable(desc) === true);
+
+  const encBytes = hexToBytes(desc.enc);
+  encBytes[30] ^= 0xff; // 篡改密文 → 盲签名覆盖 blob，verify 必败
+  check('篡改 enc → verifyDescriptorPublishable false', verifyDescriptorPublishable({ ...desc, enc: hex(encBytes) }) === false);
+
+  const sigBytes = hexToBytes(desc.sig);
+  sigBytes[5] ^= 0xff;
+  check('篡改 sig → verifyDescriptorPublishable false', verifyDescriptorPublishable({ ...desc, sig: hex(sigBytes) }) === false);
 }
 
 // ---- 8. descriptorId 确定性；responsibleHsDirs 确定 / 返回 3 个不重复 / 跨运行稳定 ----

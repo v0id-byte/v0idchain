@@ -218,8 +218,9 @@ function descKeyFrom(A: Uint8Array, TP: number): Uint8Array {
 
 const HSDESC_DOMAIN = utf8ToBytes('v0id-hsdesc-v1');
 // 被签名的字节：域串 || u64le(TP) || Ap || blob —— 把周期、盲身份、密文一并钉进签名。
-function descSignBytes(TP: number, Ap: Uint8Array, blob: Uint8Array): Uint8Array {
-  return concatBytes(HSDESC_DOMAIN, u64le(TP), Ap, blob);
+// 内部共享构造（buildDescriptor 签 / parseDescriptor 验 / verifyDescriptorPublishable 验 三处同源，绝不能各写一份）。
+function descSignBytes(apBytes: Uint8Array, tp: number, blob: Uint8Array): Uint8Array {
+  return concatBytes(HSDESC_DOMAIN, u64le(tp), apBytes, blob);
 }
 
 /** 构造描述符：加密 inner + 用盲私钥签名。需要 seed（服务持有身份种子）。 */
@@ -236,7 +237,7 @@ export function buildDescriptor(
   const nonce = randomBytes(24);
   const ct = xchacha20poly1305(descKey, nonce).encrypt(inner);
   const blob = concatBytes(nonce, ct);
-  const sig = signBlinded(seed, TP, descSignBytes(TP, Ap, blob));
+  const sig = signBlinded(seed, TP, descSignBytes(Ap, TP, blob));
   return { v: 1, tp: TP, ap: bytesToHex(Ap), enc: bytesToHex(blob), sig: bytesToHex(sig) };
 }
 
@@ -266,7 +267,7 @@ export function parseDescriptor(addr: string, desc: Descriptor): DescInner | nul
   // 标准 ed25519 验签（铁锚：用库验签器，不是自写）。zip215:false 走严格 RFC8032。
   let ok = false;
   try {
-    ok = ed25519.verify(sig, descSignBytes(desc.tp, Ap, blob), Ap, { zip215: false });
+    ok = ed25519.verify(sig, descSignBytes(Ap, desc.tp, blob), Ap, { zip215: false });
   } catch {
     return null;
   }
@@ -282,6 +283,42 @@ export function parseDescriptor(addr: string, desc: Descriptor): DescInner | nul
     return parsed;
   } catch {
     return null;
+  }
+}
+
+/**
+ * HSDir 侧自校验：在**不持有身份 A、不解密**的前提下判断一个描述符是否值得存。
+ * 只验两件事——① 外壳形状合法；② 盲签名在 desc.ap 下成立（ed25519.verify(sig, signBytes, ap)，
+ * signBytes 与 build/parse 三处同源 descSignBytes(ap,tp,blob)）。签名成立即证明此描述符确由该周期盲私钥签发，
+ * 而盲私钥只能由持 seed 的服务派生 → HSDir 据此拒绝任何未签名/被篡改的垃圾，无需也无法窥探明文引入点。
+ * 注意：本函数**不**绑定 descId↔ap（调用方 HSDir 另行核对 descriptorId(ap,tp)===存储键，防越键写入）。
+ */
+export function verifyDescriptorPublishable(desc: Descriptor): boolean {
+  if (
+    !desc ||
+    desc.v !== 1 ||
+    typeof desc.tp !== 'number' ||
+    !Number.isFinite(desc.tp) ||
+    typeof desc.ap !== 'string' ||
+    typeof desc.enc !== 'string' ||
+    typeof desc.sig !== 'string'
+  )
+    return false;
+  let apBytes: Uint8Array;
+  let blob: Uint8Array;
+  let sig: Uint8Array;
+  try {
+    apBytes = hexToBytes(desc.ap);
+    blob = hexToBytes(desc.enc);
+    sig = hexToBytes(desc.sig);
+  } catch {
+    return false;
+  }
+  if (apBytes.length !== 32) return false; // 盲公钥必须 32 字节（否则 verify 必抛/必败，提前挡掉）
+  try {
+    return ed25519.verify(sig, descSignBytes(apBytes, desc.tp, blob), apBytes, { zip215: false });
+  } catch {
+    return false; // 畸形签名/点 → 抛错即视为不可发布
   }
 }
 

@@ -31,6 +31,13 @@ export const CMD_BEGIN = 4; // 客户端→出口：开流，data = UTF8 "host:p
 export const CMD_CONNECTED = 5; // 出口→客户端：data[0]=0 已连通 / 非 0 失败（出口策略拒或连接失败）
 export const CMD_END = 6; // 任一方向：流关闭
 
+// 隐藏服务描述符 DHT（Phase 2B-b）：客户端经电路把终点跳（=某 HSDir 中继）当应答方，发布/取回描述符。
+// 描述符 > 单 cell（CELL_DATA_LEN≈485B），故 PUBLISH/FETCH/RESP 均按 hsdir.ts 的分帧逐 cell 分片。
+export const CMD_HS_PUBLISH = 7; // 客户端→HSDir：发布，data = 分帧块（首块含 4B 总长 + descIdHex(64) ‖ JSON）
+export const CMD_HS_FETCH = 8; // 客户端→HSDir：取回，data = 分帧块（descIdHex(64)，单 cell 即够）
+export const CMD_HS_RESP = 9; // HSDir→客户端：应答体（发布 = "OK"；取回 = 描述符 JSON），分帧分片
+export const CMD_HS_END = 10; // HSDir→客户端：一次应答结束（PUBLISH 失败时不带任何 RESP 直接 END = 失败）
+
 /**
  * cell 计数器上限。nonceFromCounter 用 JS 浮点数运算，超过 2^53 会丢精度 → 相邻计数器映射到同一 nonce
  * → (key,nonce) 重用 → 流密钥重用。设 2^48 硬上限（远低于 2^53，留足余量）；中继/客户端逼近时应拆电路换路。
