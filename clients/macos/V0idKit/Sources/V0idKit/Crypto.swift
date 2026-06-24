@@ -4,12 +4,17 @@ import Foundation
 import CryptoKit
 
 public enum Hex {
+    private static let table = Array("0123456789abcdef".utf8)
+
     /// 字节 → 小写 hex
     public static func encode<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
-        var s = ""
-        s.reserveCapacity(64)
-        for b in bytes { s += String(format: "%02x", b) }
-        return s
+        var out = [UInt8]()
+        out.reserveCapacity(64)
+        for b in bytes {
+            out.append(table[Int(b >> 4)])
+            out.append(table[Int(b & 0x0f)])
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 
     public static func encode(_ data: Data) -> String { encode(Array(data)) }
