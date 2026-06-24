@@ -181,6 +181,13 @@ export function buildRoom(furniture: FurnitureItem[] = DEFAULT_ROOM_FURNITURE, t
  * 店门 → 回房间；广场名册牌 → 串门；鱼摊 → 钓鱼小游戏(QTE + 链上渔获)。确定性布局(自带 LCG)，刷新稳定。
  */
 const FRUIT_LABEL: Record<FruitKind, string> = { apple: '苹果', orange: '橙子', berry: '浆果', golden_apple: '黄金苹果' };
+// 店铺门口主题陈列（按 style 摆，给商业街烟火气；无映射的店不摆）。
+const SHOP_PROP: Record<string, string> = {
+  florist: 'flowerBucket', bakery: 'breadRack', smithy: 'coalPile',
+  tavern: 'kegStack', inn: 'kegStack', grocer: 'cropSack', mill: 'cropSack',
+  bookshop: 'bookStack', apothecary: 'potionShelf',
+  bank: 'signboard', postoffice: 'signboard', tailor: 'signboard', shop: 'signboard',
+};
 
 // 固定果树位置（确认在草地上、远离建筑密集区）
 const FRUIT_SPOTS: { x: number; y: number; id: string; kind: FruitKind }[] = [
@@ -265,7 +272,8 @@ export function buildTown(
         if (nearW) setT(x, y, 'sand');
       }
 
-  // —— 放建筑助手(挡路 + 门/摊交互 + 门前留空 + 炊烟) ——
+  // —— 放建筑助手(挡路 + 门/摊交互 + 门前留空 + 炊烟 + 门口主题陈列) ——
+  const shopDecor: FurnitureItem[] = []; // 店铺门口道具(延后落地,免被散布清理剔除)
   const place = (style: string, x: number, y: number, bw: number, bh: number) => {
     if (x < 1 || x + bw > w - 1) return;
     buildings.push({ style, x, y, w: bw, h: bh, variant: (x * 7 + bh * 3) % 8 });
@@ -277,6 +285,8 @@ export function buildTown(
     interactables.push({ x: dX, y: dY, type: st?.open ? 'fishing' : 'door', label: st?.open ? '钓鱼' : '进屋', target: st?.open ? undefined : `npc:${style}` });
     if (solid[dY + 1]?.[dX] !== undefined) solid[dY + 1][dX] = false;
     if (st?.chimney) effects.push({ kind: 'chimneySmoke', x: x + chimneyCol, y: y + 1 });
+    const sp = SHOP_PROP[style]; // 门旁一格摆主题陈列(门前留空那格不占)
+    if (sp) shopDecor.push({ kind: sp, x: dX + 1, y: dY + 1 });
   };
   const inGap = (x: number) => x >= cx - 6 && x <= cx + 7; // 让出中央广场/竖巷
 
@@ -370,6 +380,13 @@ export function buildTown(
     const f = furniture[i];
     if (f.kind === 'fence') continue;
     if (nearB(f.x, f.y) || tiles[f.y]?.[f.x] !== 'grass') furniture.splice(i, 1);
+  }
+
+  // 落地店铺门口陈列(散布清理之后→免被剔除; mineClear 之前→孤儿道具随被拆店一起清)。门前留空格(dX)不占。
+  for (const d of shopDecor) {
+    if (tiles[d.y]?.[d.x] === undefined || tiles[d.y][d.x] === 'water') continue;
+    if (buildings.some((b) => d.x >= b.x && d.x < b.x + b.w && d.y >= b.y && d.y < b.y + b.h)) continue;
+    furniture.push(d);
   }
 
   // 广场点缀(水井 + 角灯 + 货箱木桶;放在清理之后免被当散布剔除)

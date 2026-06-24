@@ -235,6 +235,58 @@ function furniture(kind: FurnitureKind): C {
       round(7, 9, 2, 2, '#e0a93f');   // 货：南瓜
       round(10, 9, 2, 2, '#5a9a5a');  // 货：菜
       break;
+    // ───────── 门口主题陈列道具（R3 生活感，按店铺类型摆门口） ─────────
+    case 'flowerBucket': // 花店：木桶插花
+      round(5, 9, 6, 5, '#8a6038'); round(5, 9, 6, 1, '#a87c4a'); round(5, 13, 6, 1, '#5e3c20');
+      round(6, 10, 1, 3, '#6b4a2c'); round(9, 10, 1, 3, '#6b4a2c'); // 桶箍
+      round(5, 6, 2, 2, '#e07aa8'); round(8, 5, 2, 2, '#f2c63a'); round(10, 7, 2, 2, '#e0584a'); // 花
+      round(6, 8, 1, 2, '#4a8a4a'); round(9, 7, 1, 2, '#4a8a4a'); round(11, 8, 1, 1, '#4a8a4a'); // 茎
+      break;
+    case 'breadRack': // 面包房：面包架
+      round(3, 11, 10, 3, '#8a5a30'); round(3, 11, 10, 1, '#a86a3a'); round(3, 13, 10, 1, '#5e3a18');
+      round(4, 8, 3, 3, '#c98a48'); round(4, 8, 3, 1, '#dba35a');
+      round(7, 7, 3, 4, '#c07a3a'); round(7, 7, 3, 1, '#d49a52');
+      round(10, 8, 3, 3, '#c98a48'); round(10, 8, 3, 1, '#dba35a');
+      round(5, 9, 1, 1, '#8a5a28'); round(11, 9, 1, 1, '#8a5a28'); // 裂纹
+      break;
+    case 'coalPile': // 铁匠铺：煤堆 + 余烬
+      round(3, 10, 10, 4, '#33333b'); round(4, 8, 5, 3, '#3e3e48'); round(8, 9, 4, 2, '#2a2a33');
+      round(4, 8, 5, 1, '#58585f'); round(8, 9, 4, 1, '#4c4c56'); // 受光面
+      round(5, 9, 1, 1, '#6c6c78'); round(9, 10, 1, 1, '#60606c'); // 反光点
+      round(7, 11, 1, 1, '#e8843a'); round(6, 12, 1, 1, '#c8542a'); // 余烬(forge 暖光)
+      round(3, 13, 10, 1, '#1a1a20'); // 底 AO
+      break;
+    case 'kegStack': // 酒馆/客栈：叠桶
+      round(3, 10, 10, 4, '#9a6a3a'); round(3, 10, 10, 1, '#b5824a'); round(3, 13, 10, 1, '#5e3a18');
+      round(3, 11, 10, 1, '#6b4524'); round(4, 10, 1, 4, '#3a2a16'); round(11, 10, 1, 4, '#3a2a16');
+      round(6, 6, 5, 4, '#a8743f'); round(6, 6, 5, 1, '#c08a4a'); round(6, 9, 5, 1, '#6b4524');
+      round(7, 6, 1, 4, '#3a2a16'); round(9, 6, 1, 4, '#3a2a16');
+      break;
+    case 'cropSack': // 杂货/磨坊：谷物麻袋
+      round(3, 8, 5, 6, '#c2a86a'); round(3, 8, 5, 1, '#d4bd80'); round(3, 13, 5, 1, '#9a8450'); round(4, 7, 3, 1, '#8a7038');
+      round(8, 9, 5, 5, '#b89a5e'); round(8, 9, 5, 1, '#cab074'); round(8, 13, 5, 1, '#90784a'); round(9, 8, 3, 1, '#8a7038');
+      round(5, 11, 1, 1, '#e8c86a'); round(10, 11, 1, 1, '#e8c86a'); // 漏谷
+      break;
+    case 'bookStack': // 书店：书堆
+      round(4, 11, 9, 3, '#9a3a3a'); round(4, 11, 9, 1, '#b85a5a');
+      round(3, 9, 9, 2, '#3a5a8a'); round(3, 9, 9, 1, '#5a7aa8');
+      round(5, 7, 8, 2, '#3a7a4a'); round(5, 7, 8, 1, '#5a9a6a');
+      round(12, 9, 1, 2, '#cdbf9a'); round(11, 7, 1, 2, '#cdbf9a'); // 书页侧
+      break;
+    case 'potionShelf': // 药铺：瓶架
+      round(3, 5, 10, 9, '#6b4a2c'); round(3, 5, 10, 1, '#8a6038'); round(3, 9, 10, 1, '#5a3f28'); round(3, 13, 10, 1, '#4a3220');
+      round(5, 6, 2, 3, '#4fae7a'); round(5, 6, 2, 1, '#9ad8b4');
+      round(8, 6, 2, 3, '#b85a8a'); round(8, 6, 2, 1, '#e0a0c0');
+      round(5, 10, 2, 3, '#5a8ac0'); round(5, 10, 2, 1, '#a0c0e0');
+      round(9, 10, 2, 3, '#caa23f'); round(9, 10, 2, 1, '#e8d26a');
+      break;
+    case 'signboard': // 通用：A 字招牌
+      round(4, 5, 8, 7, '#7a5230'); round(5, 6, 6, 5, '#e8dcc0');
+      round(6, 7, 4, 1, '#5a4030'); round(6, 9, 4, 1, '#5a4030'); // 字行
+      round(4, 5, 8, 1, '#9a6a3a');
+      round(3, 12, 4, 2, '#6b4a2c'); round(9, 12, 4, 2, '#6b4a2c'); // A 字腿
+      round(4, 12, 1, 2, '#7c5836'); round(10, 12, 1, 2, '#7c5836');
+      break;
   }
   return c;
 }
@@ -257,6 +309,15 @@ export function buildFurniture(): Partial<Record<FurnitureKind, C>> {
     rubble: furniture('rubble'),
     standingStone: furniture('standingStone'),
     stall: furniture('stall'),
+    // 门口主题陈列（R3）
+    flowerBucket: furniture('flowerBucket'),
+    breadRack: furniture('breadRack'),
+    coalPile: furniture('coalPile'),
+    kegStack: furniture('kegStack'),
+    cropSack: furniture('cropSack'),
+    bookStack: furniture('bookStack'),
+    potionShelf: furniture('potionShelf'),
+    signboard: furniture('signboard'),
   };
 }
 

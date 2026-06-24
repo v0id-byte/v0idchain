@@ -15,8 +15,11 @@ const BUILDINGS: [string, number, number][] = [
 ];
 const GROUND = ['grass', 'grassForest', 'dirt', 'sand', 'sandWet', 'plank', 'cobble', 'stone', 'stoneRuins', 'water'];
 const NEW_GROUND = new Set(['grassForest', 'sandWet', 'plank', 'stoneRuins']);
-const PROPS = ['piling', 'shell', 'driftwood', 'brokenColumn', 'rubble', 'standingStone', 'stall', 'table', 'fence', 'mailbox'];
-const NEW_PROP = new Set(['piling', 'shell', 'driftwood', 'brokenColumn', 'rubble', 'standingStone', 'stall']);
+const PROPS = ['piling', 'shell', 'driftwood', 'brokenColumn', 'rubble', 'standingStone', 'stall',
+  'flowerBucket', 'breadRack', 'coalPile', 'kegStack', 'cropSack', 'bookStack', 'potionShelf', 'signboard',
+  'table', 'fence', 'mailbox'];
+const NEW_PROP = new Set(['piling', 'shell', 'driftwood', 'brokenColumn', 'rubble', 'standingStone', 'stall',
+  'flowerBucket', 'breadRack', 'coalPile', 'kegStack', 'cropSack', 'bookStack', 'potionShelf', 'signboard']);
 
 export default function Gallery() {
   const ref = useRef<HTMLCanvasElement>(null);
