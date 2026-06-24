@@ -3,7 +3,7 @@
 import { Command } from 'commander';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
-import { V0idNode, startHttpApi, RelayNode, SocksProxy, loadOrCreateOnionKey, type HopSpec } from '@v0idchain/node';
+import { V0idNode, startHttpApi, RelayNode, SocksProxy, loadOrCreateOnionKey, makeHsDeps, serveHiddenService, type HopSpec } from '@v0idchain/node';
 import {
   Wallet,
   loadWallet,
@@ -100,8 +100,10 @@ program
   .option('--relay-port <port>', '洋葱中继 cell 入口端口（默认 p2p-port+10）')
   .option('--relay-advertise <host>', '中继对外 host（公网/局域网才需要；默认 127.0.0.1）')
   .option('--exit-allow <list>', '作出口时允许连的 host:port（逗号分隔；默认空=纯中继/守卫，不作出口）', '')
-  .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网）', false)
+  .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网；亦支持 curl --socks5-hostname … <地址>.v0id）', false)
   .option('--socks-port <port>', 'SOCKS5 监听端口', '9050')
+  .option('--hs-target <host:port>', '托管一个 .v0id 隐藏服务，把进来的连接转发到本机 host:port（需链上≥3 中继）')
+  .option('--hs-intros <n>', '隐藏服务引入点数量（默认 3）', '3')
   .action((o) => {
     const dataDir = o.dataDir || defaultDataDir(o.name);
     const peers = [o.peers, o.bootstrap]
@@ -139,13 +141,15 @@ program
         c.yellow(iv > 0 ? `  ⛏  自动挖矿已开启（每块间歇 ${iv}ms）` : `  ⛏  自动挖矿已开启（连续挖，出块节奏由 PoW 难度决定）`),
       );
     }
-    // ---- .v0id 洋葱中继 / SOCKS5 前端 ----
-    if (o.relay || o.socks) {
+    // ---- .v0id 洋葱中继 / SOCKS5 前端 / 隐藏服务托管 ----
+    if (o.relay || o.socks || o.hsTarget) {
       // 从链上目录解析中继地址 → cell 入口（用于 EXTEND 拨号 & SOCKS 选路）
       const resolver = (id: string) => {
         const d = node.relays().find((r) => r.address === id);
         return d ? { host: d.host, port: d.port } : undefined;
       };
+      // 隐藏服务接线依赖（选路器 + 名录）：SOCKS 的 .v0id 出站与 --hs-target 托管共用一份（每次从链上重新快照）。
+      const hsDeps = o.socks || o.hsTarget ? makeHsDeps(() => node.relays()) : undefined;
       if (o.relay) {
         const relayPort = Number(o.relayPort || Number(o.p2pPort) + 10);
         const onion = loadOrCreateOnionKey(dataDir);
@@ -187,8 +191,28 @@ program
           for (let i = 0; i < 3; i++) chosen.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
           return chosen.map((d) => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port }));
         };
-        new SocksProxy(pickHops, socksPort);
-        console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 127.0.0.1:' + socksPort + ' … 经洋葱出网；需链上≥3 中继）')}`);
+        new SocksProxy(pickHops, socksPort, '127.0.0.1', hsDeps); // hsDeps 令 .v0id 地址可经 rendezvous 连隐藏服务
+        console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
+      }
+      // ---- 托管 .v0id 隐藏服务：把进来的会合连接转发到本机 host:port ----
+      if (o.hsTarget && hsDeps) {
+        const i = String(o.hsTarget).lastIndexOf(':');
+        const thost = i > 0 ? String(o.hsTarget).slice(0, i) : '';
+        const tport = Number(String(o.hsTarget).slice(i + 1));
+        if (i <= 0 || !Number.isInteger(tport) || tport < 1 || tport > 65535) {
+          console.log(`  ${c.red('✖ --hs-target 格式应为 host:port，例如 127.0.0.1:8080')}`);
+        } else if (node.relays().length < 3) {
+          // 与 --socks 同前置：目录太小先不崩，给一行友好提示（挖矿/更多中继上链后重启即可托管）。
+          console.log(`  ${c.yellow('⚠ 链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重启 --hs-target）')}`);
+        } else {
+          // 异步启动（建引入电路 + 发布描述符需几跳往返）；成功后打印 .v0id 地址，失败给一行提示而非崩进程。
+          serveHiddenService({ dataDir, target: { host: thost, port: tport }, deps: hsDeps, numIntros: Number(o.hsIntros) })
+            .then(({ address }) => {
+              console.log(`  ${c.dim('隐藏  ')} ${c.green(address)}  ${c.dim('→ ' + thost + ':' + tport)}`);
+              console.log(`  ${c.dim('      ')} ${c.dim('别人可 curl --socks5-hostname <某节点SOCKS> ' + address + ' 访问（双方互不知 IP）')}`);
+            })
+            .catch((e) => console.log(`  ${c.yellow('⚠ 隐藏服务托管失败：' + (e instanceof Error ? e.message : String(e)) + '（稍后重试 / 确认中继充足）')}`));
+        }
       }
     }
 
