@@ -35,7 +35,8 @@ check(`双向握手完成（${Date.now() - t0}ms）`, node1.p2p.peerCount() === 
 
 console.log('\n— node1 挖矿（出币），node2 应同步 —');
 // 出块奖励为 1（见 BLOCK_REWARD），挖 10 块让 node1 攒够余额：先转 3 给 alice（+手续费1），
-// 后面 HTTP API 还会再 send 5（+手续费1），需保证 node1 始终有余额，否则 /send 会 400。
+// 迟到节点回归会再转 1（+手续费1），后面 HTTP API 还会 send 3（+手续费1），
+// 需保证 node1 始终有余额，否则 /send 会 400。
 for (let i = 0; i < 10; i++) await node1.mineOnce();
 await waitFor(() => node2.bc.height === node1.bc.height);
 check('node2 链高追平 node1', node2.bc.height === node1.bc.height && node1.bc.height === 10);
@@ -54,12 +55,21 @@ check('打包者 node2 收得 出块奖励+手续费（= 2）', node2.bc.balance
 check('两节点链顶一致', node1.bc.latest.hash === node2.bc.latest.hash);
 
 console.log('\n— 迟到节点 node3 接入，应自动追上整条链 —');
+const lateRecipient = Wallet.generate();
+const lateTx = node1.send(lateRecipient.address, 1);
+check('node1 先持有一笔等待迟到矿工打包的交易', lateTx.ok && node1.bc.mempool.some((t) => t.txid === lateTx.tx!.txid));
 const node3 = new V0idNode({ dataDir: `${DIR}/n3`, p2pPort: 6103, peers: ['ws://127.0.0.1:6101'] });
 node3.start();
 await waitFor(() => node3.bc.height === node1.bc.height, 5000);
 check('node3 追上链高', node3.bc.height === node1.bc.height);
 check('node3 链顶与全网一致', node3.bc.latest.hash === node1.bc.latest.hash);
 check('node3 也算出 alice 余额 = 3', node3.bc.balanceOf(alice.address) === 3);
+await waitFor(() => node3.bc.mempool.some((t) => t.txid === lateTx.tx?.txid), 5000);
+check('迟到 node3 追链后同步到既有交易池交易', node3.bc.mempool.some((t) => t.txid === lateTx.tx?.txid));
+await node3.mineOnce();
+await waitFor(() => node1.bc.height === node3.bc.height && node2.bc.height === node3.bc.height, 5000);
+check('迟到 node3 能把旧 pending 交易打包进新区块', node1.txStatus(lateTx.tx!.txid).status === 'confirmed');
+check('旧 pending 交易到账', node1.bc.balanceOf(lateRecipient.address) === 1);
 
 console.log('\n— 健壮性：畸形/恶意消息不能打挂节点 —');
 const heightBefore = node1.bc.height;
@@ -110,7 +120,7 @@ check('POST /send 无 token 被拒(401)', noAuth.status === 401);
 const okPost = await fetch('http://127.0.0.1:7301/send', {
   method: 'POST',
   headers: authHeaders,
-  body: JSON.stringify({ to: alice.address, amount: 5 }),
+  body: JSON.stringify({ to: alice.address, amount: 3 }),
 });
 check('POST /send 带 token 合法请求成功', okPost.status === 200);
 const badPost = await fetch('http://127.0.0.1:7301/send', {

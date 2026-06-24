@@ -111,6 +111,7 @@ export class V0idNode {
       handlers: {
         getLatest: () => this.bc.latest,
         getChain: () => this.bc.chain,
+        getMempool: () => this.bc.mempool,
         getHeight: () => this.bc.height,
         getAddress: () => this.wallet.address,
         onBlocks: (blocks, from) => this.onBlocks(blocks, from),

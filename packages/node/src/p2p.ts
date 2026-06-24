@@ -24,6 +24,7 @@ export type P2PMessage =
 export interface P2PHandlers {
   getLatest(): Block;
   getChain(): Block[];
+  getMempool(): Transaction[];
   getHeight(): number;
   getAddress(): string;
   onBlocks(blocks: Block[], from: Conn): void;
@@ -307,6 +308,11 @@ export class P2P {
     this.send(conn, { type: 'QUERY_PEERS' });
   }
 
+  /** 把当前交易池补给一个 peer。用于新 peer 追链后也能看到已广播但未打包的交易。 */
+  private sendMempool(conn: Conn): void {
+    for (const tx of this.handlers.getMempool()) this.send(conn, { type: 'TX', tx });
+  }
+
   private cleanup(conn: Conn, dialedUrl?: string): void {
     this.peers.delete(conn);
     this.chunkBuffers.delete(conn); // 连接断了，清掉该连接的残留分片缓冲
@@ -351,10 +357,14 @@ export class P2P {
           if (this.relaySignaling) this.introducePeer(conn, msg.address); // RTC 平面：把双方互相介绍，便于打洞
           if (isPublicWsUrl(msg.listen)) this.addKnown(msg.listen); // gossip 学来的 listen：仅记公网地址
           if (msg.height > this.handlers.getHeight()) this.send(conn, { type: 'QUERY_ALL' });
+          else if (msg.height === this.handlers.getHeight()) this.sendMempool(conn);
           break;
         }
         case 'QUERY_LATEST':
-          if (this.serveChain) this.send(conn, { type: 'BLOCKS', blocks: [this.handlers.getLatest()] });
+          if (this.serveChain) {
+            this.send(conn, { type: 'BLOCKS', blocks: [this.handlers.getLatest()] });
+            this.sendMempool(conn);
+          }
           break;
         case 'QUERY_ALL': {
           if (!this.serveChain) break; // 纯信令中继节点不提供整链同步
@@ -374,6 +384,7 @@ export class P2P {
               });
             }
           }
+          this.sendMempool(conn);
           break;
         }
         case 'BLOCKS': {
@@ -516,6 +527,7 @@ export class P2P {
       listen: this.selfUrl,
     });
     this.send(conn, { type: 'QUERY_LATEST' });
+    this.sendMempool(conn);
   }
 
   /**
