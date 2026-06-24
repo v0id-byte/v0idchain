@@ -23,6 +23,17 @@ export function exportPrivateKey(): string {
   return localStorage.getItem(KEY) ?? '';
 }
 
+/** 导入私钥 hex，覆盖当前钱包。成功返回新地址，失败返回 null。 */
+export function importPrivateKey(hex: string): { address: string } | null {
+  try {
+    const w = Wallet.fromPrivateKeyHex(hex.trim());
+    localStorage.setItem(KEY, hex.trim());
+    return { address: w.address };
+  } catch {
+    return null;
+  }
+}
+
 export function shortAddr(addr: string): string {
   return addr.length > 14 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr;
 }

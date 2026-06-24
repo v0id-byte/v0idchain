@@ -1,6 +1,6 @@
 // 游戏服务器 HTTP 客户端。读链走只读代理；写动作在本地签名后经 /api/tx 广播；faucet 走 /api/faucet。
 import type { Transaction } from '@v0idchain/core/browser';
-import type { Pet, Catch, FarmView } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView, MineAsset, FeedEvent } from '@v0idchain/core/browser';
 
 const BASE = (import.meta.env.VITE_GAME_API as string | undefined) || 'http://127.0.0.1:8790';
 
@@ -55,6 +55,9 @@ export const api = {
     get<{ layout: string | null; hash?: string; chainHash?: string | null }>(`/api/room?address=${address}`),
   putRoom: (address: string, layout: string, versionTx?: string) =>
     send<{ layout: string; hash: string }>('PUT', '/api/room', { address, layout, versionTx }),
+  mines: (address: string) => get<MineAsset[]>(`/api/mines?address=${address}`),
+  feed: (address: string, limit: number) => get<{ events: FeedEvent[] }>(`/api/feed?address=${address}&limit=${limit}`),
+  visit: (address: string) => get<{ address: string; name?: string }>(`/api/visit?address=${address}`),
 };
 
 /** 轮询一笔交易直到确认（或超时）。给“处理中 → 已到账”的体验。 */

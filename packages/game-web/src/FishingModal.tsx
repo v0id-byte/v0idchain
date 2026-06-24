@@ -1,20 +1,11 @@
 // 钓鱼浮层：纯客户端 QTE（零延迟、不触链）+ 结算卡。
 // 玩法（FISHING-DESIGN §3-4）：idle →(E)→ casting(300ms) →(随机1.5–5s)→ bite →(900ms 窗口)→ reeling(张力条 QTE) → caught / missed。
-// 奖励（B 为主 + A 即时反馈）：QTE 成功 → 本地庆祝（图鉴预览，零延迟）→ 结算卡两按钮：
-//   · 留作纪念（不上链）：仅本地战绩计数。
-//   · 铸成链上藏品（烧 FISH_BURN）：本地签名自转烧币上链（照搬 App.hatch），鱼种由 catchHash 事后确定 → 不可伪造、可炫耀、跨端、reorg 安全。
-// 关键红线：本浮层只在“铸藏品”按钮里发一笔自转+burn>0+memo 的交易，零新发币路径；catchHash 只能上链后由 parseFish 算出。
+// 结算卡两按钮：留作纪念（不上链，仅本地计数）/ 铸成链上藏品（→ 交给 App 的统一揭晓仪式 onMintReveal：
+//   投入虚空 → 等区块盖章 → 鱼种/稀有度由出块后 catchHash 事后确定，揭晓演出由 RevealOverlay 接管）。
+// 关键红线：本浮层不直接发交易；上链铸造一律走 App 的 fishReveal（自转 + burn>0 + FISH| memo，零新发币路径）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  createMessage,
-  makeFishCatch,
-  FISH_BURN,
-  MIN_FEE,
-  sha256Hex,
-  fishTraits,
-} from '@v0idchain/core/browser';
-import type { Catch, Wallet } from '@v0idchain/core/browser';
-import { api, waitConfirmed } from './api';
+import { FISH_BURN, MIN_FEE, sha256Hex, fishTraits } from '@v0idchain/core/browser';
+import type { Wallet } from '@v0idchain/core/browser';
 import { renderFish, RARITY_LABEL, fishName } from './fish-render';
 
 type Phase = 'idle' | 'casting' | 'waiting' | 'bite' | 'reeling' | 'caught' | 'missed';
@@ -40,20 +31,18 @@ function FishCanvas({ catchHash, size = 132 }: { catchHash: string; size?: numbe
 export default function FishingModal({
   wallet,
   balance,
-  onMinted,
+  onMintReveal,
   onClose,
 }: {
   wallet: Wallet;
   balance: number | null;
-  onMinted: () => void;
+  onMintReveal: () => Promise<boolean>;
   onClose: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [tension, setTension] = useState(0); // 0~1 张力位
   const [score, setScore] = useState(0); // 局战绩（本地）
   const [previewHash, setPreviewHash] = useState<string | null>(null); // 庆祝时的本地预览（非链上真鱼）
-  const [minted, setMinted] = useState<Catch | null>(null); // 上链确认后的真渔获
-  const [mintStatus, setMintStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const [kept, setKept] = useState(0); // 本会话“留作纪念”计数
 
@@ -77,8 +66,6 @@ export default function FishingModal({
   // 抛竿：idle → casting → waiting →（随机）→ bite
   const cast = useCallback(() => {
     clearTimers();
-    setMinted(null);
-    setMintStatus('');
     setPreviewHash(null);
     setTension(0);
     setPhase('casting');
@@ -199,43 +186,24 @@ export default function FishingModal({
     };
   }, [onAction, onClose]);
 
-  // 铸成链上藏品（照搬 App.hatch：nonce → createMessage 自转+burn+memo → submitTx → waitConfirmed → 取真渔获）
+  // 铸成链上藏品 → 交给 App 的统一揭晓仪式（投入虚空 → 区块盖章 → 稀有度揭晓由 RevealOverlay 接管）。
+  // 仪式结束后本浮层回到 idle，可继续抛竿；铸造交易/真渔获完全由 App 的 fishReveal 处理。
   const mint = useCallback(async () => {
     if (busy || !canAfford) return;
     setBusy(true);
     try {
-      setMintStatus('本地签名 + 烧币铸造…');
-      const { nonce } = await api.nonce(wallet.address);
-      const tx = createMessage(wallet, wallet.address, makeFishCatch().memo, nonce, FISH_BURN, MIN_FEE);
-      const r = await api.submitTx(tx);
-      setMintStatus('已广播，等待矿工打包…');
-      const ok = await waitConfirmed(r.txid);
-      // 上链后才有真 catchHash：从服务端只读端点取回这条渔获（鱼种事后确定）。
-      let real: Catch | undefined;
-      if (ok) {
-        const mine = await api.fish(wallet.address).catch(() => [] as Catch[]);
-        real = mine.find((c) => c.id === r.txid);
-      }
-      if (real) {
-        setMinted(real);
-        setMintStatus('');
-      } else {
-        setMintStatus(ok ? '已上链，稍后在「鱼篓」可见' : '已广播，稍后可见');
-      }
-      onMinted();
-    } catch (e) {
-      setMintStatus(`铸造失败：${e instanceof Error ? e.message : e}`);
+      await onMintReveal();
+      setPhase('idle');
+      setPreviewHash(null);
     } finally {
       setBusy(false);
     }
-  }, [busy, canAfford, wallet, onMinted]);
+  }, [busy, canAfford, onMintReveal]);
 
   const keepAsMemory = useCallback(() => {
     setKept((k) => k + 1);
     setPhase('idle');
     setPreviewHash(null);
-    setMinted(null);
-    setMintStatus('');
   }, []);
 
   const hint = useMemo(() => {
@@ -257,9 +225,6 @@ export default function FishingModal({
     }
   }, [phase]);
 
-  // caught 阶段展示的鱼 hash：已铸=链上真鱼，否则=本地预览。
-  const stageHash = minted?.catchHash ?? previewHash;
-
   return (
     <div className="menu-backdrop" onClick={onClose}>
       <div className="menu fishing-menu" onClick={(e) => e.stopPropagation()}>
@@ -274,9 +239,9 @@ export default function FishingModal({
         <div className="panel fishing-panel">
           {/* 钓场可视区 */}
           <div className={`fishing-stage phase-${phase}`}>
-            {phase === 'caught' && stageHash ? (
+            {phase === 'caught' && previewHash ? (
               <div className="catch-burst">
-                <FishCanvas catchHash={stageHash} />
+                <FishCanvas catchHash={previewHash} />
               </div>
             ) : (
               <div className="bobber-wrap">
@@ -299,41 +264,18 @@ export default function FishingModal({
           {/* 结算卡 */}
           {phase === 'caught' && (
             <div className="catch-card">
-              {minted ? (
-                <CaughtSummary fish={minted} />
-              ) : previewHash ? (
-                <PreviewSummary catchHash={previewHash} />
-              ) : null}
-
-              {mintStatus && (
-                <p className="panel-status">
-                  {busy ? <i className="spin" /> : null}
-                  {mintStatus}
-                </p>
-              )}
-
-              {!minted && (
-                <div className="catch-actions">
-                  <button className="ghost-btn" onClick={keepAsMemory} disabled={busy}>
-                    留作纪念
-                  </button>
-                  <button className="primary" onClick={mint} disabled={busy || !canAfford}>
-                    {canAfford ? `铸成链上藏品（烧 ${FISH_BURN}）` : `余额不足（需 ${FISH_BURN + MIN_FEE}）`}
-                  </button>
-                </div>
-              )}
-              {minted && (
-                <div className="catch-actions">
-                  <button className="primary" onClick={() => setPhase('idle')}>
-                    再钓一条
-                  </button>
-                </div>
-              )}
-              {!minted && (
-                <p className="note">
-                  日常瞎钓不烧币。鱼种由上链后的区块 hash 事后确定 —— 谁也伪造不出传说鱼。下方为本地预览，铸造后以链上真鱼为准。
-                </p>
-              )}
+              {previewHash && <PreviewSummary catchHash={previewHash} />}
+              <div className="catch-actions">
+                <button className="ghost-btn" onClick={keepAsMemory} disabled={busy}>
+                  留作纪念
+                </button>
+                <button className="primary" onClick={mint} disabled={busy || !canAfford}>
+                  {busy ? '投入虚空…' : canAfford ? `铸成链上藏品（烧 ${FISH_BURN}）` : `余额不足（需 ${FISH_BURN + MIN_FEE}）`}
+                </button>
+              </div>
+              <p className="note">
+                日常瞎钓不烧币。鱼种由上链后的区块 hash 事后确定 —— 谁也伪造不出传说鱼。下方为本地预览，铸造后以链上真鱼为准。
+              </p>
             </div>
           )}
 
@@ -373,20 +315,6 @@ function PreviewSummary({ catchHash }: { catchHash: string }) {
       <strong>{fishName(t)}</strong>
       <span className="fish-size">{t.sizeCm} cm{t.shiny ? ' · ✨闪光' : ''}</span>
       <span className="fish-preview-note">（本地预览）</span>
-    </div>
-  );
-}
-
-function CaughtSummary({ fish }: { fish: Catch }) {
-  const t = fish.traits;
-  return (
-    <div className={`catch-meta rarity-${t.rarity}`}>
-      <span className={`tag tag-${t.rarity}`}>{RARITY_LABEL[t.rarity]}</span>
-      <strong>{fishName(t)}</strong>
-      <span className="fish-size">{t.sizeCm} cm{t.shiny ? ' · ✨闪光' : ''}</span>
-      <code className="fish-id" title={fish.id}>
-        链上 #{fish.id.slice(0, 8)}
-      </code>
     </div>
   );
 }

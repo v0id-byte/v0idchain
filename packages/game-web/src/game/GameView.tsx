@@ -24,6 +24,7 @@ interface Props {
   onNearby?: (it: Interactable | null) => void;
   onSceneChange?: (id: string) => void;
   onTileClick?: (tx: number, ty: number, sceneId: string) => void;
+  mineState?: Record<string, unknown>; // 矿洞挖掘状态（传入引擎；暂未使用）
 }
 
 // 触屏控件经此句柄把方向/交互推给引擎（与键盘走同一条 update() 逻辑，桌面零回归）。
