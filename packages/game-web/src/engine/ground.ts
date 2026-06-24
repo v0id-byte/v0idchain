@@ -8,7 +8,9 @@ const ART = 16; // 每格艺术像素 = 星露谷规格(放大后块感正)
 const TEX = 8; // 大纹理边长(格)
 const N = TEX * ART; // 128
 
-export const GROUND_KINDS = new Set(['grass', 'dirt', 'stone', 'cobble', 'sand', 'water', 'caveFloor', 'caveWall']);
+export const GROUND_KINDS = new Set(['grass', 'dirt', 'stone', 'cobble', 'sand', 'water', 'caveFloor', 'caveWall',
+  // 场景专属变体（R2）：木栈道 / 湿沙岸线 / 林地苔藓 / 废墟裂石。
+  'plank', 'sandWet', 'grassForest', 'stoneRuins']);
 
 function hash(x: number, y: number): number {
   let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) ^ 0x5bd1e995;
@@ -192,6 +194,92 @@ function genCaveWall(): HTMLCanvasElement {
   return cv;
 }
 
+// ───────── 场景专属变体（R2，加在通用地面之上，不改既有场景） ─────────
+
+// 木栈道（码头/甲板）：暖木长板 + 横板缝 + 纵向木纹 + 板端错缝 + 钉。
+const PLANK = { mid: [150, 108, 64] as RGB, light: [170, 126, 76] as RGB, dark: [120, 84, 48] as RGB, seam: [78, 52, 30] as RGB };
+function genPlank(): HTMLCanvasElement {
+  const boardH = 8; // 板宽(沿 y)，整除 N ⇒ 纵向无缝
+  const [cv, ctx] = paint((x, y) => {
+    const band = Math.floor(y / boardH);
+    const base = hash(band, 3) > 0.62 ? PLANK.light : hash(band, 7) < 0.3 ? PLANK.dark : PLANK.mid;
+    const grain = hash(Math.floor(x / 2), band * 5 + 1);
+    if (grain < 0.12) return shift(base, -10); // 深木纹
+    if (grain > 0.9) return shift(base, 9); // 亮木纹
+    return bayer(x, y) - 0.5 + (hash(x, band) - 0.5) * 0.3 > 0.25 ? shift(base, 5) : base;
+  });
+  ctx.fillStyle = css(PLANK.seam);
+  for (let y = 0; y < N; y += boardH) ctx.fillRect(0, y, N, 1); // 横板缝
+  ctx.fillStyle = css(shift(PLANK.light, 8));
+  for (let y = 1; y < N; y += boardH) ctx.fillRect(0, y, N, 1); // 缝下板顶高光
+  for (let band = 0; band * boardH < N; band++) {
+    const y = band * boardH;
+    const jx = ((band % 2 ? 0 : 64) + Math.floor(hash(band, 11) * 24)) % N;
+    ctx.fillStyle = css(PLANK.seam);
+    ctx.fillRect(jx, y, 1, boardH); // 板端竖缝(错位)
+    ctx.fillStyle = css(shift(PLANK.dark, -14));
+    ctx.fillRect(3, y + 3, 1, 1); ctx.fillRect(N - 5, y + 3, 1, 1); // 钉
+  }
+  return cv;
+}
+
+// 湿沙（海岸线）：比 sand 暗一档 + 湿渍暗斑 + 贝壳碎点。
+const SAND_WET = { mid: [176, 160, 120] as RGB, light: [192, 176, 134] as RGB, dark: [150, 136, 100] as RGB };
+function genSandWet(): HTMLCanvasElement {
+  const noise = tileNoise(TEX * 2);
+  const [cv, ctx] = paint((x, y) => {
+    const n = noise((x / ART) * 2, (y / ART) * 2);
+    if (n < 0.3) return SAND_WET.dark;
+    return n + bayer(x, y) - 0.5 > 0.56 ? SAND_WET.light : SAND_WET.mid;
+  });
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const r = hash(x * 5 + 2, y * 9);
+    if (r < 0.012) { ctx.fillStyle = hash(x, y) > 0.5 ? '#f0e6d2' : '#e7b8a0'; ctx.fillRect(x, y, 1, 1); } // 贝壳碎
+    else if (r > 0.99) { ctx.fillStyle = css(shift(SAND_WET.dark, -12)); ctx.fillRect(x, y, 2, 1); } // 湿渍
+  }
+  return cv;
+}
+
+// 林地（森林秘境）：苔藓深绿 + 更多暗叶团 + 落叶(橙黄) + 枯枝。
+const GRASSF = { mid: [78, 118, 52] as RGB, light: [98, 140, 64] as RGB, dark: [56, 92, 40] as RGB, hi: [120, 160, 78] as RGB };
+function genGrassForest(): HTMLCanvasElement {
+  const noise = tileNoise(TEX);
+  const [cv, ctx] = paint((x, y) => {
+    const n = noise(x / ART, y / ART);
+    if (n < 0.34) return GRASSF.dark;
+    return n + bayer(x, y) - 0.5 > 0.6 ? GRASSF.light : GRASSF.mid;
+  });
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const r = hash(x * 3 + 1, y * 5 + 2);
+    if (r < 0.03) { ctx.fillStyle = css(GRASSF.dark); ctx.fillRect(x, y, 1, 2); } // 暗草叶
+    else if (r > 0.985) { ctx.fillStyle = css(GRASSF.hi); ctx.fillRect(x, y, 1, 2); } // 亮草尖
+    else {
+      const lf = hash(x * 7 + 5, y * 11 + 3);
+      if (lf > 0.992) { ctx.fillStyle = lf > 0.996 ? '#b67a32' : '#c89a44'; ctx.fillRect(x, y, 2, 1); } // 落叶
+      else if (lf < 0.004) { ctx.fillStyle = '#6a4a2a'; ctx.fillRect(x, y, 2, 1); } // 枯枝
+    }
+  }
+  return cv;
+}
+
+// 废墟石板：旗石底 + 缝隙青苔 + 贯穿裂缝 + 个别缺块露土。
+function genStoneRuins(): HTMLCanvasElement {
+  const noise = tileNoise(TEX * 2);
+  const [cv, ctx] = paint((x, y) => (noise((x / ART) * 2, (y / ART) * 2) + bayer(x, y) - 0.5 > 0.5 ? FLAG[0] : FLAG[1]));
+  ctx.fillStyle = 'rgba(70,62,50,0.7)';
+  for (let y = 0; y <= N; y += ART) ctx.fillRect(0, y, N, 1); // 横缝
+  let r = 0;
+  for (let y = 0; y < N; y += ART, r++) { const off = r % 2 ? ART / 2 : 0; for (let x = off; x <= N; x += ART) ctx.fillRect(((x % N) + N) % N, y, 1, ART); } // 竖缝(错位)
+  for (let y = 0; y <= N; y += ART) for (let x = 0; x < N; x++) if (hash(x * 3, y * 5 + 1) < 0.16) { ctx.fillStyle = hash(x, y) > 0.5 ? '#5f7d3c' : '#4c6630'; ctx.fillRect(x, y, 1, 1); } // 缝隙青苔
+  for (let i = 0; i < 6; i++) { // 贯穿裂缝(随机游走)
+    let cxk = Math.floor(hash(i * 7 + 1, 2) * N), cyk = Math.floor(hash(i, 9) * N);
+    ctx.fillStyle = '#39332a';
+    for (let k = 0; k < 22; k++) { ctx.fillRect((cxk + N) % N, (cyk + N) % N, 1, 1); cxk += hash(i, k) < 0.5 ? 1 : 0; cyk += hash(k, i) < 0.4 ? 1 : hash(k, i) < 0.72 ? 0 : -1; }
+  }
+  for (let i = 0; i < 4; i++) { const bx = Math.floor(hash(i * 5 + 2, 7) * (N - ART)); const by = Math.floor(hash(i, 3) * (N - ART)); ctx.fillStyle = css(DIRT.mid); ctx.fillRect(bx, by, ART - 3, ART - 3); } // 缺块露土
+  return cv;
+}
+
 const GEN: Record<string, () => HTMLCanvasElement> = {
   grass: genGrass,
   dirt: genDirt,
@@ -201,6 +289,10 @@ const GEN: Record<string, () => HTMLCanvasElement> = {
   water: genWater,
   caveFloor: genCaveFloor,
   caveWall: genCaveWall,
+  plank: genPlank,
+  sandWet: genSandWet,
+  grassForest: genGrassForest,
+  stoneRuins: genStoneRuins,
 };
 const cache = new Map<string, HTMLCanvasElement>();
 function texture(name: string): HTMLCanvasElement {
