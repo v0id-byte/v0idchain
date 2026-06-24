@@ -10,6 +10,8 @@ const BUILDINGS: [string, number, number][] = [
   ['house', 4, 4], ['cottage', 4, 4], ['tudor', 5, 5],
   ['house3', 4, 4], ['bank', 4, 5], ['chapel', 4, 5],
   ['farmhouse', 5, 5], ['grocer', 4, 5], ['smithy', 4, 5],
+  // R3 木板墙：barn/mossy=竖板 board-and-batten，cottage/saltbox=横板 clapboard
+  ['barn', 5, 5], ['mossy', 4, 4], ['saltbox', 4, 5],
 ];
 const GROUND = ['grass', 'grassForest', 'dirt', 'sand', 'sandWet', 'plank', 'cobble', 'stone', 'stoneRuins', 'water'];
 const NEW_GROUND = new Set(['grassForest', 'sandWet', 'plank', 'stoneRuins']);

@@ -7,7 +7,7 @@ import { rampHex } from './light.js';
 const T = 16; // 原生瓦片 px
 const STRIDE = 17; // 图集含 1px 间距
 
-export type WallKind = 'timber' | 'stone';
+export type WallKind = 'timber' | 'stone' | 'plank';
 export type SignIcon = 'fish' | 'coin' | 'cart' | 'mug' | 'bread' | 'anvil' | 'potion' | 'scissors' | 'book' | 'letter' | 'cross' | 'flower' | 'wheat';
 
 /** 场景里的一栋建筑:风格 + 左上角格 (x,y) + 占地 w×h 瓦片。 */
@@ -43,12 +43,13 @@ export interface BuildingStyle {
   wing?: 'left' | 'right'; // 一侧矮耳房(L 形/ranch 车库感)
   trimColor?: string; // 门窗框/檐口描边色(美式撞色 trim);缺省取 beamColor
   shutters?: string; // 窗扇百叶色(美式);有则窗两侧画一对百叶
+  plank?: 'vertical' | 'horizontal'; // wall==='plank' 时:竖板(board-and-batten) / 横板(clapboard 叠瓦)。缺省竖板。
 }
 
 // 中世纪调色:灰泥/石墙 + 木骨架;陶土/青/石板/木屋顶。门窗坐标取自 tileset ?pick 映射。
 export const BUILDING_STYLES: Record<string, BuildingStyle> = {
   house: { label: '民居', wall: 'timber', wallColor: '#e7dcc2', beamColor: '#6b4a2c', roofColor: '#b65a34', door: [32, 0], window: [40, 0], chimney: true },
-  cottage: { label: '小屋', wall: 'timber', wallColor: '#dccfb0', beamColor: '#5a3f28', roofColor: '#7f8a52', door: [34, 1], window: [42, 0], chimney: true },
+  cottage: { label: '小屋', wall: 'plank', plank: 'horizontal', wallColor: '#dccfb0', beamColor: '#5a3f28', roofColor: '#7f8a52', door: [34, 1], window: [42, 0], chimney: true },
   house2: { label: '民居', wall: 'timber', wallColor: '#dfe0d2', beamColor: '#4a5258', roofColor: '#5a7f9a', door: [34, 1], window: [42, 0], chimney: true },
   house3: { label: '石屋', wall: 'stone', wallColor: '#c6c0b2', beamColor: '#857d6a', roofColor: '#a8703a', door: [40, 7], window: [42, 2], chimney: true },
   grocer: { label: '杂货店', wall: 'timber', wallColor: '#e9dcc0', beamColor: '#6b4a2c', roofColor: '#4f8d84', door: [32, 5], window: [40, 4], awning: '#c2462f', sign: 'cart' },
@@ -59,7 +60,7 @@ export const BUILDING_STYLES: Record<string, BuildingStyle> = {
   // —— 16 风格扩充(设计自子 agent;对标 Stardew/Terraria 多样性) ——
   manor: { label: '宅院', wall: 'timber', wallColor: '#ead9b6', beamColor: '#7a5230', roofColor: '#c25a3a', door: [32, 0], window: [40, 0], chimney: true },
   slate: { label: '板岩居', wall: 'stone', wallColor: '#c2c4bd', beamColor: '#76808a', roofColor: '#4a6a82', door: [40, 7], window: [42, 2], chimney: true },
-  mossy: { label: '林居', wall: 'timber', wallColor: '#d8d0b0', beamColor: '#4f5236', roofColor: '#6f8a4a', door: [34, 1], window: [40, 4], chimney: true },
+  mossy: { label: '林居', wall: 'plank', plank: 'vertical', wallColor: '#b59a6a', beamColor: '#5a4630', roofColor: '#6f8a4a', door: [34, 1], window: [40, 4], chimney: true },
   rosehouse: { label: '粉居', wall: 'timber', wallColor: '#e8c9bf', beamColor: '#8a5a4a', roofColor: '#a85a5a', door: [36, 3], window: [42, 0], chimney: true },
   tudor: { label: '木构宅', wall: 'timber', wallColor: '#efe7d2', beamColor: '#3a2a1e', roofColor: '#8a6a3a', door: [34, 2], window: [42, 2], chimney: true },
   sandstone: { label: '砂岩屋', wall: 'stone', wallColor: '#d8c9a4', beamColor: '#9a8a64', roofColor: '#b07a44', door: [34, 2], window: [42, 2] },
@@ -72,7 +73,7 @@ export const BUILDING_STYLES: Record<string, BuildingStyle> = {
   postoffice: { label: '邮局', wall: 'stone', wallColor: '#c6cdc8', beamColor: '#6a7a86', roofColor: '#4a7aa8', door: [40, 7], window: [42, 2], awning: '#3a6ab8', sign: 'letter' },
   chapel: { label: '教堂', wall: 'stone', wallColor: '#cdc8b8', beamColor: '#8a8270', roofColor: '#5a6a78', door: [40, 7], window: [42, 2], sign: 'cross' },
   mill: { label: '磨坊', wall: 'timber', wallColor: '#e2cfa2', beamColor: '#6b4a2c', roofColor: '#9a6a3a', door: [34, 2], window: [40, 0], sign: 'wheat', chimney: true },
-  barn: { label: '谷仓', wall: 'timber', wallColor: '#b6543a', beamColor: '#e8e0cc', roofColor: '#7a4a30', door: [32, 5], window: [42, 0] },
+  barn: { label: '谷仓', wall: 'plank', plank: 'vertical', wallColor: '#b6543a', beamColor: '#7a3a28', roofColor: '#7a4a30', door: [32, 5], window: [42, 0] },
   // —— 美式/乡村住宅(户型剪影一眼能分;墙低饱和暖灰,屋顶唯一高饱和点缀色,门窗撞色 trim + 百叶) ——
   // 暖屋顶组(陶土红/赭/琥珀):
   farmhouse: { label: '前廊农舍', wall: 'timber', wallColor: '#eae3d2', beamColor: '#8a7256', roofColor: '#b6553a', door: [34, 1], window: [42, 0], roofShape: 'gable', porch: '#cdb53f', chimney: true, trimColor: '#f3ece0', shutters: '#5a7050' },
@@ -83,7 +84,7 @@ export const BUILDING_STYLES: Record<string, BuildingStyle> = {
   // 冷屋顶组(青/蓝灰/苔绿):
   cottagey: { label: '阁楼小屋', wall: 'timber', wallColor: '#e4dcc4', beamColor: '#6a6a4a', roofColor: '#5a7f6a', door: [34, 1], window: [42, 0], roofShape: 'pitched', dormer: true, chimney: true, trimColor: '#eee6d2', shutters: '#4a6a5a' },
   craftsman: { label: '工匠前廊', wall: 'timber', wallColor: '#dcd0b4', beamColor: '#5a5238', roofColor: '#4f6a82', door: [34, 2], window: [42, 2], roofShape: 'pitched', porch: '#6a5238', chimney: true, trimColor: '#e8e0c8', shutters: '#3a4a58' },
-  saltbox: { label: '盐盒木屋', wall: 'timber', wallColor: '#e0d8c2', beamColor: '#6a5840', roofColor: '#5a6a78', door: [34, 1], window: [42, 0], roofShape: 'gable', chimney: true, trimColor: '#ece4d0', shutters: '#4a5a4a' },
+  saltbox: { label: '盐盒木屋', wall: 'plank', plank: 'horizontal', wallColor: '#e0d8c2', beamColor: '#6a5840', roofColor: '#5a6a78', door: [34, 1], window: [42, 0], roofShape: 'gable', chimney: true, trimColor: '#ece4d0', shutters: '#4a5a4a' },
   aframe: { label: 'A字尖屋', wall: 'timber', wallColor: '#e2d6ba', beamColor: '#6a4a30', roofColor: '#4a7a6a', door: [34, 1], window: [42, 0], roofShape: 'aframe', chimney: true, trimColor: '#efe7cf' },
   bungalow: { label: '平顶小宅', wall: 'stone', wallColor: '#cfc6b0', beamColor: '#7e7660', roofColor: '#6a8a7a', door: [40, 7], window: [42, 2], roofShape: 'flat', trimColor: '#e8e0cc', shutters: '#4a6a5a' },
   // 开放式鱼摊(无墙无门):柱 + 斜条纹棚 + 冰台摆鱼。
@@ -221,6 +222,57 @@ function drawStoneWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: 
   px(ctx, 0, y0, 1, H, shade(wall, 9)); // 左沿 rim 高光(受光侧)
   px(ctx, W - 1, y0, 1, H, shade(wall, -7)); // 右沿极淡暗面(背光侧, 体积一丝)
   px(ctx, 0, y0 + H - 1, W, 1, shade(wall, -12)); // 墙根 AO 暗线(焊在地上)
+}
+
+// 竖板墙(board-and-batten,R3 木房)：宽竖板(逐板明度档 + 竖木纹 + 节疤) + 压条盖缝 + 顶/底封板 + 底部磨损 + rim/AO。
+function drawPlankWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, beam: string) {
+  px(ctx, 0, y0, W, H, wall);
+  const bw = 7; // 板宽
+  for (let bx = 0; bx < W; bx += bw) {
+    const bi = Math.floor(bx / bw);
+    const tone = bhash(bi * 5 + 1, 3);
+    const boardCol = shade(wall, tone > 0.66 ? 7 : tone > 0.33 ? 0 : -8); // 逐板明度档
+    px(ctx, bx, y0, Math.min(bw, W - bx), H, boardCol);
+    for (let s = 0; s < 2; s++) { // 竖木纹(每板 1~2 道断续暗纹)
+      const gx = bx + 2 + s * 3;
+      if (gx >= bx + bw - 1 || gx >= W - 1) break;
+      for (let yy = y0 + 2; yy < y0 + H - 2; yy++) if (bhash(gx * 3, yy + s) < 0.4) px(ctx, gx, yy, 1, 1, shade(boardCol, -7));
+    }
+    if (bhash(bi, 7) < 0.35) { const ky = y0 + 4 + Math.floor(bhash(bi, 2) * (H - 8)); px(ctx, bx + 2, ky, 2, 2, shade(boardCol, -16)); px(ctx, bx + 2, ky, 1, 1, shade(boardCol, -24)); } // 节疤
+    px(ctx, bx, y0, 2, H, beam); // 压条(盖板缝,板左缘)
+    px(ctx, bx, y0, 1, H, shade(beam, 12)); // 压条左高光
+    px(ctx, bx + 1, y0, 1, H, shade(beam, -12)); // 压条右暗
+  }
+  px(ctx, 0, y0, W, 2, beam); px(ctx, 0, y0 + H - 2, W, 2, beam); // 顶/底封板
+  const stain = Math.max(2, Math.round(H * 0.18));
+  for (let y = H - stain; y < H - 2; y++) for (let x = 1; x < W - 1; x++) if (bhash(x * 5 + 1, y) < 0.16) px(ctx, x, y0 + y, 1, 1, shade(wall, -12)); // 底部磨损
+  px(ctx, 0, y0, W, 1, shade(wall, 14)); // 顶 rim
+  px(ctx, 0, y0, 1, H, shade(wall, 8)); // 左 rim
+  px(ctx, W - 1, y0, 1, H, shade(wall, -8)); // 右暗
+  px(ctx, 0, y0 + H - 1, W, 1, shade(beam, -16)); // 墙根 AO
+}
+
+// 横板墙(clapboard 叠瓦,R3 木房)：横向叠压木板(逐板明度档 + 横木纹 + 顶缘受光 + 底缘叠影) + 角柱 + 底部磨损 + rim/AO。
+function drawClapboardWall(ctx: CanvasRenderingContext2D, y0: number, W: number, H: number, wall: string, beam: string) {
+  px(ctx, 0, y0, W, H, wall);
+  const bh = 5; // 板高
+  for (let by = y0; by < y0 + H; by += bh) {
+    const bi = Math.floor((by - y0) / bh);
+    const tone = bhash(3, bi * 5 + 1);
+    const boardCol = shade(wall, tone > 0.66 ? 6 : tone > 0.33 ? 0 : -7); // 逐板明度档
+    const hh = Math.min(bh, y0 + H - by);
+    px(ctx, 0, by, W, hh, boardCol);
+    const gy = by + 2; // 横木纹
+    for (let xx = 1; xx < W - 1; xx++) if (bhash(xx * 3, gy + bi) < 0.4) px(ctx, xx, gy, 1, 1, shade(boardCol, -6));
+    px(ctx, 0, by, W, 1, shade(boardCol, 12)); // 板顶受光
+    px(ctx, 0, by + hh - 1, W, 1, shade(boardCol, -18)); // 板底叠影(lap shadow)
+  }
+  px(ctx, 0, y0, 2, H, beam); px(ctx, W - 2, y0, 2, H, beam); px(ctx, 0, y0, W, 2, beam); // 角柱 + 顶封
+  const stain = Math.max(2, Math.round(H * 0.18));
+  for (let y = H - stain; y < H - 1; y++) for (let x = 2; x < W - 2; x++) if (bhash(x * 5 + 2, y) < 0.16) px(ctx, x, y0 + y, 1, 1, shade(wall, -12)); // 底部磨损
+  px(ctx, 0, y0, 1, H, shade(wall, 10)); // 左 rim
+  px(ctx, W - 1, y0, 1, H, shade(wall, -8)); // 右暗
+  px(ctx, 0, y0 + H - 1, W, 1, shade(beam, -16)); // 墙根 AO
 }
 
 // 坡瓦屋顶（横向出檐 + 瓦楞 + 屋脊 + 檐影），盖住墙顶。
@@ -664,6 +716,7 @@ export function buildingCanvas(styleId: string, w: number, h: number, variant = 
   const wallY = roofH - 3;
   const wallH = H - wallY;
   if (s.wall === 'stone') drawStoneWall(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
+  else if (s.wall === 'plank') (s.plank === 'horizontal' ? drawClapboardWall : drawPlankWall)(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
   else drawTimberWall(ctx, wallY, W, wallH, s.wallColor, s.beamColor);
 
   // —— 一侧耳房(wing):占住一侧列范围,门窗在此让开 ——
