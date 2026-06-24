@@ -103,8 +103,8 @@ export function furnitureCoord(kind: string, x: number, y: number): [number, num
   return FURNITURE_TILES[kind];
 }
 
-// 可踩过去的装饰（地毯/花/窗贴墙）；其余挡路。
-export const WALKABLE = new Set<string>(['rug', 'flower', 'window']);
+// 可踩过去的装饰（地毯/花/窗贴墙/贝壳）；其余挡路。
+export const WALKABLE = new Set<string>(['rug', 'flower', 'window', 'shell']);
 
 // 编辑器家具调色板（可放清单）。label 给 UI；solid 决定是否挡路。
 export interface CatalogItem {

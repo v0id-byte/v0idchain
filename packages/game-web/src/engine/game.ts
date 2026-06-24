@@ -24,7 +24,7 @@ import { treeCanvas, treeVariant, TREE_W, TREE_H } from './foliage.js';
 import { loadMineSprites, mineSprite, type MineSpriteKey } from './mine-sprites.js';
 
 const SWAY_KINDS = new Set(['flower']); // 随风轻摆的装饰（绕底部中心微旋）
-const FLAT_KINDS = new Set(['rug', 'bed', 'fence']); // 贴地/铺地类家具：不画落地接触阴影（§7-B）
+const FLAT_KINDS = new Set(['rug', 'bed', 'fence', 'shell']); // 贴地/铺地类家具：不画落地接触阴影（§7-B）
 const AIRBORNE_FX = new Set(['chimneySmoke', 'fishHang']); // 悬空动态物件：不落地，无接触阴影
 
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);

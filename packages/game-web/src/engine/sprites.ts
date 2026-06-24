@@ -157,6 +157,84 @@ function furniture(kind: FurnitureKind): C {
       round(11, 4, 1, 3, '#c2462f'); // 红旗杆
       round(11, 4, 2, 2, '#d8543a'); // 红旗
       break;
+    // ───────── 场景专属道具（R2）：统一左上受光 + 顶面/rim/AO，告别占位件 ─────────
+    case 'piling': // 码头木桩：粗木柱 + 顶切面 + 缆绳环 + 水线
+      round(5, 2, 6, 1, '#7a5230');   // 顶切面（受光环）
+      round(5, 3, 6, 11, '#5e3c20');  // 柱身
+      round(5, 3, 1, 11, '#7a4e2c');  // 左 rim 高光
+      round(10, 3, 1, 11, '#3f2814'); // 右暗面
+      round(6, 5, 1, 7, '#6a4524');   // 木纹
+      round(8, 6, 1, 6, '#4a2e16');   // 木纹2
+      round(4, 8, 8, 2, '#3a2614');   // 缆绳环（深）
+      round(4, 8, 8, 1, '#6a5236');   // 绳高光
+      round(5, 13, 6, 2, '#2e3a44');  // 水线（湿暗）
+      break;
+    case 'shell': // 沙滩贝壳（可踩装饰，扇贝）
+      round(6, 9, 5, 4, '#f0d9c4');   // 扇贝身
+      round(6, 9, 5, 1, '#fbeede');   // 顶高光
+      round(7, 10, 1, 3, '#d9b59a');  // 扇纹
+      round(9, 10, 1, 3, '#d9b59a');  // 扇纹2
+      round(6, 12, 5, 1, '#c79a82');  // 底暗
+      round(8, 8, 1, 1, '#fff6ec');   // 高光点
+      break;
+    case 'driftwood': // 漂流木（横卧漂白枯木）
+      round(2, 8, 12, 4, '#b7a890');  // 木身
+      round(2, 8, 12, 1, '#cdbfa6');  // 顶高光
+      round(2, 11, 12, 1, '#8f8068'); // 底暗
+      round(2, 9, 12, 1, '#a3937a');  // 纹
+      round(2, 8, 2, 4, '#7a6d58');   // 左端断面
+      round(12, 8, 2, 4, '#7a6d58');  // 右端断面
+      round(5, 8, 1, 4, '#9a8b72');   // 裂
+      break;
+    case 'brokenColumn': // 残破石柱：断顶 + 凹槽 + 基座青苔
+      round(4, 5, 8, 2, '#9a9588');   // 柱头（残）
+      round(4, 7, 8, 8, '#88837a');   // 柱身
+      round(4, 7, 1, 8, '#a7a294');   // 左 rim
+      round(11, 7, 1, 8, '#605c54');  // 右暗
+      round(6, 7, 1, 8, '#6f6a62');   // 凹槽线
+      round(8, 7, 1, 8, '#6f6a62');   // 凹槽线2
+      round(5, 5, 1, 2, '#a9a497');   // 断口参差
+      round(9, 4, 1, 3, '#a9a497');   // 断口参差2
+      round(7, 6, 1, 1, '#605c54');   // 断口缺
+      round(4, 13, 8, 2, '#73706a');  // 基座
+      round(4, 12, 2, 1, '#5f7d3c');  // 青苔
+      round(9, 13, 2, 1, '#4c6630');  // 青苔2
+      break;
+    case 'rubble': // 碎石堆（小障碍）
+      round(3, 10, 10, 4, '#8a857a'); // 底堆
+      round(3, 10, 10, 1, '#a39e92'); // 顶高光
+      round(4, 8, 4, 3, '#959084');   // 上块
+      round(4, 8, 4, 1, '#aaa498');   // 上块顶高光
+      round(9, 9, 3, 2, '#7c776e');   // 右块
+      round(6, 12, 2, 1, '#5f5b54');  // 缝影
+      round(5, 9, 1, 1, '#5f7d3c');   // 青苔点
+      break;
+    case 'standingStone': // 立石（森林石圈）：竖巨石 + 青苔 + 符文
+      round(5, 1, 7, 2, '#7d8a90');   // 顶
+      round(4, 3, 9, 12, '#6f7c82');  // 身
+      round(4, 3, 1, 12, '#90a0a6');  // 左 rim
+      round(12, 3, 1, 12, '#4e585d'); // 右暗
+      round(6, 5, 1, 8, '#5b666b');   // 刻痕竖
+      round(8, 6, 3, 1, '#5b666b');   // 符文横
+      round(8, 9, 3, 1, '#5b666b');   // 符文横2
+      round(4, 3, 5, 2, '#5f7d3c');   // 顶青苔
+      round(4, 12, 3, 2, '#4c6630');  // 基青苔
+      round(10, 11, 2, 1, '#5f7d3c'); // 青苔点
+      break;
+    case 'stall': // 集市货摊：条纹布棚 + 柜台 + 货物
+      round(1, 2, 14, 4, '#c2462f');  // 布棚底（红）
+      for (let i = 0; i < 7; i++) round(1 + i * 2, 2, 1, 4, '#f3ece0'); // 白条纹
+      round(1, 2, 14, 1, '#d8674a');  // 棚顶高光
+      round(1, 6, 14, 1, '#7a2c1c');  // 棚下影
+      round(2, 6, 1, 8, '#6b4a2c');   // 左柱
+      round(13, 6, 1, 8, '#6b4a2c');  // 右柱
+      round(2, 11, 12, 3, '#9a6a3a'); // 柜台
+      round(2, 11, 12, 1, '#b5824a'); // 台面高光
+      round(2, 13, 12, 1, '#6b4524'); // 台底 AO
+      round(4, 9, 2, 2, '#d8543a');   // 货：番茄
+      round(7, 9, 2, 2, '#e0a93f');   // 货：南瓜
+      round(10, 9, 2, 2, '#5a9a5a');  // 货：菜
+      break;
   }
   return c;
 }
@@ -171,6 +249,14 @@ export function buildFurniture(): Partial<Record<FurnitureKind, C>> {
     rug: furniture('rug'),
     fence: furniture('fence'),
     mailbox: furniture('mailbox'),
+    // 场景专属道具（R2）
+    piling: furniture('piling'),
+    shell: furniture('shell'),
+    driftwood: furniture('driftwood'),
+    brokenColumn: furniture('brokenColumn'),
+    rubble: furniture('rubble'),
+    standingStone: furniture('standingStone'),
+    stall: furniture('stall'),
   };
 }
 
