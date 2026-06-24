@@ -2,11 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createMessage,
   makePetMint,
+  makePetBreed,
+  makePetEvolve,
   PET_HATCH_COST,
+  PET_BREED_COST,
+  PET_EVO_COST,
+  MAX_EVO,
   MIN_FEE,
   sha256Hex,
   petTraits,
   fishTraits,
+  makeFishCatch,
+  FISH_BURN,
+  makeHarvest,
+  HARVEST_BURN,
   NULL_ADDRESS,
   MINE_KIND_META,
   MINE_KINDS,
@@ -15,7 +24,7 @@ import {
   mineDiscoveryBurn,
   mineMaterialBurn,
 } from '@v0idchain/core/browser';
-import type { Pet, Catch, FarmView, Wallet, FeedEvent, Crop, MineAsset, MineAssetKind } from '@v0idchain/core/browser';
+import type { Pet, Catch, FarmView, Wallet, FeedEvent, Crop, MineAsset, MineAssetKind, Rarity } from '@v0idchain/core/browser';
 import { api, waitConfirmed } from './api';
 import { loadOrCreateWallet, exportPrivateKey, importPrivateKey, shortAddr } from './wallet';
 import { TownBoard, ProfileOverlay, MyProfilePanel } from './Social';
@@ -23,6 +32,9 @@ import { renderPet, RARITY_LABEL } from './pet-render';
 import { renderFish, fishName } from './fish-render';
 import FishingModal from './FishingModal';
 import { FarmPanel, FarmActionModal } from './FarmPanel';
+import RevealOverlay, { type RevealState, type RevealResult } from './RevealOverlay';
+import Codex from './Codex';
+import { cropFullName } from './crop-render';
 import GameView, { type GameHandle } from './game/GameView';
 import TouchControls from './TouchControls';
 import Hotbar, { DEFAULT_INVENTORY, type InventorySlot } from './Hotbar';
@@ -48,6 +60,16 @@ function plotHash(id: string): string {
 function isMineAssetKind(kind: string): kind is MineAssetKind {
   return MINE_KINDS.includes(kind as MineAssetKind);
 }
+
+/** 矿洞稀有度（含 uncommon）→ 标准四档，供揭晓仪式统一外发光/标签。 */
+function mineRevealRarity(r: MineAsset['traits']['rarity']): Rarity {
+  return r === 'legendary' ? 'legendary' : r === 'epic' ? 'epic' : r === 'rare' || r === 'uncommon' ? 'rare' : 'common';
+}
+
+/** 矿洞 5 档稀有度中文标签（含 uncommon；纯度档，与崽/鱼/作物的 4 档前导 0 比特稀有度不同源）。 */
+const MINE_RARITY_LABEL: Record<MineAsset['traits']['rarity'], string> = {
+  common: '普通', uncommon: '优良', rare: '稀有', epic: '史诗', legendary: '传说',
+};
 
 function addSlot(prev: InventorySlot[], slot: InventorySlot, unique = false): InventorySlot[] {
   const next = [...prev];
@@ -78,11 +100,11 @@ function computeGardenStage(plot: GardenPlot): 0 | 1 | 2 | 3 {
   return 0;
 }
 
-function PetSprite({ gene, size = 88 }: { gene: string; size?: number }) {
+function PetSprite({ gene, size = 88, evo = 0 }: { gene: string; size?: number; evo?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    if (ref.current) renderPet(ref.current, gene, size);
-  }, [gene, size]);
+    if (ref.current) renderPet(ref.current, gene, size, evo);
+  }, [gene, size, evo]);
   return <canvas ref={ref} className="sprite" style={{ width: size, height: size }} />;
 }
 
@@ -141,7 +163,7 @@ function FurnitureIcon({ kind, size = 30 }: { kind: string; size?: number }) {
   return <canvas ref={ref} style={{ width: size, height: size, imageRendering: 'pixelated' }} />;
 }
 
-type Tab = 'wallet' | 'pets' | 'fish' | 'farm' | 'mine' | 'profile';
+type Tab = 'codex' | 'wallet' | 'pets' | 'fish' | 'farm' | 'mine' | 'profile';
 
 export default function App() {
   const wallet = useMemo<Wallet>(() => loadOrCreateWallet(), []);
@@ -214,6 +236,8 @@ export default function App() {
   const [mineMined, setMineMined] = useState<Set<string>>(new Set());
   const [mineChests, setMineChests] = useState<Set<string>>(new Set());
   const [mineMonsters, setMineMonsters] = useState<Set<string>>(new Set());
+  // 铸造揭晓仪式状态（投入虚空 → 区块盖章 → 稀有度揭晓）。
+  const [reveal, setReveal] = useState<RevealState | null>(null);
 
   const refresh = useCallback(async () => {
     const [b, ps, fs, fm, ms, names, ownFeed] = await Promise.all([
@@ -308,21 +332,142 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // 田地 HUD 键盘快捷键（1-4 选作物 / 1-2 执行操作 / Esc 关闭）
+  // 统一铸造揭晓：投入虚空（sealing）→ 等区块确认 → 盖章揭晓（result）/ 轻量确认（bulk）/ 兜底（failed）。
+  // 复用各处 mint 链路（nonce→createMessage→submitTx→waitConfirmed→refresh），把静默 setStatus 换成仪式演出。
+  const runReveal = useCallback(
+    async (opts: {
+      label: string;
+      memo: string;
+      burn: number;
+      to: string;
+      resolve?: (txid: string) => Promise<RevealResult | null>;
+      bulk?: { icon: string; label: string; count: number };
+    }): Promise<boolean> => {
+      setReveal({ stage: 'sealing', label: opts.label, burn: opts.burn, bulk: opts.bulk });
+      try {
+        const { nonce } = await api.nonce(wallet.address);
+        const tx = createMessage(wallet, opts.to, opts.memo, nonce, opts.burn, MIN_FEE);
+        const r = await api.submitTx(tx);
+        const ok = await waitConfirmed(r.txid);
+        await refresh();
+        if (!ok) {
+          setReveal({ stage: 'reveal', label: opts.label, burn: opts.burn, failed: true });
+          return false;
+        }
+        if (opts.bulk) {
+          setReveal({ stage: 'reveal', label: opts.label, burn: opts.burn, bulk: opts.bulk });
+          return true;
+        }
+        const result = opts.resolve ? await opts.resolve(r.txid) : null;
+        setReveal({ stage: 'reveal', label: opts.label, burn: opts.burn, result: result ?? undefined, failed: !result });
+        return true;
+      } catch {
+        setReveal({ stage: 'reveal', label: opts.label, burn: opts.burn, failed: true });
+        return false;
+      }
+    },
+    [wallet, refresh],
+  );
+
   const hatch = useCallback(async () => {
     if (busy) return;
     setBusy(true);
+    setMenuOpen(false);
     try {
-      setStatus('孵化中：本地签名 + 烧币铸造…');
+      await runReveal({
+        label: '孵化崽',
+        memo: makePetMint().memo,
+        burn: PET_HATCH_COST,
+        to: wallet.address,
+        resolve: async (txid) => {
+          const ps = await api.pets(wallet.address).catch(() => [] as Pet[]);
+          const p = ps.find((x) => x.id === txid);
+          if (!p) return null;
+          const t = petTraits(p.gene);
+          return { kind: 'pet', gene: p.gene, rarity: t.rarity, name: `${RARITY_LABEL[t.rarity]}崽`, sub: `基因 #${p.gene.slice(0, 8)}` };
+        },
+      });
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, runReveal, wallet.address]);
+
+  // 钓鱼铸造渔获 → 揭晓（鱼种/稀有度由出块后 catchHash 事后确定）。供 FishingModal 调用。
+  const fishReveal = useCallback(
+    () =>
+      runReveal({
+        label: '铸造渔获',
+        memo: makeFishCatch().memo,
+        burn: FISH_BURN,
+        to: wallet.address,
+        resolve: async (txid) => {
+          const fs = await api.fish(wallet.address).catch(() => [] as Catch[]);
+          const f = fs.find((x) => x.id === txid);
+          if (!f) return null;
+          return { kind: 'fish', catchHash: f.catchHash, rarity: f.traits.rarity, name: fishName(f.traits), sub: `${f.traits.sizeCm} cm${f.traits.shiny ? ' · ✨闪光' : ''}` };
+        },
+      }),
+    [runReveal, wallet.address],
+  );
+
+  // 作物收获 → 揭晓（品质由收获后 cropHash 事后确定）。供 FarmActionModal 收获动作调用。
+  const cropReveal = useCallback(
+    (plantId: string) =>
+      runReveal({
+        label: '收获作物',
+        memo: makeHarvest(plantId).memo ?? '',
+        burn: HARVEST_BURN,
+        to: wallet.address,
+        resolve: async (txid) => {
+          const fm = await api.farm(wallet.address).catch(() => null);
+          const c = fm?.crops.find((x) => x.id === txid);
+          if (!c) return null;
+          return { kind: 'crop', crop: c.crop, hash: c.hash, rarity: c.traits.quality, name: cropFullName(c.traits), sub: `${c.traits.weightG} g${c.traits.giant ? ' · 巨型' : ''}` };
+        },
+      }),
+    [runReveal, wallet.address],
+  );
+
+  // 繁育子崽 → 揭晓（子基因继承双亲 byte2-6，稀有度仍由出块后 seed 事后确定）。供 PetsPanel 调用。
+  const breedReveal = useCallback(
+    (aId: string, bId: string): Promise<boolean> => {
+      const made = makePetBreed(aId, bId);
+      if (!made.ok || !made.memo) { setStatus(made.error ?? '繁育参数无效'); return Promise.resolve(false); }
+      setMenuOpen(false);
+      return runReveal({
+        label: '繁育',
+        memo: made.memo,
+        burn: PET_BREED_COST,
+        to: wallet.address,
+        resolve: async (txid) => {
+          const ps = await api.pets(wallet.address).catch(() => [] as Pet[]);
+          const p = ps.find((x) => x.id === txid);
+          if (!p) return null;
+          const t = petTraits(p.gene);
+          return { kind: 'pet', gene: p.gene, rarity: t.rarity, name: `${RARITY_LABEL[t.rarity]}崽`, sub: '新生 · 继承双亲特征' };
+        },
+      });
+    },
+    [runReveal, wallet.address],
+  );
+
+  // 进化/培育（轻量动作，无完整 gacha 揭晓——不产新稀有度，只升阶）。
+  const evolvePet = useCallback(async (petId: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const made = makePetEvolve(petId);
+      if (!made.ok || !made.memo) throw new Error(made.error ?? '进化参数无效');
+      setStatus('培育进化：签名 + 烧币…');
       const { nonce } = await api.nonce(wallet.address);
-      const tx = createMessage(wallet, wallet.address, makePetMint().memo, nonce, PET_HATCH_COST, MIN_FEE);
+      const tx = createMessage(wallet, wallet.address, made.memo, nonce, PET_EVO_COST, MIN_FEE);
       const r = await api.submitTx(tx);
-      setStatus('已广播，等待矿工打包…');
+      setStatus('已广播，等矿工打包…');
       const ok = await waitConfirmed(r.txid);
       await refresh();
-      setStatus(ok ? '🐣 新崽诞生！' : '已广播，稍后可见');
+      setStatus(ok ? '🌟 进化 +1 阶！' : '已广播，稍后生效');
     } catch (e) {
-      setStatus(`孵化失败：${e instanceof Error ? e.message : e}`);
+      setStatus(`进化失败：${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
     }
@@ -658,44 +803,51 @@ export default function App() {
     if (!mintTarget || busy) return;
     setBusy(true);
     try {
-      setStatus('铸造资产：签名 + 烧币…');
-      const { nonce } = await api.nonce(wallet.address);
+      // 注：makeMineDiscovery/makeMineMaterial 返回的是 memo 字符串本身（非 {ok,memo}）——
+      // 旧代码误判 made.ok/made.memo 导致矿物铸造恒抛错，此处一并修正为直接取字符串。
       let memo = '';
       let cost = 0;
+      let discovery = false;
       if (mintTarget.chain?.type === 'mine_discovery' && isMineAssetKind(mintTarget.chain.kind)) {
         const { depth, x, y, kind } = mintTarget.chain;
-        const made = makeMineDiscovery(depth, x, y, kind);
-        if (!made.ok || !made.memo) throw new Error(made.error ?? '矿洞发现证明无效');
-        memo = made.memo;
+        memo = makeMineDiscovery(depth, x, y, kind);
         cost = mineDiscoveryBurn(depth, kind);
+        discovery = true;
       } else if (mintTarget.kind.startsWith('mine_mat_')) {
         const kind = mintTarget.kind.slice('mine_mat_'.length);
         if (!isMineAssetKind(kind)) throw new Error('未知矿洞材料');
-        const made = makeMineMaterial(kind, mintTarget.count);
-        if (!made.ok || !made.memo) throw new Error(made.error ?? '矿洞材料无效');
-        memo = made.memo;
+        memo = makeMineMaterial(kind, mintTarget.count);
         cost = mineMaterialBurn(kind, mintTarget.count);
       } else {
         const kind = mintTarget.kind.replace('fruit_', '');
         cost = (FRUIT_MINT_COST[mintTarget.kind] ?? 10) * mintTarget.count;
         memo = `FRUIT:MINT:${kind}:${mintTarget.count}`;
       }
-      const tx = createMessage(wallet, NULL_ADDRESS, memo, nonce, cost, MIN_FEE);
-      const r = await api.submitTx(tx);
-      setStatus('已广播，等矿工打包…');
-      const ok = await waitConfirmed(r.txid);
-      await refresh();
-      if (ok) {
-        setInventory((prev) => prev.filter((s) => s?.kind !== mintTarget.kind));
-        setStatus(`✅ ${mintTarget.icon} 已铸造上链！`);
-      } else setStatus('已广播，稍后生效');
+      // 矿物发现 = 稀有藏品 → 完整揭晓；批量果子/材料 → 轻量"已铭刻"确认（Q2）。
+      const target = mintTarget;
       setMintTarget(null);
+      const ok = await runReveal({
+        label: discovery ? '矿物发现' : '铸造资产',
+        memo,
+        burn: cost,
+        to: NULL_ADDRESS,
+        bulk: discovery ? undefined : { icon: target.icon, label: target.label, count: target.count },
+        resolve: discovery
+          ? async (txid) => {
+              const ms = await api.mines(wallet.address).catch(() => [] as MineAsset[]);
+              const m = ms.find((x) => x.id === txid);
+              if (!m) return null;
+              return { kind: 'mine', icon: m.icon, rarity: mineRevealRarity(m.traits.rarity), name: m.label, sub: `第 ${m.depth ?? '?'} 层 · 纯度 ${m.traits.purity}` };
+            }
+          : undefined,
+      });
+      if (ok) setInventory((prev) => prev.filter((s) => s?.kind !== target.kind));
     } catch (e) {
       setStatus(`铸造失败：${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
     }
-  }, [busy, mintTarget, refresh, wallet]);
+  }, [busy, mintTarget, runReveal, wallet.address]);
 
   // 调试钩子(预览里 rAF 节流难以走到名册牌):直接开名册 / 串门。部署前删。
   useEffect(() => {
@@ -766,7 +918,7 @@ export default function App() {
   }, [mintTarget]);
 
   // 任一浮层打开时引擎已暂停（paused）→ 同时隐藏触屏方向/交互键，避免遮挡弹窗。
-  const anyOverlay = menuOpen || fishingOpen || !!farmAction || dirOpen || !!profileAddr || !!gardenHud || rentOpen || !!mintTarget;
+  const anyOverlay = menuOpen || fishingOpen || !!farmAction || dirOpen || !!profileAddr || !!gardenHud || rentOpen || !!mintTarget || !!reveal;
   const showTouch = !anyOverlay && !editMode;
   // D-pad 卸载（开浮层/进装修）时若有手指还按着，补发一次归零，避免角色卡着走。
   useEffect(() => {
@@ -783,7 +935,7 @@ export default function App() {
         furniture={furniture}
         theme={theme}
         editMode={editMode}
-        paused={menuOpen || fishingOpen || !!farmAction || !!gardenHud || rentOpen || !!mintTarget}
+        paused={menuOpen || fishingOpen || !!farmAction || !!gardenHud || rentOpen || !!mintTarget || !!reveal}
         visit={visit ? { furniture: visit.furniture, theme: visit.theme } : null}
         farm={farm}
         depletedFruits={depletedFruits}
@@ -874,6 +1026,7 @@ export default function App() {
         <div className="menu-backdrop" onClick={() => setMenuOpen(false)}>
           <div className="menu" onClick={(e) => e.stopPropagation()}>
             <div className="menu-tabs">
+              <button className={tab === 'codex' ? 'on' : ''} onClick={() => setTab('codex')}>图鉴</button>
               <button className={tab === 'pets' ? 'on' : ''} onClick={() => setTab('pets')}>崽</button>
               <button className={tab === 'fish' ? 'on' : ''} onClick={() => setTab('fish')}>鱼篓</button>
               <button className={tab === 'farm' ? 'on' : ''} onClick={() => setTab('farm')}>农场</button>
@@ -882,8 +1035,10 @@ export default function App() {
               <button className={tab === 'wallet' ? 'on' : ''} onClick={() => setTab('wallet')}>钱包</button>
               <button className="menu-close" onClick={() => setMenuOpen(false)}>✕</button>
             </div>
-            {tab === 'pets' ? (
-              <PetsPanel pets={pets} balance={balance} busy={busy} onHatch={hatch} status={status} />
+            {tab === 'codex' ? (
+              <Codex pets={pets} fish={fish} crops={farm?.crops ?? []} mines={mines} address={wallet.address} name={name} />
+            ) : tab === 'pets' ? (
+              <PetsPanel pets={pets} balance={balance} busy={busy} onHatch={hatch} onBreed={breedReveal} onEvolve={evolvePet} status={status} />
             ) : tab === 'fish' ? (
               <FishPanel fish={fish} canFish={nearby?.type === 'fishing'} onFish={() => { setMenuOpen(false); setFishingOpen(true); }} />
             ) : tab === 'farm' ? (
@@ -1052,7 +1207,7 @@ export default function App() {
         <FishingModal
           wallet={wallet}
           balance={balance}
-          onMinted={() => refresh().catch(() => {})}
+          onMintReveal={fishReveal}
           onClose={() => setFishingOpen(false)}
         />
       )}
@@ -1062,10 +1217,13 @@ export default function App() {
           farm={farm}
           wallet={wallet}
           balance={balance}
+          onCropReveal={cropReveal}
           onDone={() => refresh().catch(() => {})}
           onClose={() => setFarmAction(null)}
         />
       )}
+
+      <RevealOverlay reveal={reveal} onClose={() => setReveal(null)} />
     </div>
   );
 }
@@ -1126,32 +1284,81 @@ function PetsPanel({
   balance,
   busy,
   onHatch,
+  onBreed,
+  onEvolve,
   status,
 }: {
   pets: Pet[];
   balance: number | null;
   busy: boolean;
   onHatch: () => void;
+  onBreed: (a: string, b: string) => void;
+  onEvolve: (petId: string) => void;
   status: string;
 }) {
-  const canAfford = (balance ?? 0) >= PET_HATCH_COST + MIN_FEE;
+  const bal = balance ?? 0;
+  const canHatch = bal >= PET_HATCH_COST + MIN_FEE;
+  const canEvoBal = bal >= PET_EVO_COST + MIN_FEE;
   const samples = useMemo(() => Array.from({ length: 6 }, (_, i) => sha256Hex(`v0id-sample-${i}`)), []);
+  const [sel, setSel] = useState<string[]>([]);
+  const toggle = (id: string) =>
+    setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : s.length >= 2 ? [s[1], id] : [...s, id]));
+  const canBreed = sel.length === 2 && bal >= PET_BREED_COST + MIN_FEE;
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>我的崽</h2>
-        <button className="primary" disabled={busy || !canAfford} onClick={onHatch}>
-          {canAfford ? `孵化（烧 ${PET_HATCH_COST}）` : `余额不足（需 ${PET_HATCH_COST}）`}
+        <button className="primary" disabled={busy || !canHatch} onClick={onHatch}>
+          {canHatch ? `孵化（烧 ${PET_HATCH_COST}）` : `余额不足（需 ${PET_HATCH_COST}）`}
         </button>
       </div>
       {pets.length === 0 ? (
         <p className="empty">还没有崽。孵化一只由链上基因生成、独一无二的像素宠物吧。</p>
       ) : (
-        <div className="pet-grid">
-          {pets.map((p) => (
-            <PetCard key={p.id} pet={p} />
-          ))}
-        </div>
+        <>
+          <p className="note" style={{ marginTop: 0 }}>
+            点两只崽选为双亲 → 繁育出继承它们腹色/眼睛/花纹/配饰的子崽（稀有度仍是出块后随机，<strong>选不出传说</strong>）。每只可培育进化至 {MAX_EVO} 阶。
+          </p>
+          <div className="pet-grid">
+            {pets.map((p) => {
+              const t = petTraits(p.gene);
+              const evo = p.evo ?? 0;
+              const selected = sel.includes(p.id);
+              return (
+                <div
+                  key={p.id}
+                  className={`pet-card rarity-${t.rarity}${selected ? ' pet-selected' : ''}`}
+                  onClick={() => toggle(p.id)}
+                  style={{ cursor: 'pointer' }}
+                  title="点选为双亲"
+                >
+                  <PetSprite gene={p.gene} size={84} evo={evo} />
+                  <div className="pet-meta">
+                    <span className={`tag tag-${t.rarity}`}>{RARITY_LABEL[t.rarity]}</span>
+                    {p.parents && <span className="tag pet-bred" title="繁育而生">子</span>}
+                  </div>
+                  <button
+                    className="mini-btn"
+                    disabled={busy || evo >= MAX_EVO || !canEvoBal}
+                    onClick={(e) => { e.stopPropagation(); onEvolve(p.id); }}
+                    title={evo >= MAX_EVO ? '已满阶' : `培育进化（烧 ${PET_EVO_COST}）`}
+                  >
+                    {evo >= MAX_EVO ? `★ ${evo} 满阶` : `培育 ↑ ${evo}/${MAX_EVO}`}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {sel.length > 0 && (
+            <div className="breed-bar">
+              <span className="breed-info">双亲 {sel.length}/2</span>
+              <button className="primary" disabled={!canBreed || busy} onClick={() => { onBreed(sel[0], sel[1]); setSel([]); }}>
+                {sel.length < 2 ? '再选一只' : canBreed ? `繁育（烧 ${PET_BREED_COST}）` : `余额不足（需 ${PET_BREED_COST}）`}
+              </button>
+              <button className="ghost-btn" onClick={() => setSel([])}>清空</button>
+            </div>
+          )}
+        </>
       )}
       {status && status !== '就绪' && <p className="panel-status">{busy ? <i className="spin" /> : null}{status}</p>}
       <h3>图鉴 · 基因决定长相</h3>
@@ -1216,7 +1423,7 @@ function MinePanel({ mines }: { mines: MineAsset[] }) {
             <div key={m.id} className={`pet-card rarity-${m.traits.rarity}`}>
               <div className="mine-icon">{m.icon}</div>
               <div className="pet-meta">
-                <span className={`tag tag-${m.traits.rarity}`}>{RARITY_LABEL[m.traits.rarity]}</span>
+                <span className={`tag tag-${mineRevealRarity(m.traits.rarity)}`}>{MINE_RARITY_LABEL[m.traits.rarity]}</span>
                 <strong style={{ fontSize: 12 }}>{m.label}</strong>
               </div>
               <code title={m.id}>{m.type === 'discovery' ? `第 ${m.depth} 层 · 纯度 ${m.traits.purity}` : `材料 ×${m.count}`}</code>
@@ -1237,8 +1444,8 @@ function WalletPanel({ address, name, balance }: { address: string; name: string
   const [err, setErr] = useState('');
   const doImport = () => {
     const r = importPrivateKey(pk);
-    if (r.ok) window.location.reload(); // 全应用以新钱包重载
-    else setErr(r.error ?? '导入失败');
+    if (r) window.location.reload(); // 全应用以新钱包重载
+    else setErr('私钥无效（需 64 位十六进制 hex）');
   };
   return (
     <div className="panel">

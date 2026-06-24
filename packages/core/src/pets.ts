@@ -17,19 +17,53 @@ export const PET_PREFIX = 'PET|';
 export const PETX_PREFIX = 'PETX|';
 /** 孵化花费（烧进虚空的 $V0ID）。整数币。央行会被矿工回补，崽贵一些以体现稀缺与炫耀价值。 */
 export const PET_HATCH_COST = 300;
+/** 繁育花费（烧进虚空）。比孵化便宜：用已有双亲组合而非凭空造，奖励"养崽"。 */
+export const PET_BREED_COST = 200;
+/** 进化/培育每阶花费（烧进虚空，扁平价）。 */
+export const PET_EVO_COST = 80;
+/** 进化阶数上限。 */
+export const MAX_EVO = 3;
+/** 繁育 memo：`PETBREED|<父崽id>|<母崽id>`（双亲须当前都属发起者）。子崽 id = 该交易 txid。 */
+export const PETBREED_PREFIX = 'PETBREED|';
+/** 进化 memo：`PETEVO|<崽id>`（崽须属发起者；每次 +1 阶至 MAX_EVO）。 */
+export const PETEVO_PREFIX = 'PETEVO|';
 
 export interface Pet {
-  id: string; // 孵化交易 txid（全网唯一）
-  gene: string; // 64-hex 基因 = hash(出生时主人地址 + 孵化txid)
+  id: string; // 孵化/繁育交易 txid（全网唯一）
+  gene: string; // 64-hex 基因 = hash(出生主人 + txid)（野生）或 breedGene(双亲)（繁育）
   owner: string; // 当前主人地址（随 PETX 流转）
-  minter: string; // 最初孵化者（基因里钉死的出生主人，永不变）
+  minter: string; // 最初铸造者（基因里钉死的出生主人，永不变）
   birthHeight: number; // 出生区块高度
   birthTs: number; // 出生时间戳
+  parents?: [string, string]; // 繁育而生时的双亲崽 id（野生崽无此字段）
+  evo?: number; // 进化阶数（0 起，至 MAX_EVO）；仅加视觉光环，不改基因长相
 }
 
 /** 崽基因：确定性、唯一、不可伪造。主人地址并入 → 即便（理论上）txid 撞车也因地址不同而基因不同。 */
 export function petGene(minter: string, mintTxid: string): string {
   return sha256Hex(minter + '|' + mintTxid);
+}
+
+/**
+ * 繁育子崽的基因：确定性、跨端逐字节一致、稀有度不可伪造 + 可见遗传。
+ * - byte0(体型)/byte1(主色相) 取自掺了**出块后区块 hash** 的 seed → 稀有度(前导 0 比特，主要看 byte0/byte1)
+ *   事前不可预测、选不出 → 杜绝"选种刷传说"。
+ * - byte2-6(腹色/眼/花纹/配饰) 按 seed 的选择位从双亲各取 → 子崽"有妈的眼睛、爸的花纹"，可见遗传。
+ * - byte7-31 填 seed（不入 petTraits，只可能把传说推得更前导 0，仍是传说，不影响档位边界）。
+ * 任意客户端照同一步骤得**逐字节同一子基因**（同 CLIENT-PROTOCOL / redpacket 的确定性纪律）。
+ */
+export function breedGene(geneA: string, geneB: string, blockHash: string, txid: string): string {
+  const seed = sha256Hex(geneA + '|' + geneB + '|' + blockHash + '|' + txid);
+  const child: number[] = new Array(32);
+  child[0] = geneByte(seed, 0); // 体型 + 稀有度档（不可预测）
+  child[1] = geneByte(seed, 1); // 主色相 + 传说档（不可预测）
+  const sel = geneByte(seed, 7); // 选择位：每个继承字节随父/母
+  for (let i = 2; i <= 6; i++) {
+    const fromA = ((sel >> (i - 2)) & 1) === 1;
+    child[i] = geneByte(fromA ? geneA : geneB, i);
+  }
+  for (let i = 7; i < 32; i++) child[i] = geneByte(seed, i);
+  return child.map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -95,6 +129,21 @@ export function makePetTransfer(petId: string): { ok: boolean; memo?: string; er
   return { ok: true, memo };
 }
 
+/** 校验繁育入参（双亲 id 须 64-hex、不可同一只）。归属/烧费校验在 parsePets 层。 */
+export function makePetBreed(parentA: string, parentB: string): { ok: boolean; memo?: string; error?: string } {
+  if (!/^[0-9a-f]{64}$/.test(parentA) || !/^[0-9a-f]{64}$/.test(parentB)) return { ok: false, error: '崽 id 必须是 64 位十六进制' };
+  if (parentA === parentB) return { ok: false, error: '需要两只不同的崽' };
+  const memo = `${PETBREED_PREFIX}${parentA}|${parentB}`;
+  if ([...memo].length > MAX_MEMO) return { ok: false, error: 'memo 过长' };
+  return { ok: true, memo };
+}
+
+/** 校验进化入参（崽 id 须 64-hex）。归属/阶数/烧费校验在 parsePets 层。 */
+export function makePetEvolve(petId: string): { ok: boolean; memo?: string; error?: string } {
+  if (!/^[0-9a-f]{64}$/.test(petId)) return { ok: false, error: '崽 id 必须是 64 位十六进制' };
+  return { ok: true, memo: `${PETEVO_PREFIX}${petId}` };
+}
+
 /**
  * 扫整条链还原所有崽与其归属。规则：
  * - 孵化：memo 恰为 `PET|`、且 from === to（自转，防止把别人的付款误判成孵化）、且 burn > 0（确实烧了孵化费）。
@@ -119,10 +168,39 @@ export function parsePets(chain: Block[]): Pet[] {
           birthHeight: b.index,
           birthTs: tx.timestamp,
         });
+      } else if (m.startsWith(PETBREED_PREFIX)) {
+        // 繁育：自转 + 精确烧 PET_BREED_COST。双亲须存在且当前都属发起者。子崽 id = txid，基因 = breedGene(双亲,区块hash,txid)。
+        if (tx.from !== tx.to || (tx.burn ?? 0) !== PET_BREED_COST) continue;
+        const parts = m.slice(PETBREED_PREFIX.length).split('|');
+        if (parts.length !== 2) continue;
+        const [aId, bId] = parts;
+        if (aId === bId) continue;
+        const pa = pets.get(aId);
+        const pb = pets.get(bId);
+        if (!pa || !pb || pa.owner !== tx.from || pb.owner !== tx.from) continue; // 双亲须都属发起者
+        pets.set(tx.txid, {
+          id: tx.txid,
+          gene: breedGene(pa.gene, pb.gene, b.hash, tx.txid),
+          owner: tx.from,
+          minter: tx.from,
+          birthHeight: b.index,
+          birthTs: tx.timestamp,
+          parents: [aId, bId],
+          evo: 0,
+        });
+      } else if (m.startsWith(PETEVO_PREFIX)) {
+        // 进化：自转 + 精确烧 PET_EVO_COST。崽须属发起者且未满阶。+1 阶（仅视觉光环，不改基因）。
+        if (tx.from !== tx.to || (tx.burn ?? 0) !== PET_EVO_COST) continue;
+        const id = m.slice(PETEVO_PREFIX.length);
+        const pet = pets.get(id);
+        if (!pet || pet.owner !== tx.from) continue;
+        const cur = pet.evo ?? 0;
+        if (cur >= MAX_EVO) continue;
+        pet.evo = cur + 1;
       } else if (m.startsWith(PETX_PREFIX)) {
         const id = m.slice(PETX_PREFIX.length);
         const pet = pets.get(id);
-        // 只有当前主人能转；接收方须是合法地址（杜绝把崽转进非法/空地址而“烧没”）。
+        // 只有当前主人能转；接收方须是合法地址（杜绝把崽转进非法/空地址而”烧没”）。
         if (pet && tx.from === pet.owner && isValidAddress(tx.to) && tx.to !== tx.from) {
           pet.owner = tx.to;
         }

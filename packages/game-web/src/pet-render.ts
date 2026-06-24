@@ -124,8 +124,14 @@ function paint(ctx: CanvasRenderingContext2D, t: PetTraits) {
   }
 }
 
-/** 把某基因的崽画到 canvas 上（size = 展示边长，像素风）。 */
-export function renderPet(canvas: HTMLCanvasElement, gene: string, size = 128): void {
+/** 进化阶光环色（阶越高越亮：1 蓝紫 / 2 紫 / 3 金）。仅视觉，不改基因长相。 */
+const EVO_COLOR = ['#8b6dff', '#b66bff', '#ffce3d'];
+
+/**
+ * 把某基因的崽画到 canvas 上（size = 展示边长，像素风）。
+ * evo（进化阶 0~3）只叠加光环 + 顶部阶星 pip，不动 32×32 主体几何 → 同基因同长相（PRD 6.5）。
+ */
+export function renderPet(canvas: HTMLCanvasElement, gene: string, size = 128, evo = 0): void {
   const t = petTraits(gene);
   const off = document.createElement('canvas');
   off.width = off.height = SHEET;
@@ -135,6 +141,19 @@ export function renderPet(canvas: HTMLCanvasElement, gene: string, size = 128): 
   const ctx = canvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, size, size);
+
+  // 进化外环光晕（在主体之下，按阶加亮）
+  if (evo > 0) {
+    ctx.save();
+    ctx.strokeStyle = EVO_COLOR[Math.min(evo, 3) - 1];
+    ctx.globalAlpha = 0.4 + Math.min(evo, 3) * 0.08;
+    ctx.lineWidth = Math.max(1, size * 0.014);
+    ctx.beginPath();
+    ctx.arc(size / 2, size * 0.58, size * 0.43, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   const glow = RARITY_GLOW[t.rarity];
   if (glow) {
     ctx.save();
@@ -143,6 +162,18 @@ export function renderPet(canvas: HTMLCanvasElement, gene: string, size = 128): 
   }
   ctx.drawImage(off, 0, 0, SHEET, SHEET, 0, 0, size, size);
   if (glow) ctx.restore();
+
+  // 顶部阶星 pip（数量=evo，颜色按阶），清晰的"已培育"等级指示
+  if (evo > 0) {
+    const n = Math.min(evo, 3);
+    ctx.fillStyle = EVO_COLOR[n - 1];
+    const pip = Math.max(2, Math.round(size * 0.055));
+    const gap = pip + Math.round(size * 0.035);
+    const startX = size / 2 - ((n - 1) * gap) / 2;
+    for (let i = 0; i < n; i++) {
+      ctx.fillRect(Math.round(startX + i * gap - pip / 2), Math.round(size * 0.04), pip, pip);
+    }
+  }
 }
 
 export { petTraits };

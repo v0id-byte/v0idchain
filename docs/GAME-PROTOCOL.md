@@ -97,8 +97,13 @@ memo 放不下整间房，故：
 ### 4.1 链上约定（`@v0idchain/core` 的 `pets.ts`，纯 memo、不改共识）
 - **孵化**：自转 + 烧 `PET_HATCH_COST` 个 `$V0ID`（进虚空）+ memo `PET|`。崽 id = 该交易 txid。
 - **送崽/转移**：转 ≥1 币给对方 + memo `PETX|<崽id>`。仅“当前主人”发起有效，归属随链序流转。
-- **基因** `gene = sha256(主人地址 + '|' + 孵化txid)`：确定性、唯一、不可伪造。
-- 归属/基因由 `parsePets(chain)` 还原 —— 全网一致、reorg 安全。
+- **繁育**：自转 + 烧 `PET_BREED_COST` + memo `PETBREED|<父崽id>|<母崽id>`（双亲须当前都属发起者，且为两只不同的崽）。子崽 id = 该交易 txid；子基因 = `breedGene(父基因, 母基因, 出块区块hash, txid)`，并记录 `parents=[父,母]` lineage。
+- **进化/培育**：自转 + 烧 `PET_EVO_COST` + memo `PETEVO|<崽id>`（崽须属发起者，每次 +1 阶至 `MAX_EVO`）。
+- **基因** `gene = sha256(主人地址 + '|' + 孵化txid)`（野生）或 `breedGene(...)`（繁育）：确定性、唯一、不可伪造。
+- 归属/基因/进化阶由 `parsePets(chain)` 还原 —— 全网一致、reorg 安全。`PETBREED|`/`PETEVO|` 同 `PET|` 一样被 `isProtocolMemo` 排除，不入私信收件箱。
+
+> **繁育的不可伪造稀有度 + 可见遗传（`breedGene` 权威步骤，跨实现逐字节一致）**：先 `seed = sha256(geneA|geneB|出块区块hash|txid)`。子基因 32 字节：`byte0`(体型)/`byte1`(主色相) 取自 `seed` → 稀有度（前导 0 比特，主看 byte0/byte1）**事前不可预测、选种刷不出传说**；`byte2..6`(腹色/眼/花纹/配饰) 按 `seed[7]` 的选择位从双亲各取 → **可见遗传**（“有妈的眼睛、爸的花纹”）；`byte7..31` 填 `seed`（不入 `petTraits`，只可能把传说推得更前导 0，仍是传说，不动档位边界）。
+> **进化**：`evo`（0~`MAX_EVO`）仅在 `renderPet` 叠加外环光环 + 顶部阶星 pip，**不改 32×32 主体几何** → 不影响“同基因同长相”。
 
 ### 4.2 基因 → 外观（`petTraits(gene)`，core 提供，全客户端共用 ⇒ 同基因处处同长相）
 
@@ -133,6 +138,8 @@ memo 放不下整间房，故：
 | 参数 | 位置 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `PET_HATCH_COST` | `core/pets.ts` | 300 | 孵崽烧币额。崽贵以体现稀缺/炫耀价值。 |
+| `PET_BREED_COST` | `core/pets.ts` | 200 | 繁育子崽烧币额。比孵化便宜：用已有双亲组合，奖励“养崽”。 |
+| `PET_EVO_COST / MAX_EVO` | `core/pets.ts` | 80 / 3 | 进化每阶烧币额（扁平）/ 阶数上限。仅加视觉光环，不改基因。 |
 | `FISH_BURN` | `core/fishing.ts` | 2 | 铸渔获藏品烧币额。很小：高频娱乐，瞎钓不上链、想收藏才烧。 |
 | `LAND_BASE / LAND_K / LAND_QUAD_DEN / LAND_VELOCITY_NUM / LAND_VELOCITY_WINDOW` | `core/farm.ts` | 200 / 50 / 2500 / 1 / 720 | 买地动态地价 **全整数** bonding curve 参数（权威公式 + golden 向量见 §7.3）；烧进虚空。 |
 | `ZONE_COST` | `core/farm.ts` | 100 | 建一个功能区块（田地）烧币额。 |

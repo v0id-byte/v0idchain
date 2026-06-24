@@ -104,6 +104,7 @@ export function FarmActionModal({
   farm,
   wallet,
   balance,
+  onCropReveal,
   onDone,
   onClose,
 }: {
@@ -111,6 +112,7 @@ export function FarmActionModal({
   farm: FarmView | null;
   wallet: Wallet;
   balance: number | null;
+  onCropReveal: (plantId: string) => Promise<boolean>;
   onDone: () => void;
   onClose: () => void;
 }) {
@@ -157,6 +159,12 @@ export function FarmActionModal({
 
   const submit = useCallback(async () => {
     if (busy || !canAfford) return;
+    // 收获 → 走 App 的统一揭晓仪式（铸造 + 揭晓 + 刷新由 App 接管）；本浮层即时关闭，避免与揭晓层叠加。
+    if (action.kind === 'crop') {
+      onCropReveal(action.plantId ?? '');
+      onClose();
+      return;
+    }
     // H2 前置校验：同格并发种植/收获是「链序首胜、败者烧费不退」（见 GAME-PROTOCOL §7.8）。
     // 提交前用最新 farm 快照再判一次该格是否已被占用，挡掉「两标签页 / 快照未刷新就重复点」的自撞——
     // 不能根治（快照可能滞后链状态），但能显著降低白烧概率。
@@ -182,7 +190,7 @@ export function FarmActionModal({
     } finally {
       setBusy(false);
     }
-  }, [busy, canAfford, wallet, crop, action, onDone, onClose]);
+  }, [busy, canAfford, wallet, crop, action, onCropReveal, onDone, onClose]);
 
   const title =
     action.kind === 'buy' ? '开垦新地块'

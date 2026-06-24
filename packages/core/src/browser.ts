@@ -15,5 +15,5 @@ export * from './redpacket.js';
 export * from './pets.js';
 export * from './fishing.js';
 export * from './farm.js';
-export * from './mining.js';
+export * from './mine.js';
 export * from './feed.js';

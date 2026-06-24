@@ -27,9 +27,9 @@ export function exportPrivateKey(): string {
  * 导入已有钱包：校验私钥 hex（容忍 0x 前缀/大小写/空白），通过则覆盖当前钱包并返回地址。
  * 调用方负责 location.reload() 让全应用以新钱包重载。换钱包会重置 faucet 领取标记。
  */
-export function importPrivateKey(input: string): { ok: boolean; address?: string; error?: string } {
+export function importPrivateKey(input: string): { address: string } | null {
   const t = input.trim();
-  if (!t) return { ok: false, error: '请粘贴私钥' };
+  if (!t) return null;
   const bare = t.replace(/^0x/i, '');
   let w: Wallet | null = null;
   for (const cand of [t, bare, '0x' + bare]) {
@@ -40,10 +40,10 @@ export function importPrivateKey(input: string): { ok: boolean; address?: string
       /* 试下一种格式 */
     }
   }
-  if (!w) return { ok: false, error: '私钥无效（应为 64 位十六进制）' };
+  if (!w) return null;
   localStorage.setItem(KEY, w.toJSON().privateKey);
   localStorage.removeItem('v0idchain.game.faucet.claimed'); // 换钱包 → 重置 faucet 标记
-  return { ok: true, address: w.address };
+  return { address: w.address };
 }
 
 export function shortAddr(addr: string): string {

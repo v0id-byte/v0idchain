@@ -68,7 +68,7 @@ function paint(fn: (x: number, y: number) => RGB): [HTMLCanvasElement, CanvasRen
 }
 
 // —— 各地面(cozy 限定色板) ——
-const GRASS = { mid: [104, 150, 72] as RGB, light: [124, 168, 92] as RGB, dark: [82, 124, 58] as RGB, hi: [146, 186, 110] as RGB };
+const GRASS = { mid: [110, 158, 66] as RGB, light: [134, 178, 82] as RGB, dark: [86, 128, 48] as RGB, hi: [158, 200, 96] as RGB };
 function genGrass(): HTMLCanvasElement {
   const noise = tileNoise(TEX);
   const [cv, ctx] = paint((x, y) => {
@@ -79,21 +79,24 @@ function genGrass(): HTMLCanvasElement {
   for (let y = 0; y < N; y++)
     for (let x = 0; x < N; x++) {
       const r = hash(x * 3 + 1, y * 5 + 2);
+      const r2 = hash(x * 11 + 7, y * 13 + 2);
       if (r < 0.018) { ctx.fillStyle = css(GRASS.dark); ctx.fillRect(x, y, 1, 2); } // 草叶(暗)
       else if (r > 0.992) { ctx.fillStyle = css(GRASS.hi); ctx.fillRect(x, y, 1, 2); } // 草叶(亮)
-      else if (r > 0.988) { ctx.fillStyle = '#e8d24a'; ctx.fillRect(x, y, 1, 1); } // 偶有小花
+      else if (r > 0.986) { ctx.fillStyle = r > 0.989 ? '#e8d24a' : '#e8a0a0'; ctx.fillRect(x, y, 1, 1); } // 花（黄/粉）
+      else if (r2 < 0.005) { ctx.fillStyle = '#c8ba98'; ctx.fillRect(x, y, 2, 1); } // 小石子
     }
   return cv;
 }
 
-const DIRT = { mid: [138, 100, 60] as RGB, light: [156, 118, 74] as RGB, dark: [112, 80, 50] as RGB };
+const DIRT = { mid: [152, 110, 62] as RGB, light: [172, 128, 72] as RGB, dark: [120, 88, 50] as RGB };
 function genDirt(): HTMLCanvasElement {
   const noise = tileNoise(TEX * 2);
   const [cv, ctx] = paint((x, y) => (noise((x / ART) * 2, (y / ART) * 2) + bayer(x, y) - 0.5 > 0.55 ? DIRT.light : DIRT.mid));
   for (let y = 0; y < N; y++)
     for (let x = 0; x < N; x++) {
       const r = hash(x * 7, y * 3 + 5);
-      if (r < 0.02) { ctx.fillStyle = css(hash(x, y) > 0.5 ? DIRT.dark : [176, 144, 102]); ctx.fillRect(x, y, 1, 1); }
+      if (r < 0.015) { ctx.fillStyle = css(hash(x, y) > 0.5 ? DIRT.dark : [188, 154, 102]); ctx.fillRect(x, y, 1, 1); }
+      else if (r < 0.022) { ctx.fillStyle = css(DIRT.dark); ctx.fillRect(x, y, 2, 1); } // 有机划痕
     }
   return cv;
 }
@@ -117,11 +120,11 @@ function genWater(): HTMLCanvasElement {
 }
 
 // 鹅卵石(中世纪街):硬边石块,~3/格,限灰阶 + 1px 缝/高光/暗边。
-const COBBLE: RGB[] = [[150, 148, 140], [128, 126, 118], [166, 164, 156]];
+const COBBLE: RGB[] = [[158, 150, 134], [134, 126, 110], [174, 166, 148]];
 function genCobble(): HTMLCanvasElement {
   const [cv, ctx] = mk();
-  ctx.fillStyle = '#4f4b44';
-  ctx.fillRect(0, 0, N, N); // 缝底
+  ctx.fillStyle = '#484038';
+  ctx.fillRect(0, 0, N, N); // 缝底（暖棕色）
   const sz = 6;
   let row = 0;
   for (let y = 0; y < N; y += sz, row++) {
@@ -133,21 +136,21 @@ function genCobble(): HTMLCanvasElement {
       const jy = Math.floor((hash(x, row) - 0.5) * 2);
       ctx.fillStyle = css(col);
       ctx.fillRect(sx + 1 + jx, y + 1 + jy, sz - 2, sz - 2);
-      ctx.fillStyle = css(shift(col, 18));
-      ctx.fillRect(sx + 1 + jx, y + 1 + jy, sz - 2, 1); // 顶高光
-      ctx.fillStyle = css(shift(col, -24));
-      ctx.fillRect(sx + 1 + jx, y + sz - 2 + jy, sz - 2, 1); // 底暗
+      ctx.fillStyle = css(shift(col, 24));
+      ctx.fillRect(sx + 1 + jx, y + 1 + jy, sz - 2, 1); // 顶高光（加强）
+      ctx.fillStyle = css(shift(col, -32));
+      ctx.fillRect(sx + 1 + jx, y + sz - 2 + jy, sz - 2, 1); // 底暗（加强）
     }
   }
   return cv;
 }
 
 // 石板广场:限灰阶抖动底 + 错缝大方石缝(1px 暗线)。
-const FLAG: RGB[] = [[166, 166, 172], [152, 152, 158]];
+const FLAG: RGB[] = [[170, 162, 148], [156, 148, 134]];
 function genStone(): HTMLCanvasElement {
   const noise = tileNoise(TEX * 2);
   const [cv, ctx] = paint((x, y) => (noise((x / ART) * 2, (y / ART) * 2) + bayer(x, y) - 0.5 > 0.5 ? FLAG[0] : FLAG[1]));
-  ctx.fillStyle = 'rgba(92,92,100,0.7)';
+  ctx.fillStyle = 'rgba(86,76,62,0.65)';
   for (let y = 0; y <= N; y += ART) ctx.fillRect(0, y, N, 1); // 横缝
   let r = 0;
   for (let y = 0; y < N; y += ART, r++) {
