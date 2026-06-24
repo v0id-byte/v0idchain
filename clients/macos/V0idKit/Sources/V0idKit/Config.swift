@@ -12,6 +12,12 @@ public enum Config {
     /// 最低手续费（gas）：每笔普通转账 / 消息必须 ≥ 此值，付给打包矿工。
     public static let minFee = 1
 
+    /// 比例手续费率（基点，10000 bps = 100%）：普通转账在 minFee 保底之上还需 ≥ floor(amount × bps / 10000)。
+    public static let feeRateBps = 10
+    /// 某笔转账所需最低手续费（整数）：max(minFee, floor(amount × feeRateBps / 10000))。对应 core 的 minFeeFor。
+    /// 挖矿选包据此剔除手续费不达标的交易（否则打进块会被全网 validateChain 判“手续费过低”而拒块）。
+    public static func minFeeFor(_ amount: Int) -> Int { max(minFee, (amount * feeRateBps) / 10_000) }
+
     /// 链上消息默认销毁额（$V0ID）：发一条消息默认烧这么多进虚空。
     public static let messageBurn = 5
 
@@ -24,6 +30,22 @@ public enum Config {
 
     /// 出块奖励（coinbase 新币）。矿工实得 = 奖励 + 本块手续费。
     public static let blockReward = 1
+
+    // ---- PoW 挖矿（自适应难度）—— 必须与 packages/core/src/config.ts 完全一致 ----
+    /// 创世难度：区块 hash 须有 ≥ 此值个前导 0 比特。
+    public static let genesisDifficulty = 16
+    /// 难度下限（地板）：算力骤降时难度一路降到这里，避免链卡死。
+    public static let minDifficulty = 8
+    /// 难度上限（物理天花板，hash 共 256 bit）。
+    public static let maxDifficulty = 255
+    /// 目标出块时间（毫秒）。每 retargetInterval 块按实际耗时重定向一次难度。
+    public static let targetBlockTimeMs = 8_000
+    /// 难度重定向间隔（块数）。
+    public static let retargetInterval = 8
+    /// 区块时间戳允许领先本地时钟的上限（毫秒）：本机出块绝不超此领先量，免被全网判「来自未来」。
+    public static let maxFutureDriftMs = 120_000
+    /// 单块最多打包多少笔普通交易（矿工侧打包策略，非共识强校验）。
+    public static let maxBlockTxs = 50
 
     // ---- 链上昵称（NAME| 自转 memo，先到先得；纯约定，不改共识）----
     public static let namePrefix = "NAME|"

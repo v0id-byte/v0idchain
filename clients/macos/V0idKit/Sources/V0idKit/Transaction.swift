@@ -76,6 +76,19 @@ public enum TxBuilder {
                            burn: burn, signature: sig, txid: id)
     }
 
+    /// coinbase：每个区块第一笔，矿工收入 = 出块奖励 + 本块手续费总额（fees）。无签名、自身不付费。
+    /// 预映像必须与 packages/core 的 createCoinbase 一致：from = 空地址、fee = 0、nonce = blockIndex、
+    /// memo = ""、无 burn。节点 validateChain 会用 verifyTransaction 重算 txid 核对，逐字节不能差。
+    public static func coinbase(minerAddress: String, blockIndex: Int, fees: Int = 0,
+                                timestamp: Int = nowMillis()) -> Transaction {
+        let amount = Config.blockReward + fees
+        let id = txid(from: Config.nullAddress, to: minerAddress, amount: amount, fee: 0,
+                      nonce: blockIndex, timestamp: timestamp, memo: "", burn: nil)
+        return Transaction(from: Config.nullAddress, to: minerAddress, amount: amount, fee: 0,
+                           nonce: blockIndex, timestamp: timestamp, memo: "",
+                           burn: nil, signature: "", txid: id)
+    }
+
     public static func nowMillis() -> Int { Int(Date().timeIntervalSince1970 * 1000) }
 }
 

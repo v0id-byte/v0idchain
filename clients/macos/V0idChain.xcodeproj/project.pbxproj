@@ -17,6 +17,7 @@
 		ADB9F5A7051238F8DB066B03 /* RedPacketsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E625B6A48648580F716A0F6 /* RedPacketsView.swift */; };
 		AED0CAB32E526CE8A6AC7934 /* V0idChainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 284F79F6E64D9C04DBE2D446 /* V0idChainApp.swift */; };
 		B1E4E70282F45B79F6901468 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 773FCD25CE78262B15335250 /* Components.swift */; };
+		BC95CD721829847FD1217A44 /* MineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C08D888DF80992859042CEFD /* MineView.swift */; };
 		CC37F5614DEC587C8999AC6B /* WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75BE38B04FB09F0CD84C6A17 /* WalletView.swift */; };
 		D5D5C12A32DCDC49E772525D /* MarketplaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA45693D2B876A758A89838E /* MarketplaceView.swift */; };
 		E59C3E044F115250B7990CFB /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */; };
@@ -36,6 +37,7 @@
 		A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
 		A923C49BD5A8D723534070F5 /* ExplorerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExplorerView.swift; sourceTree = "<group>"; };
 		BA45693D2B876A758A89838E /* MarketplaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarketplaceView.swift; sourceTree = "<group>"; };
+		C08D888DF80992859042CEFD /* MineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MineView.swift; sourceTree = "<group>"; };
 		C3C325F1287312761C28DA4D /* V0idKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = V0idKit; path = V0idKit; sourceTree = SOURCE_ROOT; };
 		E575DAC7C44F4BBA0EBD9CA2 /* SendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendView.swift; sourceTree = "<group>"; };
 		FE82343164D2A3070F7684B8 /* MessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesView.swift; sourceTree = "<group>"; };
@@ -97,6 +99,7 @@
 				A67E78FFF34E9FA181A8F6C3 /* Keychain.swift */,
 				BA45693D2B876A758A89838E /* MarketplaceView.swift */,
 				FE82343164D2A3070F7684B8 /* MessagesView.swift */,
+				C08D888DF80992859042CEFD /* MineView.swift */,
 				2E625B6A48648580F716A0F6 /* RedPacketsView.swift */,
 				E575DAC7C44F4BBA0EBD9CA2 /* SendView.swift */,
 				9751B02A5201766AC2FC36EC /* SettingsView.swift */,
@@ -196,6 +199,7 @@
 				E59C3E044F115250B7990CFB /* Keychain.swift in Sources */,
 				D5D5C12A32DCDC49E772525D /* MarketplaceView.swift in Sources */,
 				7DA00DF492E9C26097F2D9D5 /* MessagesView.swift in Sources */,
+				BC95CD721829847FD1217A44 /* MineView.swift in Sources */,
 				ADB9F5A7051238F8DB066B03 /* RedPacketsView.swift in Sources */,
 				1E9AA160F610D3B346F2A347 /* SendView.swift in Sources */,
 				0E4D2D682457C73571412E93 /* SettingsView.swift in Sources */,
@@ -332,7 +336,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -342,7 +346,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.1.3;
+				MARKETING_VERSION = 0.1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.v0idchain.macos;
 				PRODUCT_NAME = V0idChain;
 				SDKROOT = macosx;
@@ -356,7 +360,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -366,7 +370,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.1.3;
+				MARKETING_VERSION = 0.1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.v0idchain.macos;
 				PRODUCT_NAME = V0idChain;
 				SDKROOT = macosx;

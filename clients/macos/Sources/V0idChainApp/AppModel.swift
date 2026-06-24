@@ -25,6 +25,16 @@ final class AppModel: ObservableObject {
     /// 已广播但尚未上链的本地交易（用于算下一笔 nonce、做乐观 UI）。
     @Published private(set) var pending: [V0idKit.Transaction] = []
 
+    // ---- 挖矿（本机 solo PoW）----
+    @Published private(set) var mineState: MineState = .idle
+    @Published private(set) var hashRate: Double = 0        // 估算算力（H/s），仅挖矿中有意义
+    @Published private(set) var currentAttempts: Int = 0    // 当前这块已试 nonce 数
+    @Published private(set) var blocksFoundSession = 0      // 本次会话本机挖到并广播的块数（乐观，可能含被重组掉的孤块）
+    @Published private(set) var nodeMempool: [V0idKit.Transaction] = []  // 节点广播来的待打包交易（供选包）
+    @Published private(set) var lastBlockTxCount = 0        // 上一个挖到的块里打包的普通交易数
+    private var mineWanted = false                          // 用户意图：是否在挖（开关状态）
+    private var mineAttempt: Task<Void, Never>?             // 当前挖矿/等待任务（每条同一时刻只有一个）
+
     private var client: NodeClient?
     private var eventTask: Task<Void, Never>?
 
@@ -41,6 +51,28 @@ final class AppModel: ObservableObject {
     }
     var burned: Int { state.burned }
     var isConnected: Bool { peerCount > 0 }
+
+    // ---- 挖矿派生状态 ----
+    /// 开关是否打开（含「想挖但还没连上」的等待态）。
+    var miningEnabled: Bool { mineWanted }
+    /// 下一块要求的难度（前导 0 比特数），供展示。
+    var nextDifficulty: Int { chain.isEmpty ? Config.genesisDifficulty : Mining.nextDifficulty(chain) }
+    /// 本机地址在**已同步链**里收到的 coinbase 块数 = 已确认出块（输掉竞争被重组的孤块自然不计，数字永远诚实）。
+    var minedBlocksConfirmed: Int {
+        guard let me = address else { return 0 }
+        return chain.reduce(0) { acc, b in
+            guard b.index > 0, let cb = b.transactions.first, cb.isCoinbase, cb.to == me else { return acc }
+            return acc + 1
+        }
+    }
+    /// 已确认出块累计奖励（出块奖励 + 打包的手续费），从链上 coinbase 金额累加。
+    var minedRewardConfirmed: Int {
+        guard let me = address else { return 0 }
+        return chain.reduce(0) { acc, b in
+            guard b.index > 0, let cb = b.transactions.first, cb.isCoinbase, cb.to == me else { return acc }
+            return acc + cb.amount
+        }
+    }
 
     // ---- 派生展示状态（链/钱包变化时 recomputeDerived 刷新，避免每帧重扫整链）----
     @Published private(set) var names = NameRegistry()
@@ -91,6 +123,7 @@ final class AppModel: ObservableObject {
     }
 
     func forgetWallet() {
+        stopMining()   // 没钱包无法挖矿 → 先停
         Keychain.deletePrivateKey()
         wallet = nil
         pending = []
@@ -117,6 +150,7 @@ final class AppModel: ObservableObject {
         let old = client
         Task { await old?.stop() }
         peerCount = 0
+        if mineWanted { mineAttempt?.cancel() }  // 旧地址的活作废；重连后用新地址在新链顶重挖
         recomputeDerived()   // 钱包变了 → 立即用新地址刷新解密 / 显示名 / 收发件箱
         startClient()
     }
@@ -126,6 +160,9 @@ final class AppModel: ObservableObject {
         case .peers(let n):
             peerCount = n
             if n > 0 { connectionError = nil }   // 连上了 → 清除持久连接错误
+            if mineWanted, mineState == .waiting, n > 0 { restartMining() }  // 刚连上 → 立刻开挖（不等轮询）
+        case .mempool(let txs):
+            nodeMempool = txs   // 下一块组模板时纳入选包
         case .error(let msg):
             if peerCount == 0 {
                 connectionError = msg   // 还没连上 → 持久显示，不走会消失的 toast
@@ -139,6 +176,8 @@ final class AppModel: ObservableObject {
             let onChain = Set(blocks.flatMap { $0.transactions.map { $0.txid } })
             pending.removeAll { onChain.contains($0.txid) }
             recomputeDerived()
+            // 链顶变了 → 放弃当前这块陈旧的活；被取消的任务在 completion 里会自动到新链顶重挖。
+            if mineWanted { mineAttempt?.cancel() }
         }
     }
 
@@ -290,6 +329,91 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ---- 挖矿（本机 solo PoW）----
+    // 开关 → 门控（有钱包 + 已连上 + 已同步到链）→ 组块（coinbase 空块）→ 后台搜 nonce →
+    // 找到即乐观接链 + 广播；新链顶到达就放弃这块、到新顶重挖。奖励数字以同步链为准（抗重组）。
+
+    func toggleMining() { mineWanted ? stopMining() : startMining() }
+
+    func startMining() {
+        guard wallet != nil else { lastError = "请先创建或登录钱包再挖矿"; return }
+        guard !mineWanted else { return }
+        mineWanted = true
+        blocksFoundSession = 0
+        restartMining()
+    }
+
+    func stopMining() {
+        mineWanted = false
+        mineAttempt?.cancel()
+        mineAttempt = nil
+        mineState = .idle
+        hashRate = 0
+        currentAttempts = 0
+    }
+
+    /// 唯一的「(重新)开挖」入口：先取消上一个任务，再按当前状态开一个新任务（搜 nonce 或等待）。
+    /// 主线程同步执行（cancel→赋值之间无 await）→ 任一时刻最多一个活跃挖矿任务。
+    private func restartMining() {
+        mineAttempt?.cancel()
+        guard mineWanted else { mineState = .idle; hashRate = 0; currentAttempts = 0; return }
+        guard let miner = address, isConnected, !chain.isEmpty else {
+            // 没钱包 / 没连上 / 还没同步到链 → 等一会再看（连上会被 .peers 事件提前唤醒）。
+            mineState = .waiting; hashRate = 0; currentAttempts = 0
+            mineAttempt = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await self?.restartMining()
+            }
+            return
+        }
+        mineState = .mining
+        currentAttempts = 0
+        let snapshot = chain
+        let startHeight = snapshot.count            // 我们出的块 index = startHeight
+        // 选包：节点广播来的 mempool + 本机已广播待打包交易（去重）；selectTxs 按链顶状态精确过滤、跳过红包交易。
+        var pool = nodeMempool
+        let known = Set(pool.map { $0.txid })
+        pool.append(contentsOf: pending.filter { !known.contains($0.txid) })
+        let extraTxs = Mining.selectTxs(chain: snapshot, mempool: pool)
+        let template = Mining.buildTemplate(chain: snapshot, miner: miner, extraTxs: extraTxs)
+        mineAttempt = Task.detached(priority: .utility) { [weak self] in
+            let startedNs = DispatchTime.now().uptimeNanoseconds
+            let throttle = Throttle()
+            let found = await Mining.search(template: template, onBatch: { attempts in
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now &- throttle.lastNs > 300_000_000 else { return }   // UI 最多 ~3 次/秒
+                throttle.lastNs = now
+                let elapsed = Double(now &- startedNs) / 1e9
+                let rate = elapsed > 0 ? Double(attempts) / elapsed : 0
+                Task { @MainActor [weak self] in
+                    guard let self, self.mineState == .mining else { return }
+                    self.currentAttempts = attempts
+                    self.hashRate = rate
+                }
+            })
+            await MainActor.run { [weak self] in self?.handleMineResult(found, startHeight: startHeight) }
+        }
+    }
+
+    /// 一个挖矿任务结束：找到块且链顶未变 → 乐观接链 + 广播；随后总在最新链顶继续下一块。
+    private func handleMineResult(_ found: Block?, startHeight: Int) {
+        if let block = found, chain.count == startHeight, chain.last?.hash == block.prevHash {
+            chain.append(block)                         // 乐观接链：节点不会把我的块回声给我，必须自己续顶
+            state = Chain.computeState(chain)
+            let mined = Set(block.transactions.map { $0.txid })
+            pending.removeAll { mined.contains($0.txid) }
+            recomputeDerived()
+            blocksFoundSession += 1
+            lastBlockTxCount = max(0, block.transactions.count - 1)
+            let reward = block.transactions.first?.amount ?? Config.blockReward
+            let txNote = lastBlockTxCount > 0 ? "，打包 \(lastBlockTxCount) 笔交易" : ""
+            lastNotice = "⛏️ 挖到区块 #\(block.index)！已广播全网（奖励 \(reward) \(Config.symbol)\(txNote)）"
+            let c = client
+            Task { try? await c?.broadcastBlock(block) }
+        }
+        restartMining()   // 找到 / 被打断 / 取消 —— 都在最新链顶继续挖
+    }
+
     // ---- 浏览器 ----
     func search(_ q: String) -> SearchResult { Chain.search(chain, q) }
 
@@ -301,6 +425,12 @@ func short(_ s: String) -> String {
     guard s.count > 14 else { return s }
     return String(s.prefix(8)) + "…" + String(s.suffix(6))
 }
+
+/// 挖矿状态：idle=未开/已停；waiting=想挖但还没连上/没钱包/没同步；mining=正在搜 nonce。
+enum MineState: Equatable { case idle, waiting, mining }
+
+/// 跨线程节流计数器（仅在单个挖矿任务线程内读写，@unchecked Sendable 足够）。
+final class Throttle: @unchecked Sendable { var lastNs: UInt64 = 0 }
 
 /// 展示用消息：在 ChainMessage 之上附加“本端解密结果 + 加密/锁定标识”。
 struct DisplayMessage: Identifiable {

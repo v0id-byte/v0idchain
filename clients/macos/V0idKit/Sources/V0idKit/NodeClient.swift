@@ -7,8 +7,9 @@
 import Foundation
 
 public enum NodeEvent: Sendable {
-    case chain([Block])   // 最新整链快照（可算余额）
-    case peers(Int)       // 当前已连接的节点数（0 = 未连接）
+    case chain([Block])          // 最新整链快照（可算余额）
+    case mempool([Transaction])  // 当前待打包交易池快照（供本机挖矿选包）
+    case peers(Int)              // 当前已连接的节点数（0 = 未连接）
     case error(String)
 }
 
@@ -23,6 +24,8 @@ public actor NodeClient {
 
     private var running = false
     private var chain: [Block] = []
+    private var mempool = [String: Transaction]()     // txid → 待打包交易（从节点 TX 广播 / 同步学到）
+    private static let maxMempool = 5_000             // 兜底上限，防恶意节点灌爆内存
     private var known = Set<String>()                 // 已知可连地址（规范化 ws://host:port）
     private var conns = [String: Conn]()              // 当前连接（含在途）
     private var retryAfter = [String: Date]()         // 连不上的地址：此刻之前不重试
@@ -68,6 +71,7 @@ public actor NodeClient {
         maintainTask = nil
         for url in Array(conns.keys) { disconnect(url) }
         chain = []
+        mempool.removeAll()
         lastPeers = -1
     }
 
@@ -76,6 +80,14 @@ public actor NodeClient {
         let live = conns.values.filter { $0.open }
         guard !live.isEmpty else { throw NodeError.notConnected }
         for c in live { Self.rawSend(c.ws, .tx(tx)) }
+    }
+
+    /// 广播一个本机挖出的区块给**所有已建立**的连接（节点 onBlocks 校验后接受续接块并向全网转播）。
+    /// 无可用连接则抛错——块传不出去等于白挖。协议：`{type:"BLOCKS", blocks:[block]}`（不带 from/total）。
+    public func broadcastBlock(_ block: Block) throws {
+        let live = conns.values.filter { $0.open }
+        guard !live.isEmpty else { throw NodeError.notConnected }
+        for c in live { Self.rawSend(c.ws, .blocks([block])) }
     }
 
     /// 当前同步到的链（测试 / 调试）。
@@ -203,16 +215,33 @@ public actor NodeClient {
         case "PEERS":
             guard let payload = try? JSONDecoder().decode(PeersEnvelope.self, from: data) else { return }
             handlePeers(payload.peers)
+        case "TX":
+            guard let payload = try? JSONDecoder().decode(TxEnvelope.self, from: data) else { return }
+            addToMempool(payload.tx)
         default:
             break   // HELLO / QUERY_* 等：叶子节点不回应
         }
+    }
+
+    /// 收一笔节点广播来的待打包交易进本地池（去重、基本自洽过滤、封顶）。选包时还会按链顶状态再校验。
+    private func addToMempool(_ tx: Transaction) {
+        guard mempool[tx.txid] == nil, mempool.count < Self.maxMempool, tx.selfValid() else { return }
+        mempool[tx.txid] = tx
+        continuation.yield(.mempool(Array(mempool.values)))
+    }
+
+    /// 这些区块里的交易已上链 → 移出待打包池（变化才上报）。
+    private func removeMined(_ blocks: [Block]) {
+        var changed = false
+        for b in blocks { for tx in b.transactions where mempool.removeValue(forKey: tx.txid) != nil { changed = true } }
+        if changed { continuation.yield(.mempool(Array(mempool.values))) }
     }
 
     private func handleBlocks(_ blocks: [Block], conn: Conn) {
         guard let first = blocks.first else { return }
         if first.index == 0 {
             // 整链（QUERY_ALL 回应）：更长则采纳（信任所连节点，符合规范 MVP）。
-            if blocks.count > chain.count { chain = blocks; emitChain() }
+            if blocks.count > chain.count { chain = blocks; emitChain(); removeMined(blocks) }
         } else {
             // 增量 / 探测：能干净接到链顶则追加；否则若对方更高 → 只向该节点补拉整链。
             var changed = false
@@ -223,7 +252,7 @@ public actor NodeClient {
                     Self.rawSend(conn.ws, .queryAll); break
                 }
             }
-            if changed { emitChain() }
+            if changed { emitChain(); removeMined(blocks) }
         }
     }
 
@@ -275,6 +304,7 @@ public enum NodeError: Error, LocalizedError {
 private struct TypeEnvelope: Decodable { let type: String }
 private struct BlocksEnvelope: Decodable { let blocks: [Block] }
 private struct PeersEnvelope: Decodable { let peers: [String] }
+private struct TxEnvelope: Decodable { let tx: Transaction }
 
 private enum OutMsg: Encodable {
     case hello(address: String, height: Int, listen: String)
@@ -282,8 +312,9 @@ private enum OutMsg: Encodable {
     case queryLatest
     case queryPeers
     case tx(Transaction)
+    case blocks([Block])
 
-    enum CodingKeys: String, CodingKey { case type, address, height, listen, tx }
+    enum CodingKeys: String, CodingKey { case type, address, height, listen, tx, blocks }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -299,6 +330,9 @@ private enum OutMsg: Encodable {
         case .tx(let tx):
             try c.encode("TX", forKey: .type)
             try c.encode(tx, forKey: .tx)
+        case .blocks(let bs):
+            try c.encode("BLOCKS", forKey: .type)
+            try c.encode(bs, forKey: .blocks)
         }
     }
 }

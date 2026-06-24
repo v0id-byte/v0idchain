@@ -4,6 +4,7 @@ import V0idKit
 
 enum AppSection: String, CaseIterable, Identifiable {
     case wallet = "钱包"
+    case mine = "挖矿"
     case send = "转账"
     case messages = "消息"
     case market = "集市"
@@ -14,6 +15,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .wallet: return "wallet.pass"
+        case .mine: return "hammer"
         case .send: return "paperplane"
         case .messages: return "envelope"
         case .market: return "bag"
@@ -47,6 +49,7 @@ struct ContentView: View {
     @ViewBuilder private var detail: some View {
         switch selection ?? .wallet {
         case .wallet: WalletView()
+        case .mine: MineView()
         case .send: SendView()
         case .messages: MessagesView()
         case .market: MarketplaceView()
