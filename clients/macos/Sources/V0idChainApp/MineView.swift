@@ -76,7 +76,7 @@ struct MineView: View {
             Text("实时").font(.headline)
             HStack(spacing: 12) {
                 statTile("算力", formatHashRate(model.hashRate), "speedometer")
-                statTile("当前难度", "\(model.nextDifficulty) bit", "dial.high")
+                statTile("当前难度", difficultyText(model.nextDifficulty), "dial.high")
             }
             HStack(spacing: 12) {
                 statTile("本块已试", abbrevCount(model.currentAttempts), "number")
@@ -145,7 +145,7 @@ struct MineView: View {
             bullet("你的 Mac 自己搜 nonce，算出满足难度的区块 hash，再广播给全网节点。")
             bullet("出块奖励 = \(Config.blockReward) \(Config.symbol) + 该块手续费，发到你的钱包地址。")
             bullet("会打包待处理的转账/消息/昵称/集市交易赚手续费；红包交易留给全节点矿工。")
-            bullet("难度全网自适应（目标约 \(Config.targetBlockTimeMs / 1000) 秒一块）：算力越强，你抢到块的机会越大。")
+            bullet("PoW 目标全网自适应（目标约 \(Config.targetBlockTimeMs / 1000) 秒一块）：算力越强，你抢到块的机会越大。")
             bullet("和公网种子矿工同台竞争——挖到块要靠运气和算力，别人先挖到时你这块会被放弃。")
         }
         .card()

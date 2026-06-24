@@ -12,6 +12,9 @@ const val MAX_MEMO = 512
 /** 普通明文消息/备注的 UI 输入上限（与 web 一致）；加密密文可用到 MAX_MEMO。 */
 const val PLAIN_TEXT_LIMIT = 128
 
+/** v2 共识激活高度：激活后区块 difficulty 字段承载 BTC 风格 compact target(nBits)。 */
+const val POW_V2_HEIGHT = 15_000L
+
 /** 代币符号。 */
 const val SYMBOL = "\$V0ID"
 

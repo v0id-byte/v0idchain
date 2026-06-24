@@ -1,5 +1,14 @@
 // 区块链：创世、校验、余额/nonce 状态、mempool、自适应难度、最长链共识。
-import { Block, calcBlockHash, meetsDifficulty, mineBlock } from './block.js';
+import {
+  Block,
+  calcBlockHash,
+  compactFromTarget,
+  meetsDifficulty,
+  mineBlock,
+  targetFromBitDifficulty,
+  targetFromStoredDifficulty,
+  workForDifficulty,
+} from './block.js';
 import {
   Transaction,
   isCoinbase,
@@ -20,6 +29,9 @@ import {
   MAX_DIFFICULTY,
   TARGET_BLOCK_TIME_MS,
   RETARGET_INTERVAL,
+  POW_V2_HEIGHT,
+  POW_V2_RETARGET_INTERVAL,
+  POW_V2_MAX_ADJUST_FACTOR,
   MAX_MEMPOOL,
   MAX_FUTURE_DRIFT_MS,
   CHECKPOINTS,
@@ -49,10 +61,10 @@ export function genesisBlock(): Block {
 }
 
 /**
- * 自适应难度：纯函数，从链历史确定性地算出 index 处区块应满足的难度（前导 0 比特数）。
- * 所有节点算法一致，因此无法伪造难度。每 RETARGET_INTERVAL 块按实际耗时调整一次。
+ * v1 自适应难度：纯函数，从链历史确定性地算出 index 处区块应满足的前导 0 bit 数。
+ * 保留给 POW_V2_HEIGHT 之前的历史链校验。
  */
-export function expectedDifficulty(chain: Block[], index: number): number {
+function expectedDifficultyV1(chain: Block[], index: number): number {
   if (index === 0) return GENESIS_DIFFICULTY;
   const prev = chain[index - 1];
   // 非重定向点，或窗口会触及“时间戳是固定古值”的创世块 → 沿用上一块难度
@@ -66,6 +78,41 @@ export function expectedDifficulty(chain: Block[], index: number): number {
   // 每差一倍调 1 bit（log2），钳制单次 ±2；太快→加难度，太慢→减难度
   const delta = actual <= 0 ? 2 : Math.max(-2, Math.min(2, Math.round(Math.log2(expected / actual))));
   return Math.max(MIN_DIFFICULTY, Math.min(MAX_DIFFICULTY, prev.difficulty + delta));
+}
+
+const POW_V2_TIMESPAN_MS = POW_V2_RETARGET_INTERVAL * TARGET_BLOCK_TIME_MS;
+const POW_LIMIT_TARGET = targetFromBitDifficulty(MIN_DIFFICULTY);
+const MIN_POW_TARGET = targetFromBitDifficulty(MAX_DIFFICULTY);
+
+/**
+ * v2 BTC 风格难度：difficulty 字段承载 compact target(nBits)。
+ * 非重定向点沿用上一块；重定向点按实际耗时比例调整 target，并按 BTC 风格限制单次最多 4 倍。
+ */
+function expectedDifficultyV2(chain: Block[], index: number): number {
+  const prev = chain[index - 1];
+  const prevTarget = targetFromStoredDifficulty(prev.difficulty) ?? POW_LIMIT_TARGET;
+  if (index === POW_V2_HEIGHT) return compactFromTarget(prevTarget);
+  if (index % POW_V2_RETARGET_INTERVAL !== 0 || index - POW_V2_RETARGET_INTERVAL < 1) return prev.difficulty;
+
+  const windowStart = chain[index - POW_V2_RETARGET_INTERVAL];
+  let actual = prev.timestamp - windowStart.timestamp;
+  const minActual = Math.floor(POW_V2_TIMESPAN_MS / POW_V2_MAX_ADJUST_FACTOR);
+  const maxActual = POW_V2_TIMESPAN_MS * POW_V2_MAX_ADJUST_FACTOR;
+  if (actual < minActual) actual = minActual;
+  if (actual > maxActual) actual = maxActual;
+
+  let nextTarget = (prevTarget * BigInt(actual)) / BigInt(POW_V2_TIMESPAN_MS);
+  if (nextTarget > POW_LIMIT_TARGET) nextTarget = POW_LIMIT_TARGET;
+  if (nextTarget < MIN_POW_TARGET) nextTarget = MIN_POW_TARGET;
+  return compactFromTarget(nextTarget);
+}
+
+/**
+ * 自适应难度：POW_V2_HEIGHT 前用 v1 bit 难度；激活后用 BTC 风格 compact target。
+ */
+export function expectedDifficulty(chain: Block[], index: number): number {
+  if (index < POW_V2_HEIGHT) return expectedDifficultyV1(chain, index);
+  return expectedDifficultyV2(chain, index);
 }
 
 /**
@@ -424,12 +471,12 @@ export class Blockchain {
   }
 
   /**
-   * 一条链的累计 PoW 工作量 = Σ 2^difficulty（难度可达数百 bit，用 BigInt）。
+   * 一条链的累计 PoW 工作量：v1 为 Σ 2^difficulty；v2 为 BTC 风格 target proof。
    * 各链共享同一创世，创世项在比较中抵消，故是否计入不影响结果。
    */
   static chainWork(chain: Block[]): bigint {
     let work = 0n;
-    for (const b of chain) work += 1n << BigInt(b.difficulty);
+    for (const b of chain) work += workForDifficulty(b.difficulty);
     return work;
   }
 

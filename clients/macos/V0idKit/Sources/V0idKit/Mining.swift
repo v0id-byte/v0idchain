@@ -4,13 +4,9 @@
 import Foundation
 
 public enum Mining {
-    /// 自适应难度：从链历史**确定性**算出 `index` 处区块应满足的难度（前导 0 比特数）。
-    /// 各节点算法一致 → 难度无法伪造；本机算错则出的块会被全网判「难度不符」直接拒收。
-    ///
-    /// ⚠️ 跨语言取整坑：JS `Math.round` 朝 +∞ 取整（round-half-up：Math.round(-0.5)=0），
-    /// 而 Swift 的 `Double.rounded()` 是 round-half-away-from-zero（-0.5 → -1）——二者在负的 .5
-    /// 边界结论不同。这里用 `floor(x + 0.5)` 复刻 JS `Math.round` 的精确语义。
-    public static func expectedDifficulty(_ chain: [Block], index: Int) -> Int {
+    private static let powV2TimespanMs = Config.powV2RetargetInterval * Config.targetBlockTimeMs
+
+    private static func expectedDifficultyV1(_ chain: [Block], index: Int) -> Int {
         if index == 0 { return Config.genesisDifficulty }
         let prev = chain[index - 1]
         // 非重定向点，或重定向窗口会触及创世（时间戳为固定古值）→ 沿用上一块难度。
@@ -30,6 +26,163 @@ public enum Mining {
             delta = max(-2, min(2, rounded))
         }
         return max(Config.minDifficulty, min(Config.maxDifficulty, prev.difficulty + delta))
+    }
+
+    private static func isCompactDifficulty(_ difficulty: Int) -> Bool { difficulty > 255 }
+
+    private static func targetFromBitDifficulty(_ difficulty: Int) -> [UInt8] {
+        if difficulty >= 256 { return Array(repeating: 0, count: 32) }
+        var out = Array(repeating: UInt8(0xff), count: 32)
+        let zeroBytes = max(0, difficulty / 8)
+        if zeroBytes > 0 {
+            for i in 0..<min(zeroBytes, out.count) { out[i] = 0 }
+        }
+        let rem = difficulty % 8
+        if rem > 0 && zeroBytes < out.count {
+            out[zeroBytes] = UInt8(0xff >> rem)
+        }
+        return out
+    }
+
+    private static func targetFromCompact(_ compact: Int) -> [UInt8]? {
+        if compact <= 0 || compact > 0xffffffff { return nil }
+        let size = compact >> 24
+        let word = compact & 0x007fffff
+        if word == 0 || (compact & 0x00800000) != 0 || size > 32 { return nil }
+        var out = Array(repeating: UInt8(0), count: 32)
+        if size <= 3 {
+            let value = word >> (8 * (3 - size))
+            for i in 0..<size {
+                out[31 - i] = UInt8((value >> (8 * i)) & 0xff)
+            }
+            return out
+        }
+        let start = 32 - size
+        out[start] = UInt8((word >> 16) & 0xff)
+        out[start + 1] = UInt8((word >> 8) & 0xff)
+        out[start + 2] = UInt8(word & 0xff)
+        return out
+    }
+
+    private static func compactFromTarget(_ target: [UInt8]) -> Int {
+        let first = target.firstIndex { $0 != 0 }
+        guard let first else { return 0x01000000 }
+        var size = target.count - first
+        var compact = 0
+        if size <= 3 {
+            var value = 0
+            for b in target[first...] { value = (value << 8) | Int(b) }
+            compact = value << (8 * (3 - size))
+        } else {
+            compact = (Int(target[first]) << 16) | (Int(target[first + 1]) << 8) | Int(target[first + 2])
+        }
+        if (compact & 0x00800000) != 0 {
+            compact >>= 8
+            size += 1
+        }
+        return (size << 24) | (compact & 0x007fffff)
+    }
+
+    private static func targetFromStoredDifficulty(_ difficulty: Int) -> [UInt8]? {
+        isCompactDifficulty(difficulty) ? targetFromCompact(difficulty) : targetFromBitDifficulty(difficulty)
+    }
+
+    private static func compareTarget(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        for (x, y) in zip(a, b) {
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        return 0
+    }
+
+    private static func bytesToLimbs(_ bytes: [UInt8]) -> [UInt32] {
+        var limbs = [UInt32]()
+        var i = bytes.count
+        while i > 0 {
+            var limb: UInt32 = 0
+            let start = max(0, i - 4)
+            for b in bytes[start..<i] { limb = (limb << 8) | UInt32(b) }
+            limbs.append(limb)
+            i = start
+        }
+        while limbs.last == 0 && limbs.count > 1 { limbs.removeLast() }
+        return limbs
+    }
+
+    private static func limbsToBytes32(_ limbs: [UInt32]) -> [UInt8] {
+        var out = Array(repeating: UInt8(0), count: 32)
+        var pos = 31
+        for limb in limbs {
+            for shift in stride(from: 0, through: 24, by: 8) {
+                if pos < 0 { return out }
+                out[pos] = UInt8((limb >> UInt32(shift)) & 0xff)
+                pos -= 1
+            }
+        }
+        return out
+    }
+
+    private static func multiply(_ limbs: [UInt32], by m: Int) -> [UInt32] {
+        var out = [UInt32]()
+        var carry: UInt64 = 0
+        for limb in limbs {
+            let v = UInt64(limb) * UInt64(m) + carry
+            out.append(UInt32(v & 0xffffffff))
+            carry = v >> 32
+        }
+        while carry > 0 {
+            out.append(UInt32(carry & 0xffffffff))
+            carry >>= 32
+        }
+        return out
+    }
+
+    private static func divide(_ limbs: [UInt32], by d: Int) -> [UInt32] {
+        var out = Array(repeating: UInt32(0), count: limbs.count)
+        var rem: UInt64 = 0
+        for i in stride(from: limbs.count - 1, through: 0, by: -1) {
+            let cur = (rem << 32) | UInt64(limbs[i])
+            out[i] = UInt32(cur / UInt64(d))
+            rem = cur % UInt64(d)
+        }
+        while out.last == 0 && out.count > 1 { out.removeLast() }
+        return out
+    }
+
+    private static func adjustedTarget(prevTarget: [UInt8], actual rawActual: Int) -> [UInt8] {
+        let minActual = powV2TimespanMs / Config.powV2MaxAdjustFactor
+        let maxActual = powV2TimespanMs * Config.powV2MaxAdjustFactor
+        let actual = min(max(rawActual, minActual), maxActual)
+        let product = multiply(bytesToLimbs(prevTarget), by: actual)
+        var target = limbsToBytes32(divide(product, by: powV2TimespanMs))
+        let powLimit = targetFromBitDifficulty(Config.minDifficulty)
+        let minTarget = targetFromBitDifficulty(Config.maxDifficulty)
+        if compareTarget(target, powLimit) > 0 { target = powLimit }
+        if compareTarget(target, minTarget) < 0 { target = minTarget }
+        return target
+    }
+
+    private static func expectedDifficultyV2(_ chain: [Block], index: Int) -> Int {
+        let prev = chain[index - 1]
+        let prevTarget = targetFromStoredDifficulty(prev.difficulty) ?? targetFromBitDifficulty(Config.minDifficulty)
+        if index == Config.powV2Height { return compactFromTarget(prevTarget) }
+        if index % Config.powV2RetargetInterval != 0 || index - Config.powV2RetargetInterval < 1 {
+            return prev.difficulty
+        }
+        let windowStart = chain[index - Config.powV2RetargetInterval]
+        return compactFromTarget(adjustedTarget(prevTarget: prevTarget, actual: prev.timestamp - windowStart.timestamp))
+    }
+
+    /// 自适应难度：v1 历史高度使用前导 0 bit；v2 激活后使用 BTC 风格 compact target。
+    public static func expectedDifficulty(_ chain: [Block], index: Int) -> Int {
+        if index < Config.powV2Height { return expectedDifficultyV1(chain, index: index) }
+        return expectedDifficultyV2(chain, index: index)
+    }
+
+    public static func meetsDifficulty(_ hashHex: String, _ difficulty: Int) -> Bool {
+        if !isCompactDifficulty(difficulty) { return Crypto.meetsDifficulty(hashHex, difficulty) }
+        guard let target = targetFromCompact(difficulty), let hash = Hex.decode(hashHex), hash.count == 32 else { return false }
+        return compareTarget(hash, target) <= 0
     }
 
     /// 下一块（链顶之上）要求的难度——供 UI 展示与组模板用。
@@ -127,7 +280,7 @@ public enum Mining {
             while nonce < end {
                 blk.nonce = nonce
                 let h = blk.calcHash()
-                if Crypto.meetsDifficulty(h, difficulty) {
+                if meetsDifficulty(h, difficulty) {
                     blk.hash = h
                     return blk
                 }

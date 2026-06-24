@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getJSON, postJSON, isCoinbase, search, findTx, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
+const difficultyText = (d: number) => d > 255 ? `nBits 0x${d.toString(16).padStart(8, '0')}` : `${d} bit`;
 // 模块级显示名缓存（每次轮询更新）；disp(地址) → 有昵称显示 @名字，否则缩写地址
 let NAMES: Record<string, string> = {};
 const disp = (a: string) => (a && NAMES[a] ? `@${NAMES[a]}` : short(a));
@@ -141,7 +142,7 @@ export default function App() {
       <div className="chips">
         <Chip k="链高" v={info ? String(info.height) : '—'} accent />
         <Chip k="区块数" v={info ? String(info.blocks) : '—'} />
-        <Chip k="难度 (bit)" v={info ? String(info.difficulty) : '—'} />
+        <Chip k="PoW 难度" v={info ? difficultyText(info.difficulty) : '—'} />
         <Chip k="对等节点" v={info ? String(info.peers) : '—'} />
         <Chip k="已销毁 🔥" v={info ? String(info.burned ?? 0) : '—'} />
       </div>
@@ -325,7 +326,7 @@ function Explorer({ chain, me }: { chain: Block[]; me: string }) {
       {res.kind === 'block' && (
         <div className="exresult">
           <div className="exsub">
-            区块 #{res.block.index} · 难度 {res.block.difficulty} bit · {res.block.transactions.length} 笔
+            区块 #{res.block.index} · 难度 {difficultyText(res.block.difficulty)} · {res.block.transactions.length} 笔
           </div>
           <div className="kv">hash: {res.block.hash}</div>
           <div className="kv">merkleRoot: {res.block.merkleRoot}</div>
@@ -745,7 +746,7 @@ function BlockCard({ b, me, open, onToggle }: { b: Block; me: string; open: bool
         </span>
         <span className="meta">
           <span>{b.transactions.length} 笔</span>
-          <span className="tag diff">{b.difficulty} bit</span>
+          <span className="tag diff">{difficultyText(b.difficulty)}</span>
           <span>矿工 {b.index === 0 ? '创世' : disp(b.miner)}</span>
           <span>{ago(b.timestamp)}</span>
         </span>
@@ -756,7 +757,7 @@ function BlockCard({ b, me, open, onToggle }: { b: Block; me: string; open: bool
           <div className="kv">prev: {b.prevHash}</div>
           <div className="kv">merkleRoot: {b.merkleRoot}</div>
           <div className="kv">
-            nonce: {b.nonce}　难度: {b.difficulty} bit　奖励/预挖: {reward} $V0ID
+            nonce: {b.nonce}　难度: {difficultyText(b.difficulty)}　奖励/预挖: {reward} $V0ID
             {fees > 0 ? `（含手续费 ${fees}）` : ''}
           </div>
           <div style={{ marginTop: 8 }}>

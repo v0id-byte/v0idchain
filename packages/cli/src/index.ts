@@ -29,6 +29,7 @@ const c = {
   red: (s: string) => `\x1b[31m${s}\x1b[0m`,
 };
 const short = (addr: string) => (addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr);
+const difficultyText = (d: number) => d > 255 ? `nBits 0x${d.toString(16).padStart(8, '0')}` : `${d}bit`;
 const defaultDataDir = (name: string) => join(process.cwd(), '.data', name);
 
 /**
@@ -210,7 +211,7 @@ program
       const flag = o.mine ? c.yellow('⛏') : '🔗';
       console.log(
         `  ${flag} ${time}  链高 ${c.cyan(String(i.height))} ${grew}` +
-          `  余额 ${c.green(`${i.balance} ${SYMBOL}`)}  难度 ${i.difficulty}bit  对等 ${i.peers}  池 ${i.mempool}`,
+          `  余额 ${c.green(`${i.balance} ${SYMBOL}`)}  难度 ${difficultyText(i.difficulty)}  对等 ${i.peers}  池 ${i.mempool}`,
       );
     }, 5000).unref?.();
   });
@@ -234,7 +235,7 @@ apiOpt(program.command('info'))
     console.log(c.bold('余额 '), `${r.balance} ${r.symbol}`);
     console.log(c.bold('链高 '), `${r.height}（${r.blocks} 个区块）`);
     console.log(c.bold('交易池'), `${r.mempool} 笔待打包`);
-    console.log(c.bold('难度 '), r.difficulty);
+    console.log(c.bold('难度 '), difficultyText(r.difficulty));
     if (r.minFee !== undefined) console.log(c.bold('手续费'), `≥ ${r.minFee}（gas，给矿工）`);
     if (r.burned !== undefined) console.log(c.bold('已销毁'), `🔥 ${r.burned} ${SYMBOL}（发消息烧进虚空）`);
     console.log(c.bold('对等 '), `${r.peers} 个节点`);

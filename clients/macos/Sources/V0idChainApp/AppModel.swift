@@ -55,7 +55,7 @@ final class AppModel: ObservableObject {
     // ---- 挖矿派生状态 ----
     /// 开关是否打开（含「想挖但还没连上」的等待态）。
     var miningEnabled: Bool { mineWanted }
-    /// 下一块要求的难度（前导 0 比特数），供展示。
+    /// 下一块要求的 PoW 目标：v1=前导 0 bit；v2=compact target(nBits)。
     var nextDifficulty: Int { chain.isEmpty ? Config.genesisDifficulty : Mining.nextDifficulty(chain) }
     /// 本机地址在**已同步链**里收到的 coinbase 块数 = 已确认出块（输掉竞争被重组的孤块自然不计，数字永远诚实）。
     var minedBlocksConfirmed: Int {
@@ -424,6 +424,10 @@ final class AppModel: ObservableObject {
 func short(_ s: String) -> String {
     guard s.count > 14 else { return s }
     return String(s.prefix(8)) + "…" + String(s.suffix(6))
+}
+
+func difficultyText(_ difficulty: Int) -> String {
+    difficulty > 255 ? String(format: "nBits 0x%08x", difficulty) : "\(difficulty) bit"
 }
 
 /// 挖矿状态：idle=未开/已停；waiting=想挖但还没连上/没钱包/没同步；mining=正在搜 nonce。

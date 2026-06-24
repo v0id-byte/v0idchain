@@ -24,6 +24,9 @@ public enum Config {
     /// 普通明文消息/备注的 UI 输入上限（与 web 一致）；加密密文可用到 maxMemo。
     public static let plainTextLimit = 128
 
+    /// v2 共识激活高度：激活后区块 difficulty 字段承载 BTC 风格 compact target(nBits)。
+    public static let powV2Height = 15_000
+
     // ---- 链上昵称（NAME| 自转 memo，先到先得；纯约定，不改共识）----
     public static let namePrefix = "NAME|"
     public static let maxName = 20

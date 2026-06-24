@@ -33,6 +33,26 @@ final class MiningVectorTests: XCTestCase {
         XCTAssertEqual(d(20, 0), 22, "actual<=0 → +2")
     }
 
+    func testDifficultyV2ActivationAndRetarget() {
+        let activation = (0..<Config.powV2Height).map { i in stub(i * Config.targetBlockTimeMs, Config.genesisDifficulty) }
+        let baseCompact = 520_159_231 // compact target for v1 16-bit difficulty
+        XCTAssertEqual(Mining.expectedDifficulty(activation, index: Config.powV2Height), baseCompact)
+
+        func d(_ actual: Int) -> Int {
+            let idx = Config.powV2Height + Config.powV2RetargetInterval
+            var c = (0..<idx).map { i in
+                stub(i * Config.targetBlockTimeMs, i < Config.powV2Height ? Config.genesisDifficulty : baseCompact)
+            }
+            c[idx - Config.powV2RetargetInterval].timestamp = 1_000_000
+            c[idx - 1].timestamp = 1_000_000 + actual
+            return Mining.expectedDifficulty(c, index: idx)
+        }
+        let span = Config.powV2RetargetInterval * Config.targetBlockTimeMs
+        XCTAssertEqual(d(span / Config.powV2MaxAdjustFactor), 507_510_720, "4x 快 → BTC-style compact target 加难")
+        XCTAssertEqual(d(span), baseCompact, "准点 → compact target 不变")
+        XCTAssertEqual(d(span * Config.powV2MaxAdjustFactor), 520_355_836, "4x 慢 → BTC-style compact target 降难")
+    }
+
     // ---- 非重定向点 / 近创世 / 创世 → 沿用规则 ----
     func testDifficultyNonRetarget() {
         let c = chain16(base: 20, ts8: 1_000_000, ts15: 1_014_000)

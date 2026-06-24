@@ -58,6 +58,8 @@ import java.util.Locale
 private val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 private fun fmtTime(ms: Long): String = timeFmt.format(Date(ms))
 private fun shortAddr(a: String): String = if (a.length > 16) "${a.take(8)}…${a.takeLast(6)}" else a
+private fun difficultyText(difficulty: Long): String =
+    if (difficulty > 255L) "nBits 0x%08x".format(difficulty) else "$difficulty bit"
 
 @Composable
 private fun connLabel(status: WsClient.Status, height: Long): Pair<String, androidx.compose.ui.graphics.Color> {
@@ -703,7 +705,7 @@ private fun BlockCard(b: Block, expanded: Boolean = false) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("#${b.index}", color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Text("${b.transactions.size} 笔 · 难度 ${b.difficulty}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Text("${b.transactions.size} 笔 · 难度 ${difficultyText(b.difficulty)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
             Spacer(Modifier.height(4.dp))
             Text(b.hash, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1)

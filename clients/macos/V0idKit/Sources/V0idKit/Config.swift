@@ -38,10 +38,16 @@ public enum Config {
     public static let minDifficulty = 8
     /// 难度上限（物理天花板，hash 共 256 bit）。
     public static let maxDifficulty = 255
-    /// 目标出块时间（毫秒）。每 retargetInterval 块按实际耗时重定向一次难度。
+    /// v2 共识激活高度：激活后 difficulty 字段承载 BTC 风格 compact target(nBits)。
+    public static let powV2Height = 15_000
+    /// 目标出块时间（毫秒）。v1/v2 均沿用 8 秒目标。
     public static let targetBlockTimeMs = 8_000
-    /// 难度重定向间隔（块数）。
+    /// v1 难度重定向间隔（块数）。
     public static let retargetInterval = 8
+    /// v2 BTC 风格重定向窗口：60 块约 8 分钟。
+    public static let powV2RetargetInterval = 60
+    /// v2 单次重定向限幅：target 最多 ×4 或 ÷4。
+    public static let powV2MaxAdjustFactor = 4
     /// 区块时间戳允许领先本地时钟的上限（毫秒）：本机出块绝不超此领先量，免被全网判「来自未来」。
     public static let maxFutureDriftMs = 120_000
     /// 单块最多打包多少笔普通交易（矿工侧打包策略，非共识强校验）。

@@ -45,6 +45,9 @@ import {
   DEL_PREFIX,
   TARGET_BLOCK_TIME_MS,
   RETARGET_INTERVAL,
+  POW_V2_HEIGHT,
+  POW_V2_RETARGET_INTERVAL,
+  POW_V2_MAX_ADJUST_FACTOR,
   GENESIS_PREMINE,
   GENESIS_PREMINE_ADDRESS,
   BLOCK_REWARD,
@@ -56,6 +59,11 @@ import {
   NULL_ADDRESS,
   SYMBOL,
   sha256Hex,
+  approxDifficultyBits,
+  compactFromTarget,
+  isCompactDifficulty,
+  targetFromBitDifficulty,
+  workForDifficulty,
 } from '../packages/core/src/index.js';
 
 let failed = 0;
@@ -174,6 +182,26 @@ const fast = Array.from({ length: idx + 1 }, (_, i) => ({ timestamp: i * 100, di
 const slow = Array.from({ length: idx + 1 }, (_, i) => ({ timestamp: i * TARGET_BLOCK_TIME_MS * 4, difficulty: GENESIS_DIFFICULTY }));
 check('出块过快 → 难度上调', expectedDifficulty(fast as any, idx) > GENESIS_DIFFICULTY);
 check('出块过慢 → 难度下调', expectedDifficulty(slow as any, idx) < GENESIS_DIFFICULTY);
+const v2Base = compactFromTarget(targetFromBitDifficulty(GENESIS_DIFFICULTY));
+const activationChain = Array.from({ length: POW_V2_HEIGHT }, (_, i) => ({
+  timestamp: i * TARGET_BLOCK_TIME_MS,
+  difficulty: GENESIS_DIFFICULTY,
+}));
+check('v2 激活点 → difficulty 切为 BTC compact target', isCompactDifficulty(expectedDifficulty(activationChain as any, POW_V2_HEIGHT)));
+function v2Retarget(actual: number) {
+  const v2Idx = POW_V2_HEIGHT + POW_V2_RETARGET_INTERVAL;
+  const c = Array.from({ length: v2Idx }, (_, i) => ({
+    timestamp: i * TARGET_BLOCK_TIME_MS,
+    difficulty: i < POW_V2_HEIGHT ? GENESIS_DIFFICULTY : v2Base,
+  }));
+  c[v2Idx - POW_V2_RETARGET_INTERVAL].timestamp = 1_000_000;
+  c[v2Idx - 1].timestamp = 1_000_000 + actual;
+  return expectedDifficulty(c as any, v2Idx);
+}
+const v2TargetMs = POW_V2_RETARGET_INTERVAL * TARGET_BLOCK_TIME_MS;
+check('v2 BTC-style：4x 快 → compact target 更难、work 增大', workForDifficulty(v2Retarget(v2TargetMs / POW_V2_MAX_ADJUST_FACTOR)) > workForDifficulty(v2Base));
+check('v2 BTC-style：4x 慢 → compact target 更易、work 下降', workForDifficulty(v2Retarget(v2TargetMs * POW_V2_MAX_ADJUST_FACTOR)) < workForDifficulty(v2Base));
+check('v2 compact target 仍能换算为约 16 bit 展示', approxDifficultyBits(v2Base) === GENESIS_DIFFICULTY);
 
 console.log(`\n— 共识：最大工作量规则（防低难度长 fork）+ 未来时间戳上限 —`);
 const honestW = new Blockchain();
@@ -183,6 +211,8 @@ check('chainWork 随链增长而增大', Blockchain.chainWork(honestW.chain) > B
 const wHiShort = Blockchain.chainWork([{ difficulty: 20 }, { difficulty: 20 }] as any); // 2×2^20
 const wLoLong = Blockchain.chainWork(Array.from({ length: 20 }, () => ({ difficulty: 8 })) as any); // 20×2^8
 check('chainWork：短高难链 > 长低难链', wHiShort > wLoLong);
+const compactWork = workForDifficulty(compactFromTarget(targetFromBitDifficulty(20)));
+check('v2 chainWork：compact target 按 BTC proof 计 work', compactWork > (1n << 20n));
 // replaceChain 用工作量门控：更长但总工作量更小的低难度 fork 不被接受（旧“最长链”规则会误判其更优）
 const cheapLong: any[] = JSON.parse(JSON.stringify(new Blockchain().chain));
 for (let i = 1; i < 12; i++) {

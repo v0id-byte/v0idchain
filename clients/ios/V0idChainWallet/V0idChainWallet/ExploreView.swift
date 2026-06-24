@@ -2,6 +2,10 @@
 import SwiftUI
 import V0idKit
 
+private func difficultyText(_ difficulty: Int) -> String {
+    difficulty > 255 ? String(format: "nBits 0x%08x", difficulty) : "\(difficulty) bit"
+}
+
 struct ExploreView: View {
     @EnvironmentObject var node: NodeClient
     @State private var query = ""
@@ -85,7 +89,7 @@ private struct BlockDetail: View {
         List {
             Section("区块头") {
                 LabeledContent("高度", value: "\(block.index)")
-                LabeledContent("难度（bit）", value: "\(block.difficulty)")
+                LabeledContent("PoW 难度", value: difficultyText(block.difficulty))
                 LabeledContent("矿工", value: block.miner.display(in: registry))
                 CopyableRow(label: "hash", value: block.hash)
                 CopyableRow(label: "prevHash", value: block.prevHash)

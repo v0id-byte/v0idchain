@@ -125,7 +125,7 @@ struct ExplorerView: View {
         HStack(spacing: 10) {
             Text("#\(b.index)").font(.system(.body, design: .monospaced)).bold()
             Text("\(b.transactions.count) tx").font(.caption).foregroundStyle(.secondary)
-            Text("难度 \(b.difficulty)").font(.caption).foregroundStyle(.secondary)
+            Text("难度 \(difficultyText(b.difficulty))").font(.caption).foregroundStyle(.secondary)
             Spacer()
             Text(formatTime(b.timestamp)).font(.caption2).foregroundStyle(.secondary)
         }
@@ -138,7 +138,7 @@ struct ExplorerView: View {
             kv("prevHash", b.prevHash)
             kv("merkleRoot", b.merkleRoot)
             HStack(spacing: 20) {
-                Text("难度 \(b.difficulty)").font(.caption)
+                Text("难度 \(difficultyText(b.difficulty))").font(.caption)
                 Text("nonce \(b.nonce)").font(.caption)
                 Text(formatTime(b.timestamp)).font(.caption)
             }.foregroundStyle(.secondary)
