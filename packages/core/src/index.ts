@@ -3,6 +3,7 @@ export * from './config.js';
 export * from './crypto.js';
 export * from './onion.js';
 export * from './onioncell.js';
+export * from './hsdesc.js';
 export * from './wallet.js';
 export * from './transaction.js';
 export * from './block.js';
