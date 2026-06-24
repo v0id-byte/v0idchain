@@ -11,7 +11,7 @@
 // - 动态地价 = 全网供需的确定性 bonding curve（landPrice(farmState)）：人人同价、链上可复算、随行情走（卖得越多/最近抢得越凶越贵）。
 import type { Block } from './block.js';
 import { sha256Hex } from './crypto.js';
-import { petRarity, type Rarity } from './pets.js';
+import { petRarity, parsePets, farmAssistPct, PETFARM_PREFIX, PETUNSTATION_PREFIX, PETFARM_COST, type Rarity } from './pets.js';
 
 // ———— memo 前缀（与 messages.ts 的 isProtocolMemo 一一对应，别被当私信收进收件箱）————
 /** 买地：`LAND|<n>`（解锁该 owner 的第 n 号专属农场地块；n 从 0 起，必须紧接已解锁的下一号，禁止跳号）。 */
@@ -105,8 +105,11 @@ export function landPrice(s: FarmMarketState): number {
  * 作物成熟度 0~1：clamp((当前链高 - plantHeight) / GROW_BLOCKS[crop], 0, 1)。
  * 纯由链高算 → 全网/跨端一致、reorg 安全（链重组就重算）。0=刚种(种子)，<1=生长中，≥1=成熟可收。
  */
-export function cropGrowth(plantHeight: number, curHeight: number, crop: Crop): number {
-  const span = GROW_BLOCKS[crop];
+export function cropGrowth(plantHeight: number, curHeight: number, crop: Crop, assistPct = 0): number {
+  const span0 = GROW_BLOCKS[crop];
+  // 派驻崽加速：确定性缩短所需区块数（整数，封顶 50%，至少留 1 块）。assistPct=0 时与原行为完全一致。
+  const pct = assistPct < 0 ? 0 : assistPct > 50 ? 50 : Math.floor(assistPct);
+  const span = Math.max(1, span0 - Math.floor((span0 * pct) / 100));
   const g = (curHeight - plantHeight) / span;
   return g < 0 ? 0 : g > 1 ? 1 : g;
 }
@@ -239,11 +242,22 @@ export interface HarvestedCrop {
 }
 
 /** 整个农场世界状态（parseFarm 的返回）。 */
+/** 一条派驻记录：某田地当前派驻了哪只崽 + 其确定性加速百分比。 */
+export interface FarmStation {
+  zoneId: string;
+  petId: string;
+  gene: string;
+  evo: number;
+  assistPct: number; // farmAssistPct(gene, evo)
+  owner: string;
+}
+
 export interface FarmWorld {
   plots: Plot[];
   zones: Zone[];
   plants: Plant[];
   crops: HarvestedCrop[]; // 已收获的链上收藏作物
+  stations: FarmStation[]; // 当前派驻（田地→崽，加速作物成长）
   soldTotal: number; // 全网已售地块总数（喂动态地价）
   recentSales: number; // 最近 LAND_VELOCITY_WINDOW 块内售出数（按最新链高算；喂动态地价 velocity）
   height: number; // 还原时的当前链高（plots/plants 成长据此算）
@@ -277,6 +291,12 @@ export function parseFarm(chain: Block[]): FarmWorld {
 
   // 某地块当前被占用的格位（zoneId|slot → 未收获 plant 存在）。用于种植时判空。
   const occupied = new Set<string>(); // key = `${zoneId}|${slot}`
+
+  // 派驻追踪：按高度推进（防"先收获后派驻"回填刷成熟），崽的 gene/evo/owner 取自最终 parsePets——
+  // 基因恒定→稀有度精确；evo 单调递增→取最终值略偏高、良性；派驻中崽被锁不可转移→最终 owner 即派驻期 owner。
+  const petById = new Map(parsePets(chain).map((p) => [p.id, p] as const));
+  const zoneStation = new Map<string, string>(); // zoneId -> 当前派驻的 petId
+  const petZone = new Map<string, string>(); // petId -> 派驻的 zoneId（防一崽多派 / 一田多崽）
 
   for (const b of chain) {
     for (const tx of b.transactions) {
@@ -341,7 +361,10 @@ export function parseFarm(chain: Block[]): FarmWorld {
         if (!/^[0-9a-f]{64}$/.test(plantId)) continue;
         const pl = plants.get(plantId);
         if (!pl || pl.owner !== tx.from || pl.harvested) continue; // 须属于该 owner 且未收获
-        if (cropGrowth(pl.plantHeight, b.index, pl.crop) < 1) continue; // 须已成熟
+        // 派驻加速：取该田地此刻（按高度推进）派驻的崽，按其稀有度+进化算确定性加成。
+        const stPet = zoneStation.has(pl.zoneId) ? petById.get(zoneStation.get(pl.zoneId)!) : undefined;
+        const assist = stPet && stPet.owner === tx.from ? farmAssistPct(stPet.gene, stPet.evo ?? 0) : 0;
+        if (cropGrowth(pl.plantHeight, b.index, pl.crop, assist) < 1) continue; // 须已成熟（含派驻加速）
         pl.harvested = true;
         occupied.delete(`${pl.zoneId}|${pl.slot}`); // 腾出格位，可再种
         const h = cropHash(tx.from, b.hash, tx.txid);
@@ -351,16 +374,52 @@ export function parseFarm(chain: Block[]): FarmWorld {
         });
         continue;
       }
+      if (m.startsWith(PETFARM_PREFIX)) {
+        // 派驻：精确烧 PETFARM_COST；崽与田地都须属发起者；崽未派驻、田地未占。记 zoneStation（按高度）。
+        if (!selfBurn || burn !== PETFARM_COST) continue;
+        const parts = m.slice(PETFARM_PREFIX.length).split('|');
+        if (parts.length !== 2) continue;
+        const [petId, zoneId] = parts;
+        if (!/^[0-9a-f]{64}$/.test(petId) || !/^[0-9a-f]{64}$/.test(zoneId)) continue;
+        const pet = petById.get(petId);
+        const z = zones.get(zoneId);
+        if (!pet || pet.owner !== tx.from) continue; // 崽须属发起者
+        if (!z || z.owner !== tx.from || z.type !== 'farmland') continue; // 田地须属发起者且为田地
+        if (petZone.has(petId) || zoneStation.has(zoneId)) continue; // 崽已派驻 / 该田地已有崽
+        zoneStation.set(zoneId, petId);
+        petZone.set(petId, zoneId);
+        continue;
+      }
+
+      if (m.startsWith(PETUNSTATION_PREFIX)) {
+        // 召回：自转（免费，只付 gas）。清除该崽的派驻。
+        if (tx.from !== tx.to) continue;
+        const petId = m.slice(PETUNSTATION_PREFIX.length);
+        const zoneId = petZone.get(petId);
+        const pet = petById.get(petId);
+        if (!zoneId || !pet || pet.owner !== tx.from) continue;
+        zoneStation.delete(zoneId);
+        petZone.delete(petId);
+        continue;
+      }
       // CROPX|（P2P 转让）= Phase 2：先留前缀，本期不处理（即便出现也忽略，不改归属）。
     }
   }
 
   const recentSales = saleHeights.filter((h) => h > curHeight - LAND_VELOCITY_WINDOW).length;
+  // 最终派驻态（给 FarmView 显示当前各田地的加速崽 + 百分比）。
+  const stations: FarmStation[] = [];
+  for (const [zoneId, petId] of zoneStation) {
+    const pet = petById.get(petId);
+    const z = zones.get(zoneId);
+    if (pet && z) stations.push({ zoneId, petId, gene: pet.gene, evo: pet.evo ?? 0, assistPct: farmAssistPct(pet.gene, pet.evo ?? 0), owner: z.owner });
+  }
   return {
     plots: [...plots.values()].sort((a, b) => a.n - b.n),
     zones: [...zones.values()].sort((a, b) => b.buildHeight - a.buildHeight),
     plants: [...plants.values()].sort((a, b) => b.plantHeight - a.plantHeight),
     crops: crops.sort((a, b) => b.height - a.height),
+    stations,
     soldTotal,
     recentSales,
     height: curHeight,
@@ -374,6 +433,7 @@ export interface FarmView {
   zones: Zone[];
   plants: Plant[];
   crops: HarvestedCrop[];
+  stations: FarmStation[]; // 该地址当前的派驻（田地→加速崽 + 百分比）
   nextPlotN: number; // 下一个可买地块号
   landPrice: number; // 买下一块地此刻需烧的币（按全网当前行情算）
   height: number; // 当前链高（成长据此算）
@@ -390,6 +450,7 @@ export function farmOf(chain: Block[], address: string): FarmView {
     zones: w.zones.filter((z) => z.owner === address),
     plants: w.plants.filter((p) => p.owner === address && !p.harvested),
     crops: w.crops.filter((c) => c.owner === address),
+    stations: w.stations.filter((s) => s.owner === address),
     nextPlotN: next,
     landPrice: landPrice({ soldTotal: w.soldTotal, recentSales: w.recentSales }),
     height: w.height,

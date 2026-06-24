@@ -27,6 +27,24 @@ export const MAX_EVO = 3;
 export const PETBREED_PREFIX = 'PETBREED|';
 /** 进化 memo：`PETEVO|<崽id>`（崽须属发起者；每次 +1 阶至 MAX_EVO）。 */
 export const PETEVO_PREFIX = 'PETEVO|';
+/** 派驻农场花费（烧进虚空）。把崽派去某田地加速作物成长（farm.ts 据此算确定性加成）。 */
+export const PETFARM_COST = 50;
+/** 派驻 memo：`PETFARM|<崽id>|<田地zoneId>`（崽与田地都须属发起者；派驻期间该崽被锁，不能繁育/转移）。 */
+export const PETFARM_PREFIX = 'PETFARM|';
+/** 召回 memo：`PETUNSTATION|<崽id>`（免费，只付 gas；解除派驻锁）。 */
+export const PETUNSTATION_PREFIX = 'PETUNSTATION|';
+
+/**
+ * 派驻崽对作物成长的加速百分比（0~50）。= 5 基础 + 稀有档×8 + 进化阶×6，封顶 50%。
+ * 纯整数、确定性、跨端一致；越稀有/进化越高加成越大 → 闭合 繁育/进化 → 更强农场助手 的循环。
+ */
+export function farmAssistPct(gene: string, evo: number): number {
+  const r = petRarity(gene);
+  const tier = r === 'legendary' ? 3 : r === 'epic' ? 2 : r === 'rare' ? 1 : 0;
+  const e = evo < 0 ? 0 : evo > MAX_EVO ? MAX_EVO : Math.floor(evo);
+  const pct = 5 + tier * 8 + e * 6;
+  return pct > 50 ? 50 : pct;
+}
 
 export interface Pet {
   id: string; // 孵化/繁育交易 txid（全网唯一）
@@ -37,6 +55,7 @@ export interface Pet {
   birthTs: number; // 出生时间戳
   parents?: [string, string]; // 繁育而生时的双亲崽 id（野生崽无此字段）
   evo?: number; // 进化阶数（0 起，至 MAX_EVO）；仅加视觉光环，不改基因长相
+  stationedZone?: string; // 当前派驻的田地 zoneId（设置=被锁:不能繁育/转移，但可继续进化）；召回后清空
 }
 
 /** 崽基因：确定性、唯一、不可伪造。主人地址并入 → 即便（理论上）txid 撞车也因地址不同而基因不同。 */
@@ -144,6 +163,20 @@ export function makePetEvolve(petId: string): { ok: boolean; memo?: string; erro
   return { ok: true, memo: `${PETEVO_PREFIX}${petId}` };
 }
 
+/** 校验派驻入参（崽 id + 田地 zoneId 均须 64-hex）。归属/烧费/田地校验在 parsePets/parseFarm 层。 */
+export function makePetStation(petId: string, zoneId: string): { ok: boolean; memo?: string; error?: string } {
+  if (!/^[0-9a-f]{64}$/.test(petId) || !/^[0-9a-f]{64}$/.test(zoneId)) return { ok: false, error: 'id 须 64 位十六进制' };
+  const memo = `${PETFARM_PREFIX}${petId}|${zoneId}`;
+  if ([...memo].length > MAX_MEMO) return { ok: false, error: 'memo 过长' };
+  return { ok: true, memo };
+}
+
+/** 校验召回入参（崽 id 须 64-hex）。 */
+export function makePetUnstation(petId: string): { ok: boolean; memo?: string; error?: string } {
+  if (!/^[0-9a-f]{64}$/.test(petId)) return { ok: false, error: '崽 id 须 64 位十六进制' };
+  return { ok: true, memo: `${PETUNSTATION_PREFIX}${petId}` };
+}
+
 /**
  * 扫整条链还原所有崽与其归属。规则：
  * - 孵化：memo 恰为 `PET|`、且 from === to（自转，防止把别人的付款误判成孵化）、且 burn > 0（确实烧了孵化费）。
@@ -178,6 +211,7 @@ export function parsePets(chain: Block[]): Pet[] {
         const pa = pets.get(aId);
         const pb = pets.get(bId);
         if (!pa || !pb || pa.owner !== tx.from || pb.owner !== tx.from) continue; // 双亲须都属发起者
+        if (pa.stationedZone || pb.stationedZone) continue; // 派驻农场中的崽被锁，不能繁育
         pets.set(tx.txid, {
           id: tx.txid,
           gene: breedGene(pa.gene, pb.gene, b.hash, tx.txid),
@@ -197,11 +231,28 @@ export function parsePets(chain: Block[]): Pet[] {
         const cur = pet.evo ?? 0;
         if (cur >= MAX_EVO) continue;
         pet.evo = cur + 1;
+      } else if (m.startsWith(PETFARM_PREFIX)) {
+        // 派驻：自转 + 精确烧 PETFARM_COST。崽须属发起者且未在派驻中。记 stationedZone（锁住:不能繁育/转移）。
+        // 田地归属校验在 parseFarm 层（这里不持有农场状态）；派驻到非己田地只会白锁自己，不可利用。
+        if (tx.from !== tx.to || (tx.burn ?? 0) !== PETFARM_COST) continue;
+        const parts = m.slice(PETFARM_PREFIX.length).split('|');
+        if (parts.length !== 2) continue;
+        const [petId, zoneId] = parts;
+        if (!/^[0-9a-f]{64}$/.test(zoneId)) continue;
+        const pet = pets.get(petId);
+        if (!pet || pet.owner !== tx.from || pet.stationedZone) continue; // 须属发起者且未派驻
+        pet.stationedZone = zoneId;
+      } else if (m.startsWith(PETUNSTATION_PREFIX)) {
+        // 召回：自转（免费，只付 gas）。清除派驻锁。
+        if (tx.from !== tx.to) continue;
+        const petId = m.slice(PETUNSTATION_PREFIX.length);
+        const pet = pets.get(petId);
+        if (pet && pet.owner === tx.from && pet.stationedZone) pet.stationedZone = undefined;
       } else if (m.startsWith(PETX_PREFIX)) {
         const id = m.slice(PETX_PREFIX.length);
         const pet = pets.get(id);
-        // 只有当前主人能转；接收方须是合法地址（杜绝把崽转进非法/空地址而”烧没”）。
-        if (pet && tx.from === pet.owner && isValidAddress(tx.to) && tx.to !== tx.from) {
+        // 只有当前主人能转；接收方须是合法地址；派驻农场中的崽被锁，不能转移（须先召回）。
+        if (pet && tx.from === pet.owner && !pet.stationedZone && isValidAddress(tx.to) && tx.to !== tx.from) {
           pet.owner = tx.to;
         }
       }

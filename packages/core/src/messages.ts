@@ -3,7 +3,7 @@
 // 收件箱 = to 是我的消息；发件箱 = from 是我的消息。memo 即正文，无需任何前缀。
 import type { Block } from './block.js';
 import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX } from './config.js';
-import { PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX } from './pets.js';
+import { PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX, PETFARM_PREFIX, PETUNSTATION_PREFIX } from './pets.js';
 import { FISH_PREFIX } from './fishing.js';
 import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
 import { MINE_PREFIX } from './mining.js';
@@ -37,6 +37,8 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(PETX_PREFIX) ||
     memo.startsWith(PETBREED_PREFIX) ||
     memo.startsWith(PETEVO_PREFIX) ||
+    memo.startsWith(PETFARM_PREFIX) ||
+    memo.startsWith(PETUNSTATION_PREFIX) ||
     memo.startsWith(RED_PREFIX) ||
     memo.startsWith(CLAIM_PREFIX) ||
     memo.startsWith(REFUND_PREFIX) ||
