@@ -25,8 +25,14 @@ export const CELL_DATA_LEN = CELL_BODY_LEN - HEADER_LEN - MAC_LEN;
 
 // relay 命令（body 内 cmd 字节）。EXTEND/EXTENDED 是**加密 cell 内的命令**而非明文线缆 cell——否则拓扑泄露。
 export const CMD_DATA = 1; // 应用数据（到/来自出口）
-export const CMD_EXTEND = 2; // 延伸电路：data = nextHopId(32) ‖ nextHopOnionPub(32) ‖ clientEph(32) = 96B
+export const CMD_EXTEND = 2; // 延伸电路：data = nextHopId(32) ‖ clientEph(32) = 64B（下一跳 onion 公钥客户端已从目录知道、本地绑进 AUTH，无需上送）
 export const CMD_EXTENDED = 3; // 延伸应答：data = serverEph(32) ‖ auth(32) = 64B
+
+/**
+ * cell 计数器上限。nonceFromCounter 用 JS 浮点数运算，超过 2^53 会丢精度 → 相邻计数器映射到同一 nonce
+ * → (key,nonce) 重用 → 流密钥重用。设 2^48 硬上限（远低于 2^53，留足余量）；中继/客户端逼近时应拆电路换路。
+ */
+export const MAX_CELL_CTR = 2 ** 48;
 
 const ZERO_RECOGNIZED = new Uint8Array(RECOGNIZED_LEN);
 

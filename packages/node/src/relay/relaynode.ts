@@ -33,6 +33,8 @@ export type ExitHandler = (data: Uint8Array, reply: (resp: Uint8Array) => void) 
 
 let LID = 0;
 const mintCirc = () => randomBytes(8).toString('hex');
+/** 单中继电路硬上限（粗粒度抗内存耗尽兜底）。细粒度（按 IP/连接限速、TTL 清扫、半开清理）属 Phase 2 加固。 */
+const MAX_CIRCUITS = 2048;
 
 export class RelayNode {
   private wss: WebSocketServer;
@@ -90,6 +92,10 @@ export class RelayNode {
   private onCell(link: CellLink, m: CellMsg): void {
     switch (m.t) {
       case 'CREATE': {
+        if (this.table.size >= MAX_CIRCUITS) {
+          link.send({ t: 'DESTROY', c: m.c, r: 'overloaded' });
+          return;
+        }
         // 直接握手：建立“客户端↔本跳”的密钥（本跳是某客户端电路的这一跳）。
         const r = ntorServer(this.idPub, this.onion, hexToBytes(m.x));
         if (!r) {
@@ -100,7 +106,7 @@ export class RelayNode {
           prevConn: link,
           prevCirc: m.c,
           keys: r.keys,
-          maxFwdCtr: 0,
+          maxFwdCtr: -1, // -1 = 尚未见 cell；使首个 n=0 被接受、之后 n=0 重放即丢
           bwdBase: makeBwdBase(randomBytes(3)),
           bwdLocal: 0,
           createdAt: Date.now(),

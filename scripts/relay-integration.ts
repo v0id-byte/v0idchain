@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { getPublicKey, publicKeyToAddress, generateOnionKeypair, utf8ToBytes } from '../packages/core/src/index.js';
 import { RelayNode, type RelayResolver } from '../packages/node/src/relay/relaynode.js';
 import { CircuitClient, type HopSpec } from '../packages/node/src/relay/client.js';
+import { relayForward, type RelayCircuit, type CellLink } from '../packages/node/src/relay/circuit.js';
 
 let failures = 0;
 const check = (name: string, cond: boolean) => {
@@ -70,6 +71,27 @@ async function main() {
   check('守卫承载 1 电路', relays[0].circuits === 1);
   check('中继承载 1 电路', relays[1].circuits === 1);
   check('出口承载 1 电路', relays[2].circuits === 1);
+
+  // ---- 前向防重放回归（修复 n=0 边界 bug + nonce 上限）----
+  {
+    const dummy: CellLink = { lid: -1, send() {}, close() {}, isOpen: () => true };
+    const fk = (x: number) => new Uint8Array(32).fill(x);
+    const fake: RelayCircuit = {
+      prevConn: dummy,
+      prevCirc: 'z',
+      keys: { encForward: fk(1), encBackward: fk(2), macForward: fk(3), macBackward: fk(4) },
+      maxFwdCtr: -1,
+      bwdBase: 0,
+      bwdLocal: 0,
+      createdAt: 0,
+    };
+    const body = new Uint8Array(512);
+    check('首个前向 n=0 被接受', relayForward(fake, body, 0).kind !== 'drop');
+    check('重放 n=0 被丢弃', relayForward(fake, body, 0).kind === 'drop');
+    check('递增 n=5 被接受', relayForward(fake, body, 5).kind !== 'drop');
+    check('乱序/重放 n=3(<5) 被丢弃', relayForward(fake, body, 3).kind === 'drop');
+    check('超 2^48 nonce 上限被丢弃', relayForward(fake, body, 2 ** 49).kind === 'drop');
+  }
 
   client.close();
   await Promise.all(relays.map((r) => r.close()));

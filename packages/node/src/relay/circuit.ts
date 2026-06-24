@@ -6,7 +6,7 @@
 //   base，后向 n = base·2²⁰ + 本跳本地计数。不同发起跳 base 几乎不可能相撞 → 杜绝 (encBackward_i, nonce) 重用，且无需跳位。
 //   ⚠️ v1 后向防重放为 best-effort（MAC 防伪造；重放只是把同样数据重投给客户端，客户端按自身电路态去重）。
 import type { CircuitKeys } from '@v0idchain/core';
-import { applyLayer, unpackCellBody, packCellBody, nonceFromCounter } from '@v0idchain/core';
+import { applyLayer, unpackCellBody, packCellBody, nonceFromCounter, MAX_CELL_CTR } from '@v0idchain/core';
 import type { CellMsg } from './cells.js';
 
 const BWD_LOCAL_BITS = 2 ** 20; // 每跳本地后向计数空间（每电路百万 cell 足够）
@@ -26,7 +26,7 @@ export interface RelayCircuit {
   nextConn?: CellLink; // 延伸后才有；无 = 本跳是出口
   nextCirc?: string;
   keys: CircuitKeys; // 本跳与客户端协商出的 4 把密钥（中继视角）
-  maxFwdCtr: number; // 前向防重放：已见的最大 n
+  maxFwdCtr: number; // 前向防重放：已见的最大 n（初始 -1 = 尚未见任何 cell，使首个 n=0 也被接受一次）
   bwdBase: number; // 本跳后向 n 的随机命名空间基
   bwdLocal: number; // 本跳本地后向计数
   createdAt: number;
@@ -79,10 +79,11 @@ export type ForwardAction =
   | { kind: 'forward'; body: Uint8Array } // 还要往下一跳转发
   | { kind: 'drop' }; // 重放 / 畸形
 
-/** 中继处理一个**前向** cell：剥掉本跳一层，判断“给我”还是“转发”。同时做前向计数器防重放。 */
+/** 中继处理一个**前向** cell：剥掉本跳一层，判断“给我”还是“转发”。同时做前向计数器防重放 + nonce 上限防护。 */
 export function relayForward(circ: RelayCircuit, bodyHex: Uint8Array, n: number): ForwardAction {
-  if (n <= circ.maxFwdCtr && circ.maxFwdCtr !== 0) return { kind: 'drop' }; // 防重放（n 必须严格增）
-  if (n > circ.maxFwdCtr) circ.maxFwdCtr = n;
+  // 防重放：n 必须严格增（maxFwdCtr 初始 -1 → 首个 n=0 也接受、之后 n=0 重放即丢）。并拒绝逼近 2^53 浮点悬崖的 n。
+  if (n <= circ.maxFwdCtr || n > MAX_CELL_CTR) return { kind: 'drop' };
+  circ.maxFwdCtr = n;
   const peeled = applyLayer(circ.keys.encForward, nonceFromCounter(n), bodyHex);
   const mine = unpackCellBody(peeled, circ.keys.macForward);
   if (mine) return { kind: 'self', cmd: mine.cmd, data: mine.data };
