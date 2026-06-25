@@ -13,6 +13,7 @@ import type { Block } from './block.js';
 import { MAX_MEMO } from './config.js';
 
 export const RELAY_PREFIX = 'RELAY|';
+export const RELAY_OFF_PREFIX = 'RELAY_OFF|';
 
 // host:port —— v1 仅支持 IPv4 / 主机名（不含 ':' 的 host）；IPv6 留待后续。host 字符集保守，port 1~65535。
 const HOST_RE = /^[a-z0-9.-]{1,255}$/i;
@@ -59,6 +60,14 @@ export function makeRelayClaim(
   return { ok: true, memo };
 }
 
+
+/** 生成中继下线 tombstone。latest-wins 目录遇到它会移除该地址的描述符。 */
+export function makeRelayRetraction(): { ok: boolean; memo?: string; error?: string } {
+  const memo = `${RELAY_OFF_PREFIX}0`;
+  if ([...memo].length > MAX_MEMO) return { ok: false, error: '下线描述符过长' };
+  return { ok: true, memo };
+}
+
 /** 解析单条 memo → 描述符字段（不含 address，由调用方补 tx.from）。非法返回 null。 */
 function parseRelayMemo(memo: string): Omit<RelayDescriptor, 'address'> | null {
   if (!memo.startsWith(RELAY_PREFIX)) return null;
@@ -88,9 +97,13 @@ export function parseRelays(chain: Block[]): Map<string, RelayDescriptor> {
   for (const b of chain) {
     for (const tx of b.transactions) {
       const m = tx.memo;
-      if (!m || !m.startsWith(RELAY_PREFIX)) continue;
+      if (!m || (!m.startsWith(RELAY_PREFIX) && !m.startsWith(RELAY_OFF_PREFIX))) continue;
       if (tx.from !== tx.to) continue; // 必须自转，防把别人付款误判成描述符
       if ((tx.burn ?? 0) > 0) continue; // 排除消息形态
+      if (m === `${RELAY_OFF_PREFIX}0`) {
+        dir.delete(tx.from);
+        continue;
+      }
       const d = parseRelayMemo(m);
       if (!d) continue;
       dir.set(tx.from, { address: tx.from, ...d }); // latest-wins：后者覆盖前者

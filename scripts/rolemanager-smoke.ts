@@ -107,11 +107,19 @@ async function main() {
   const relayAgain = await hit('POST', '/relay/start');
   check('POST /relay/start 幂等（再调仍 200 且 on）', relayAgain.status === 200 && relayAgain.body.relay.on === true);
 
-  // ---- 5) POST /relay/stop → 拆干净（端口拒连 + circuits 归零）----
+  await waitUntil(async () => (await hit('GET', '/roles', undefined, false)).body.relay.published === true, 15000, 'relay 描述符发布生效');
+
+  // ---- 5) POST /relay/stop：已上链的 relay 先提交下线 tombstone，并保持端口开放直到 tombstone 被挖进块 ----
   const stopRes = await hit('POST', '/relay/stop');
-  check('POST /relay/stop 200', stopRes.status === 200);
-  check('status.relay.on === false', stopRes.body.relay.on === false);
-  check('status.relay.circuits === 0', stopRes.body.relay.circuits === 0);
+  check('已发布 relay 的首次 stop → 409（避免目录仍指向关闭端口）', stopRes.status === 409);
+  check('下线等待期 relay cell 端口仍可连', (await portOpen(RELAY_PORT)) === true);
+  await waitUntil(() => !node.relays().some((r) => r.address === node.wallet.address), 15000, 'relay 下线 tombstone 生效');
+  check('relay 下线 tombstone 挖进块后目录移除本节点', !node.relays().some((r) => r.address === node.wallet.address));
+
+  const stopAfterRetract = await hit('POST', '/relay/stop');
+  check('目录已移除后 POST /relay/stop 200', stopAfterRetract.status === 200);
+  check('status.relay.on === false', stopAfterRetract.body.relay.on === false);
+  check('status.relay.circuits === 0', stopAfterRetract.body.relay.circuits === 0);
   await sleep(200);
   check('relay 停止后 cell 端口拒连（已拆）', (await portOpen(RELAY_PORT)) === false);
 
@@ -123,7 +131,11 @@ async function main() {
   const relayRestart = await hit('POST', '/relay/start');
   await sleep(200);
   check('relay 停后可重启（端口再次可连）', relayRestart.body.relay.on === true && (await portOpen(RELAY_PORT)) === true);
-  await hit('POST', '/relay/stop');
+  const restartStop = await hit('POST', '/relay/stop');
+  if (restartStop.status === 409) {
+    await waitUntil(() => !node.relays().some((r) => r.address === node.wallet.address), 15000, '重启后 relay 下线 tombstone 生效');
+    await hit('POST', '/relay/stop');
+  }
   await sleep(150);
 
   // ---- 6) HS 前置：单节点链上中继 < 3 → /hs/start 回 409 干净错误（不崩进程）----

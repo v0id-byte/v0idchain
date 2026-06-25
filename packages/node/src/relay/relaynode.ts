@@ -166,6 +166,7 @@ function wsHost(host: string): string {
 
 export class RelayNode {
   private wss: WebSocketServer;
+  private readonly listenReady: Promise<void>;
   private table = new RelayCircuitTable();
   private idPub: Uint8Array;
   private exitHandler?: ExitHandler;
@@ -226,6 +227,23 @@ export class RelayNode {
       maxPerIp: opts.maxPerIp ?? MAX_CIRCUITS_PER_IP,
     };
     this.wss = new WebSocketServer({ host, port, maxPayload: CELL_WS_MAX_PAYLOAD });
+    this.listenReady = new Promise<void>((resolve, reject) => {
+      const onListening = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (e: Error) => {
+        cleanup();
+        reject(e);
+      };
+      const cleanup = () => {
+        this.wss.off('listening', onListening);
+        this.wss.off('error', onError);
+      };
+      this.wss.once('listening', onListening);
+      this.wss.once('error', onError);
+    });
+    this.wss.on('error', () => undefined); // keep later server errors from becoming uncaught 'error' events
     // 取 ws 升级请求的 remoteAddress 作来源 IP，钉到 CellLink 上供每-IP 配额用（拿不到则 undefined → 该连接不计入 IP 配额）。
     this.wss.on('connection', (ws, req) => this.wrap(ws, req?.socket?.remoteAddress));
     // 周期清扫：回收空闲 > idleMs 或寿命 > maxAgeMs 的电路。unref → 不阻止进程退出。
@@ -260,6 +278,10 @@ export class RelayNode {
   }
   get circuits(): number {
     return this.table.size;
+  }
+  /** 等待 cell WebSocketServer 确认监听成功；端口占用等启动错误会在这里以 reject 返回给调用方。 */
+  async ready(): Promise<void> {
+    await this.listenReady;
   }
   async close(): Promise<void> {
     clearInterval(this.sweepTimer);

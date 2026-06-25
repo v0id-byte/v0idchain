@@ -37,6 +37,7 @@ import {
   BUY_PREFIX,
   DEL_PREFIX,
   makeRelayClaim,
+  makeRelayRetraction,
   parseRelays,
   relaysToJSON,
 } from '@v0idchain/core';
@@ -75,6 +76,8 @@ export class V0idNode {
   private seenTx = new Set<string>(); // 已见过的交易，避免广播回声
   private static readonly MAX_SEEN = 5000; // seenTx 上限，FIFO 淘汰，防止长跑内存无界增长
   private mining = false;
+  private miningGeneration = 0;
+  private miningTimer?: ReturnType<typeof setTimeout>;
   // ---- 同步门控：连上网络且追平后才开挖，避免一启动就从创世单独挖出一条平行链 ----
   private firstPeerAt = 0; // 首次连上对等节点的时刻（断网清零）
   private lastSyncAt = 0; // 最近收到 BLOCKS（同步）消息的时刻
@@ -203,6 +206,13 @@ export class V0idNode {
   /** 发布本节点为洋葱中继：自转 1 币 + memo `RELAY|<okey>|<host:port>|<bw>|<stake>`（挖进区块后全网可发现）。 */
   publishRelay(onionPubHex: string, host: string, port: number): { ok: boolean; tx?: Transaction; error?: string } {
     const r = makeRelayClaim(onionPubHex, host, port);
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, this.wallet.address, 1, r.memo!, MIN_FEE);
+  }
+
+  /** 发布本节点中继下线 tombstone：latest-wins 目录遇到后移除该地址，避免停服后仍被选路。 */
+  retractRelay(): { ok: boolean; tx?: Transaction; error?: string } {
+    const r = makeRelayRetraction();
     if (!r.ok) return { ok: false, error: r.error };
     return this.submit(this.wallet, this.wallet.address, 1, r.memo!, MIN_FEE);
   }
@@ -397,23 +407,35 @@ export class V0idNode {
   }
 
   startMining(intervalMs: number): void {
+    this.stopMining();
     this.mining = true;
+    const generation = ++this.miningGeneration;
+    const schedule = (delay: number) => {
+      if (!this.mining || generation !== this.miningGeneration) return;
+      this.miningTimer = setTimeout(loop, delay);
+      this.miningTimer.unref?.();
+    };
     const loop = async () => {
-      if (!this.mining) return;
+      if (!this.mining || generation !== this.miningGeneration) return;
       if (!this.canMine()) {
         this.syncing = true; // 没连上/没追平 → 等，不挖（避免分叉）
-        setTimeout(loop, 1000);
+        schedule(1000);
         return;
       }
       this.syncing = false;
       await this.mineOnce(); // 等这块挖完（PoW 真用时间）再排下一块
-      if (this.mining) setTimeout(loop, intervalMs);
+      schedule(intervalMs);
     };
-    setTimeout(loop, intervalMs);
+    schedule(intervalMs);
   }
 
   stopMining(): void {
     this.mining = false;
+    this.miningGeneration++;
+    if (this.miningTimer) {
+      clearTimeout(this.miningTimer);
+      this.miningTimer = undefined;
+    }
   }
 
   // ---- 接收 P2P 消息 ----

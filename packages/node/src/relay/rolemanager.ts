@@ -82,6 +82,7 @@ export class RoleManager {
   private relayPublished = false; // 中继描述符是否已上链（自动发布循环置位）
   private publishTimer?: ReturnType<typeof setInterval>;
   private hs?: { address: string; stop: () => void };
+  private hsStartPending?: Promise<RoleStatus>;
   private hsTarget?: { host: string; port: number };
   private socks?: SocksProxy;
   private socksPort: number | null = null;
@@ -148,6 +149,12 @@ export class RoleManager {
       const set = new Set(this.exitAllow);
       relay.setExitPolicy((host, port) => set.has(`${host}:${port}`));
     }
+    try {
+      await relay.ready();
+    } catch (e) {
+      await relay.close().catch(() => undefined);
+      throw e;
+    }
     this.relay = relay;
     this.relayPublished = false;
     // 自动发布描述符（从 CLI tryPublish 抬过来）：余额够且尚未发布时发一次。
@@ -169,8 +176,17 @@ export class RoleManager {
     return this.status();
   }
 
-  /** 停止中继：关 cell 端口（await close 拆掉所有电路）+ 清掉自动发布定时器。已停 → no-op。 */
+  /** 停止中继：若已上链，先发下线 tombstone 并继续服务，避免目录仍可见但端口关闭；未上链则直接关。 */
   async stopRelay(): Promise<RoleStatus> {
+    if (this.relayPublished) {
+      const current = this.node.relays().find((r) => r.address === this.node.wallet.address);
+      if (!current) this.relayPublished = false;
+      else {
+        const r = this.node.retractRelay();
+        if (!r.ok) throw new Error(`中继已发布，无法直接关闭；下线描述符提交失败：${r.error ?? 'unknown'}`);
+        throw new Error('中继已发布，已提交下线描述符；请等待该交易被挖进区块后再停止，以免客户端选到关闭端口');
+      }
+    }
     if (this.publishTimer) {
       clearInterval(this.publishTimer);
       this.publishTimer = undefined;
@@ -191,16 +207,24 @@ export class RoleManager {
    */
   async startHs(target: { host: string; port: number }, numIntros = 3): Promise<RoleStatus> {
     if (this.hs) return this.status(); // 幂等：已托管则不再起第二个
+    if (this.hsStartPending) return this.hsStartPending; // 双击/并发请求复用同一个在途启动，避免泄漏孤儿 intro
     if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !target.host) {
       throw new Error('hs target 非法：需 host:port，例如 127.0.0.1:8080');
     }
     if (this.node.relays().length < MIN_RELAYS) {
       throw new Error('链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重试）');
     }
-    const { address, stop } = await serveHiddenService({ dataDir: this.dataDir, target, deps: this.hsDeps, numIntros });
-    this.hs = { address, stop };
-    this.hsTarget = { ...target };
-    return this.status();
+    this.hsStartPending = (async () => {
+      const { address, stop } = await serveHiddenService({ dataDir: this.dataDir, target, deps: this.hsDeps, numIntros });
+      this.hs = { address, stop };
+      this.hsTarget = { ...target };
+      return this.status();
+    })();
+    try {
+      return await this.hsStartPending;
+    } finally {
+      this.hsStartPending = undefined;
+    }
   }
 
   /** 停止隐藏服务：销毁所有引入/会合电路（描述符在 HSDir 上靠 TTL 自然过期）。已停 → no-op。 */
