@@ -2,7 +2,7 @@
 
 一个用 **Swift + SwiftUI** 写的 macOS 原生轻客户端，连上任意 v0idChain 节点即可：建钱包、查余额、转账、发链上消息、逛链。**本地保管私钥、本地 ed25519 签名**，通过 WebSocket 连一个节点拉全链算余额、广播交易、接收新块——**不挖矿，不需要 Node 运行时**。
 
-> 权威协议见仓库根 [`docs/CLIENT-PROTOCOL.md`](../../docs/CLIENT-PROTOCOL.md)。本客户端的 `txid` 序列化与签名与 `packages/core` **逐字节兼容**，已用规范 §9 金标准向量自检 + 真节点端到端验证（见下）。
+> 权威协议见仓库根 [`docs/blockchain/CLIENT-PROTOCOL.md`](../../docs/blockchain/CLIENT-PROTOCOL.md)。本客户端的 `txid` 序列化与签名与 `packages/core` **逐字节兼容**，已用规范 §9 金标准向量自检 + 真节点端到端验证（见下）。
 
 ---
 
