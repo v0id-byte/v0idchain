@@ -59,9 +59,10 @@ app.on('web-contents-created', (_e, contents) => {
   if (contents.getType() === 'webview') {
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // 阻止 webview 把自己导航到我们窗口之外，或被诱导加载非预期协议（file: 等）。
+    // 同时复用地址栏/书签的 host 校验，避免不可信 .v0id 页面通过链接/表单/重定向
+    // 导航主 frame 到 127.0.0.1、私网 IP 等本机/内网资源，绕过 normalizeTarget 的 SSRF 防护。
     contents.on('will-navigate', (ev, navUrl) => {
-      const ok = /^https?:\/\//i.test(navUrl) || navUrl === 'about:blank';
-      if (!ok) ev.preventDefault();
+      if (!isAllowedWebviewNavigation(navUrl)) ev.preventDefault();
     });
   }
 });
@@ -283,6 +284,11 @@ ipcMain.handle('v0id:bookmarks:remove', (_e, url) => {
 //   - 已带 http://｜https:// → 原样（但 host 必须是 .v0id 或普通域名/IP）
 //   - 裸 host（含 .v0id 或普通域名）→ 补 http://
 //   - 仅允许 host 看起来像 .v0id 结尾，或含点的普通域名/IP（避免把乱输入当地址）
+function isAllowedWebviewNavigation(navUrl) {
+  if (navUrl === 'about:blank') return true;
+  return Boolean(normalizeTarget(navUrl));
+}
+
 function normalizeTarget(raw) {
   if (typeof raw !== 'string') return null;
   let s = raw.trim();
