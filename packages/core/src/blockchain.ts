@@ -40,9 +40,17 @@ import {
   CLAIM_PREFIX,
   REFUND_PREFIX,
   RED_EXPIRY,
+  STAKE_ESCROW_ADDRESS,
+  STAKE_PREFIX,
+  UNSTAKE_PREFIX,
+  SLASH_PREFIX,
+  STAKE_MIN,
+  STAKE_LOCK_BLOCKS,
+  MEASURER_ADDRESS,
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
 import { parseRedCreate, parseClaimId, parseRefundId, computeShare, redSeed, type RedMode } from './redpacket.js';
+import { parseStakeCreate, parseUnstakeId, parseSlash, type StakePool } from './staking.js';
 
 /** 创世区块：不做 PoW，参数全固定 → 所有节点算出同一个 hash。 */
 export function genesisBlock(): Block {
@@ -146,6 +154,7 @@ export interface ChainState {
   balances: Map<string, number>;
   nonces: Map<string, number>;
   pools: Map<string, RedPool>; // 红包池：id（创建交易 txid）→ 池
+  stakes: Map<string, StakePool>; // 质押池：id（STAKE 交易 txid）→ 池（Phase 3A-1）
 }
 
 export interface ChainJSON {
@@ -159,8 +168,47 @@ export interface ChainJSON {
  * atHeight = 该交易所在区块高度（REFUND 过期判定用）。**只看 remainingCount/refunded（选包阶段也能精确跟踪），
  * 不看 remaining 金额** —— 保证选包与整链校验对“能否抢/退”得出完全一致的结论。
  */
-function redOpError(tx: Transaction, pools: Map<string, RedPool>, atHeight: number): string | null {
+function redOpError(
+  tx: Transaction,
+  pools: Map<string, RedPool>,
+  stakes: Map<string, StakePool>,
+  atHeight: number,
+): string | null {
   const m = tx.memo;
+  // ---- 质押操作（STAKE/UNSTAKE/SLASH）：与红包 RED/CLAIM/REFUND 同款合法性校验 ----
+  if (m.startsWith(UNSTAKE_PREFIX)) {
+    if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
+    if (tx.amount !== 0) return '赎回金额须为 0';
+    const id = parseUnstakeId(m);
+    if (!id) return '赎回格式无效';
+    const p = stakes.get(id);
+    if (!p) return '质押不存在';
+    if (tx.from !== p.staker) return '只有质押人能赎回';
+    if (p.withdrawn) return '该质押已赎回';
+    if (atHeight < p.lockedUntil) return `质押锁定中（需到第 ${p.lockedUntil} 块）`;
+    return null;
+  }
+  if (m.startsWith(SLASH_PREFIX)) {
+    if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
+    if (tx.amount !== 0) return '罚没金额须为 0';
+    if (tx.from !== MEASURER_ADDRESS) return '只有度量者能罚没';
+    const s = parseSlash(m);
+    if (!s) return '罚没格式无效';
+    const p = stakes.get(s.stakeId);
+    if (!p) return '质押不存在';
+    if (p.withdrawn) return '该质押已赎回，无法罚没';
+    if (p.amount - p.slashed <= 0) return '该质押已被罚没殆尽';
+    return null;
+  }
+  // 质押 = 转给托管地址（旧节点也当普通转账锁进托管 → 不静默分叉）。发往托管地址的交易**必须**是合法质押。
+  if (tx.to === STAKE_ESCROW_ADDRESS) {
+    if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
+    const meta = parseStakeCreate(m);
+    if (!meta) return '发往质押托管地址的交易必须是合法质押（STAKE|guard或middle或hsdir）';
+    if (tx.amount < STAKE_MIN[meta.role]) return `质押额须 ≥ 该角色最低押金 ${STAKE_MIN[meta.role]}`;
+    return null;
+  }
+  // ---- 红包操作（RED/CLAIM/REFUND）----
   if (m.startsWith(CLAIM_PREFIX)) {
     if ((tx.burn ?? 0) > 0) return '红包交易不能附带销毁';
     if (tx.amount !== 0) return '领取金额须为 0';
@@ -250,6 +298,50 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
       return;
     }
   }
+  // ---- 质押托管（Phase 3A-1）：STAKE/UNSTAKE/SLASH，与红包 RED/CLAIM/REFUND 同款，共识权威在此 ----
+  // 质押：转给托管地址 → 锁押金、开质押池。余额效果 = 普通转账到托管（旧节点也如此），额外开池。
+  if (tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
+    const meta = parseStakeCreate(m);
+    if (meta && tx.amount >= STAKE_MIN[meta.role]) {
+      credit(tx.from, -(tx.amount + tx.fee));
+      credit(STAKE_ESCROW_ADDRESS, tx.amount);
+      st.stakes.set(tx.txid, {
+        staker: tx.from, role: meta.role, amount: tx.amount,
+        lockedUntil: atHeight + STAKE_LOCK_BLOCKS, createdHeight: atHeight, slashed: 0, withdrawn: false,
+      });
+      bump();
+      return;
+    }
+    // 发往托管的非法 STAKE → 合法链上不会发生（validateChain/redOpError 已拦）；稳妥起见落到 NORMAL
+  }
+  // 赎回：质押人取回本金 - 已罚没（已被 redOpError 校验过锁定期/归属/未赎回）
+  if (m.startsWith(UNSTAKE_PREFIX) && tx.amount === 0) {
+    const id = parseUnstakeId(m);
+    const p = id ? st.stakes.get(id) : undefined;
+    if (p && !p.withdrawn) {
+      const principal = p.amount - p.slashed; // 退回本金扣除累计罚没
+      credit(tx.from, principal - tx.fee);
+      credit(STAKE_ESCROW_ADDRESS, -principal);
+      p.withdrawn = true;
+      bump();
+      return;
+    }
+  }
+  // 罚没：度量者把失职押金从托管移交国库（GENESIS_PREMINE_ADDRESS）；已被 redOpError 校验过度量者权限/池存在
+  if (m.startsWith(SLASH_PREFIX) && tx.amount === 0 && tx.from === MEASURER_ADDRESS) {
+    const s = parseSlash(m);
+    const p = s ? st.stakes.get(s.stakeId) : undefined;
+    if (s && p && !p.withdrawn) {
+      const remaining = p.amount - p.slashed;
+      const cut = Math.min(s.amount, Math.max(0, remaining)); // 至多罚没剩余本金
+      p.slashed += cut;
+      credit(STAKE_ESCROW_ADDRESS, -cut);
+      credit(GENESIS_PREMINE_ADDRESS, cut); // 罚没币移交国库（而非烧毁），便于审计与再分配
+      credit(tx.from, -tx.fee); // 度量者付打包手续费
+      bump();
+      return;
+    }
+  }
   // 普通交易（转账/消息/昵称/集市）
   const burn = tx.burn ?? 0;
   credit(tx.from, -(tx.amount + tx.fee + burn));
@@ -304,6 +396,46 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
       return;
     }
   }
+  // 质押操作在选包阶段与 applyTx 完全一致（无区块 hash 依赖 → 可原样推进，杜绝选包/校验分歧）
+  if (tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
+    const meta = parseStakeCreate(m);
+    if (meta && tx.amount >= STAKE_MIN[meta.role]) {
+      credit(tx.from, -(tx.amount + tx.fee));
+      credit(STAKE_ESCROW_ADDRESS, tx.amount);
+      st.stakes.set(tx.txid, {
+        staker: tx.from, role: meta.role, amount: tx.amount,
+        lockedUntil: atHeight + STAKE_LOCK_BLOCKS, createdHeight: atHeight, slashed: 0, withdrawn: false,
+      });
+      bump();
+      return;
+    }
+  }
+  if (m.startsWith(UNSTAKE_PREFIX) && tx.amount === 0) {
+    const id = parseUnstakeId(m);
+    const p = id ? st.stakes.get(id) : undefined;
+    if (p && !p.withdrawn) {
+      const principal = p.amount - p.slashed;
+      credit(tx.from, principal - tx.fee);
+      credit(STAKE_ESCROW_ADDRESS, -principal);
+      p.withdrawn = true;
+      bump();
+      return;
+    }
+  }
+  if (m.startsWith(SLASH_PREFIX) && tx.amount === 0 && tx.from === MEASURER_ADDRESS) {
+    const s = parseSlash(m);
+    const p = s ? st.stakes.get(s.stakeId) : undefined;
+    if (s && p && !p.withdrawn) {
+      const remaining = p.amount - p.slashed;
+      const cut = Math.min(s.amount, Math.max(0, remaining));
+      p.slashed += cut;
+      credit(STAKE_ESCROW_ADDRESS, -cut);
+      credit(GENESIS_PREMINE_ADDRESS, cut);
+      credit(tx.from, -tx.fee);
+      bump();
+      return;
+    }
+  }
   const burn = tx.burn ?? 0;
   credit(tx.from, -(tx.amount + tx.fee + burn));
   credit(tx.to, tx.amount);
@@ -335,7 +467,7 @@ export class Blockchain {
 
   // ---- 状态：重放整条链，得到余额表 / nonce 表 / 红包池（假定链已合法；校验在 validateChain）----
   computeState(chain: Block[] = this.chain): ChainState {
-    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map() };
+    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map(), stakes: new Map() };
     for (const block of chain) {
       for (const tx of block.transactions) {
         if (isCoinbase(tx)) {
@@ -364,7 +496,12 @@ export class Blockchain {
     if (this.mempool.length >= MAX_MEMPOOL) return { ok: false, error: '交易池已满' };
     // 先单独判金额/销毁额/手续费，给出明确报错（否则非整数/费太低会被 verifyTransaction 笼统当成“签名无效”，误导用户）
     const burn = tx.burn ?? 0;
-    const isZeroOp = typeof tx.memo === 'string' && (tx.memo.startsWith(CLAIM_PREFIX) || tx.memo.startsWith(REFUND_PREFIX));
+    const isZeroOp =
+      typeof tx.memo === 'string' &&
+      (tx.memo.startsWith(CLAIM_PREFIX) ||
+        tx.memo.startsWith(REFUND_PREFIX) ||
+        tx.memo.startsWith(UNSTAKE_PREFIX) ||
+        tx.memo.startsWith(SLASH_PREFIX));
     if (!Number.isInteger(tx.amount) || tx.amount < 0) return { ok: false, error: '金额必须是非负整数' };
     if (!Number.isInteger(burn) || burn < 0) return { ok: false, error: '销毁额必须是非负整数' };
     if (tx.amount === 0 && burn === 0 && !isZeroOp) return { ok: false, error: '空交易：转账须金额>0，消息须销毁额>0' };
@@ -377,9 +514,9 @@ export class Blockchain {
     // 发往红包托管地址只允许合法红包（RED）；其它一律拒（防误把钱锁死）。redOpError 下方统一判。
     if (this.mempool.some((t) => t.txid === tx.txid)) return { ok: false, error: '交易已在池中' };
 
-    const { balances, nonces, pools } = this.computeState();
-    // 红包操作（RED/CLAIM/REFUND）合法性：池存在/未抢完/未重复领/已过期等（按 height+1 估算）
-    const redErr = redOpError(tx, pools, this.height + 1);
+    const { balances, nonces, pools, stakes } = this.computeState();
+    // 红包/质押操作合法性：池存在/未抢完/未重复领/已过期、质押锁定期/度量者权限等（按 height+1 估算）
+    const redErr = redOpError(tx, pools, stakes, this.height + 1);
     if (redErr) return { ok: false, error: redErr };
     const pending = this.mempool.filter((t) => t.from === tx.from);
     const expectedNonce = (nonces.get(tx.from) ?? 0) + pending.length;
@@ -421,7 +558,7 @@ export class Blockchain {
         // 同 validateChain 的接纳条件：nonce 对、红包操作合法、余额够付、自洽签名 → 必能通过整链校验
         if (
           tx.nonce === expected &&
-          !redOpError(tx, st.pools, atHeight) &&
+          !redOpError(tx, st.pools, st.stakes, atHeight) &&
           cost <= (st.balances.get(tx.from) ?? 0) &&
           verifyTransaction(tx)
         ) {
@@ -529,7 +666,7 @@ export class Blockchain {
     if (badCp) return { ok: false, error: `#${badCp.index} 与 checkpoint 不一致` };
 
     // 状态机：余额/nonce/红包池。与 computeState 共用 applyTx，确保各节点一致。
-    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map() };
+    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map(), stakes: new Map() };
 
     for (let i = 0; i < chain.length; i++) {
       const b = chain[i];
@@ -585,8 +722,8 @@ export class Blockchain {
         // 普通交易不得打到空地址（销毁应走 burn 字段）；发往托管地址的合法性交给 redOpError 判
         if (tx.to === NULL_ADDRESS) return { ok: false, error: `#${i} 收款为空地址非法` };
         // 红包操作合法性（池存在/未抢完/未重复领/发起人退款且已过期…）；非红包返回 null
-        const redErr = redOpError(tx, st.pools, b.index);
-        if (redErr) return { ok: false, error: `#${i} 红包：${redErr}` };
+        const redErr = redOpError(tx, st.pools, st.stakes, b.index);
+        if (redErr) return { ok: false, error: `#${i} 红包/质押：${redErr}` };
         // 余额够付：发送方实付 = 金额 + 手续费 + 销毁额（RED=总额+费；CLAIM/REFUND=费；收到的 share 由 applyTx 入账）
         const cost = tx.amount + tx.fee + (tx.burn ?? 0);
         if (cost > (st.balances.get(tx.from) ?? 0)) {

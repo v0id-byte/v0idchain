@@ -2,7 +2,7 @@
 // 任何节点扫一遍链，就能把这些交易还原成消息列表 —— 消息随链全网同步、永久可查，零中心化服务器。
 // 收件箱 = to 是我的消息；发件箱 = from 是我的消息。memo 即正文，无需任何前缀。
 import type { Block } from './block.js';
-import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX } from './config.js';
+import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX, STAKE_PREFIX, UNSTAKE_PREFIX, SLASH_PREFIX } from './config.js';
 import { PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX, PETFARM_PREFIX, PETUNSTATION_PREFIX } from './pets.js';
 import { FISH_PREFIX } from './fishing.js';
 import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
@@ -42,6 +42,9 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(RED_PREFIX) ||
     memo.startsWith(CLAIM_PREFIX) ||
     memo.startsWith(REFUND_PREFIX) ||
+    memo.startsWith(STAKE_PREFIX) ||
+    memo.startsWith(UNSTAKE_PREFIX) ||
+    memo.startsWith(SLASH_PREFIX) ||
     memo.startsWith(FISH_PREFIX) ||
     memo.startsWith(LAND_PREFIX) ||
     memo.startsWith(ZONE_PREFIX) ||

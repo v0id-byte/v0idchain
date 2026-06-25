@@ -126,11 +126,15 @@ export const NULL_ADDRESS = '0x' + '0'.repeat(64);
 /** 红包托管地址：发红包时锁定的总额记到这里（不可花，等价于“合约托管账户”）。与 NULL 区分，便于审计。 */
 export const RED_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '1';
 
+// ---- 中继质押托管（Phase 3A-1：给洋葱中继名录加“押金”门槛，软分叉）----
+/** 质押托管地址：STAKE 锁定的押金记到这里（不可花，等价于“质押合约账户”）。与红包托管 '…1' 区分（'…2'）。 */
+export const STAKE_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '2';
+
 /**
- * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址。
- * 供 UI / 新人发现等处把它们与真实用户区分（如不把红包托管地址误报成“🆕 新地址首次上链”）。
+ * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址。
+ * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”）。
  */
-export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS]);
+export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS, STAKE_ESCROW_ADDRESS]);
 /** 三种红包操作的 memo 前缀。RED 是“自转 amount=总额 + memo”；CLAIM/REFUND 是 amount=0 + memo。 */
 export const RED_PREFIX = 'RED|'; // 发红包：RED|<份数>|<r|e>（r=拼手气随机, e=均分）
 export const CLAIM_PREFIX = 'CLAIM|'; // 抢红包：CLAIM|<红包txid>
@@ -142,3 +146,60 @@ export const MAX_RED_COUNT = 100;
  * 取 10（约 80 秒 @ 8s 目标出块）——抢红包讲究“快”，过期即可退（过期前后都能抢，直到退款）。所有节点须一致（改它即软分叉）。
  */
 export const RED_EXPIRY = 10;
+
+// ---- 中继质押托管（Phase 3A-1：押金 + 失职罚没，软分叉）----
+// 三种操作（建在普通交易 + memo 之上，旧节点不认 → 软分叉，边界同红包 CLAIM/REFUND）：
+//   质押 STAKE   ：转给托管地址（to==STAKE_ESCROW_ADDRESS）amount=押金，memo `STAKE|<role>`。
+//                  旧节点只看到一笔“转账到托管” → 余额效果一致、不静默分叉；分叉只在 UNSTAKE/SLASH（amount=0）处发生。
+//   赎回 UNSTAKE ：amount=0，memo `UNSTAKE|<stakeTxid>`。仅质押人、且过 STAKE_LOCK_BLOCKS 锁定期后，取回本金-已罚没。
+//   罚没 SLASH   ：amount=0，memo `SLASH|<stakeId>|<金额>|<epoch>`。仅 MEASURER_ADDRESS（度量者）签发，把失职押金移交国库。
+/** 三种质押操作的 memo 前缀。STAKE 是“转托管 amount=押金 + memo”；UNSTAKE/SLASH 是 amount=0 + memo。 */
+export const STAKE_PREFIX = 'STAKE|'; // 质押：STAKE|<role>（role ∈ guard|middle|hsdir）
+export const UNSTAKE_PREFIX = 'UNSTAKE|'; // 赎回：UNSTAKE|<stakeTxid>（仅质押人、过锁定期）
+export const SLASH_PREFIX = 'SLASH|'; // 罚没：SLASH|<stakeId>|<金额>|<epoch>（仅度量者签发）
+
+/**
+ * ⚠️ 度量者地址（measurer / 失职裁决者）—— **开发占位地址，生产前必须轮换！**
+ * 谁持有该地址对应私钥，谁就能对任何质押发 SLASH 罚没押金。本占位地址由下方 DEV_MEASURER_SEED 这一
+ * **公开已知**种子派生（仅供自检签名用）→ 生产部署前运营者**必须** `wallet new` 生成自己的度量者钱包、
+ * 把本常量替换为新地址（私钥只存运营者本机，绝不进仓库），否则任何人都能凭公开种子私钥乱罚没。
+ * 轮换方式同 GENESIS_PREMINE_ADDRESS：改这里的地址即可（所有节点必须一致）。
+ */
+export const MEASURER_ADDRESS = '0x6077987c998066ed7dea3e30555add0523482475c705fb92c0c8e78307b8e62c';
+/**
+ * ⚠️ 度量者**开发种子**（32 字节私钥 hex）—— 仅供 staking-selftest 以度量者身份签 SLASH 用。
+ * 这是**公开已知**种子：生产环境的 MEASURER_ADDRESS 必须轮换到由它**派生不出**的新地址（私钥保密）。
+ * 金标向量：fromPrivateKeyHex(DEV_MEASURER_SEED).address === MEASURER_ADDRESS（self-test 锁定）。
+ */
+export const DEV_MEASURER_SEED = '00000000000000000000000000000000000000000000000000000000deadbeef';
+
+/**
+ * 每个角色的最低押金（$V0ID）。Guard ≥ HSDir ≥ Middle（押金高低对应去匿名风险/信任）：
+ *   guard 直接看到客户端 IP（入口）→ 风险最高，押金最高；hsdir 存隐藏服务描述符 → 中等；middle 仅转发 → 最低。
+ * v1 无 exit 角色。数值参照创世预挖 GENESIS_PREMINE=1000：取**个位~十几币**的小额（guard 仅占预挖 1.2%），
+ * 让 ~1000 币的小经济体也轻松付得起、又有真实的成本门槛与女巫成本。当前是教学/小算力网络的保守起点，
+ * 主网算力上来后可按需调大（改它即软分叉，全网须一致）。
+ */
+export const STAKE_MIN: { guard: number; middle: number; hsdir: number } = { guard: 12, hsdir: 8, middle: 4 };
+
+/**
+ * 押金锁定块数：质押后再过这么多块才能 UNSTAKE 取回本金。取 12（约 96 秒 @ 8s 目标出块，与红包过期
+ * RED_EXPIRY=10 同量级的“托管冷却”概念）——既给度量者一个完整 EPOCH_BLOCKS 周期内 SLASH 失职中继的窗口
+ * （使其无法“质押→立刻赎回”逃过罚没），又不至于过长。这是教学/小算力网络的保守起点，可按需调大；
+ * 所有节点须一致（改它即软分叉）。
+ */
+export const STAKE_LOCK_BLOCKS = 12;
+
+/**
+ * 角色奖励倍率（后续阶段的奖励/激励计算消费；本阶段仅定义+注释，不参与共识）。middle 基准 1×，
+ * guard/hsdir 按其稀缺性与价值给更高倍率（与 STAKE_MIN 的高低排序一致）。可调。
+ */
+export const ROLE_REWARD_MULT: { guard: number; middle: number; hsdir: number } = { guard: 3, middle: 1, hsdir: 2 };
+
+/** 度量/奖励周期长度（块）：10 块约 80 秒 @ 8s（≤ STAKE_LOCK_BLOCKS，保证锁定期覆盖至少一个周期）。后续阶段按 epoch 结算奖励与度量。可调。 */
+export const EPOCH_BLOCKS = 10;
+
+/** 早期引导奖励截止高度：此高度前的 epoch 给中继额外奖励倍率，吸引首批中继加入。后续阶段消费。可调。 */
+export const BOOTSTRAP_BONUS_UNTIL_HEIGHT = 50_000;
+/** 早期引导奖励倍率：BOOTSTRAP_BONUS_UNTIL_HEIGHT 之前，奖励再 ×此倍率。后续阶段消费。可调。 */
+export const BOOTSTRAP_BONUS_MULT = 2;

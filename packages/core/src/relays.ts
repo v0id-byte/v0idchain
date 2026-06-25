@@ -11,6 +11,7 @@
 // - **不进 isProtocolMemo**：RELAY 是 burn=0 的自转，isMessageTx 天然排除，压根不是消息——与 NAME| 一致（见 messages.ts 注释）。
 import type { Block } from './block.js';
 import { MAX_MEMO } from './config.js';
+import { computeStakeState } from './staking.js';
 
 export const RELAY_PREFIX = 'RELAY|';
 
@@ -97,6 +98,31 @@ export function parseRelays(chain: Block[]): Map<string, RelayDescriptor> {
     }
   }
   return dir;
+}
+
+/**
+ * 质押门槛过滤（Phase 3A-1，**纯客户端选路策略，软分叉、不改共识**）：
+ * - requireStake=false（默认）：返回完整目录，行为与 parseRelays 完全一致 → 向后兼容，现网无任何变化。
+ * - requireStake=true：只保留“描述符 stakeTxid 指向一笔**有效质押**”的中继。有效 = 该质押的
+ *   质押人正是中继地址本身、未赎回、且本金未被罚没殆尽（amount-slashed > 0）。
+ *   这让客户端可选择只走“押了真金白银、失职会被罚没”的中继，抬高女巫/恶意中继成本。
+ * 质押视图经 computeStakeState 由链重放得到（与共识 applyTx 同源）。
+ */
+export function parseRelaysFiltered(chain: Block[], requireStake = false): Map<string, RelayDescriptor> {
+  const dir = parseRelays(chain);
+  if (!requireStake) return dir;
+  const stakes = computeStakeState(chain);
+  const filtered = new Map<string, RelayDescriptor>();
+  for (const [addr, d] of dir) {
+    if (d.stakeTxid === '0') continue; // 未声明质押 → 排除
+    const p = stakes.get(d.stakeTxid);
+    if (!p) continue; // 引用的质押不存在
+    if (p.staker !== addr) continue; // 质押人须正是该中继地址（防引用他人质押冒充）
+    if (p.withdrawn) continue; // 已赎回 → 押金已撤，不再有效
+    if (p.amount - p.slashed <= 0) continue; // 本金被罚没殆尽 → 失去担保
+    filtered.set(addr, d);
+  }
+  return filtered;
 }
 
 /** 地址 → 描述符（无则 undefined）。 */
