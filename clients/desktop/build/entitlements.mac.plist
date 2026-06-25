@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  v0id 浏览器 · 硬化运行时（Hardened Runtime）entitlements。
+
+  既给 Electron 主进程/Chromium 用，也给我们用 ELECTRON_RUN_AS_NODE 拉起的内嵌 Node 守护进程用
+  （electron-builder 的 entitlementsInherit 让被同一 .app 内签名的子组件继承这一套）。
+
+    • cs.allow-jit / cs.allow-unsigned-executable-memory
+        V8 需要 JIT + 可写可执行内存；Electron 与「Electron-as-Node 守护进程」都跑 V8，缺了会被硬化运行时杀掉。
+    • cs.disable-library-validation
+        允许同一 .app 内、用同一 Team 签名（或 Electron 自带）的库/二进制被加载——
+        我们 spawn 自己 .app 里的 Electron 二进制当 Node 跑 bundle，需放开库校验。
+    • network.client / network.server
+        守护进程要主动连公网种子/中继（client），又要在 127.0.0.1 上监听 SOCKS5 + 本地 HTTP API（server）。
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>

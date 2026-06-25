@@ -3,3 +3,6 @@ dist/
 out/
 *.log
 .DS_Store
+
+# esbuild 打出的守护进程 bundle —— 是构建产物（pnpm bundle:daemon 生成），不入库
+resources/daemon/*.cjs
