@@ -238,6 +238,24 @@ export class V0idNode {
       .map(([id, p]) => ({ id, ...p }));
   }
 
+  /**
+   * 本节点收到的中继激励发放（只读）：扫链上 `to==本地址` 且 memo 以 `REWARD|` 开头的交易。
+   * 当前引导期不发放奖励（见 INCENTIVE-PROTOCOL）→ 正常返回空数组；接入按 epoch 结算后自然填充。
+   * 仅做“展示/对账”，与共识无关（不解释 memo 语义、不改变余额计算）。
+   */
+  rewards() {
+    const me = this.wallet.address;
+    const out: { txid: string; from: string; amount: number; memo: string; height: number }[] = [];
+    for (const b of this.bc.chain) {
+      for (const tx of b.transactions) {
+        if (tx.to === me && typeof tx.memo === 'string' && tx.memo.startsWith('REWARD|')) {
+          out.push({ txid: tx.txid, from: tx.from, amount: tx.amount, memo: tx.memo, height: b.index });
+        }
+      }
+    }
+    return out;
+  }
+
   // ---- 链上抢红包 ----
   /** 发红包：转给托管地址 + memo `RED|份数|模式`，锁总额、开池（需 ≥ 总额+手续费 余额；挖进区块后可抢）。 */
   redPacket(total: number, count: number, mode = 'r', fee?: number): { ok: boolean; tx?: Transaction; error?: string } {

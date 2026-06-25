@@ -25,4 +25,26 @@ contextBridge.exposeInMainWorld('v0id', {
     ipcRenderer.on('v0id:status', handler);
     return () => ipcRenderer.removeListener('v0id:status', handler);
   },
+
+  // 节点控制 API（角色板块 / 钱包板块用）。
+  // 安全：渲染层**永不**接触 API 令牌——所有调用 renderer→preload→**主进程**，由主进程从
+  // userData/v0id/api.token 读令牌、对 127.0.0.1:7001 发请求（写接口带 Authorization: Bearer）。
+  // 这里每个方法只是把入参经 IPC 转给主进程，主进程统一回 { ok, data } 或 { ok:false, error }。
+  api: {
+    // ---- 只读（GET，无需令牌）----
+    roles: () => ipcRenderer.invoke('v0id:api:roles'),
+    stakeStatus: () => ipcRenderer.invoke('v0id:api:stakeStatus'),
+    walletInfo: () => ipcRenderer.invoke('v0id:api:walletInfo'),
+    txStatus: (txid) => ipcRenderer.invoke('v0id:api:txStatus', txid),
+    // ---- 写（POST，主进程带 Bearer）----
+    relayStart: () => ipcRenderer.invoke('v0id:api:relayStart'),
+    relayStop: () => ipcRenderer.invoke('v0id:api:relayStop'),
+    hsStart: (host, port) => ipcRenderer.invoke('v0id:api:hsStart', { host, port }),
+    hsStop: () => ipcRenderer.invoke('v0id:api:hsStop'),
+    mineStart: (intervalMs) => ipcRenderer.invoke('v0id:api:mineStart', intervalMs),
+    mineStop: () => ipcRenderer.invoke('v0id:api:mineStop'),
+    stake: (role) => ipcRenderer.invoke('v0id:api:stake', role),
+    unstake: (stakeId) => ipcRenderer.invoke('v0id:api:unstake', stakeId),
+    send: (to, amount, memo) => ipcRenderer.invoke('v0id:api:send', { to, amount, memo }),
+  },
 });
