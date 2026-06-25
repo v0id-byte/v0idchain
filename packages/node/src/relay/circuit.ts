@@ -38,6 +38,9 @@ export interface RelayCircuit {
   cellDropped: number; // 当前窗口内被限速丢弃的 cell 计数（超阈值 → 判定洪泛销毁电路）
   cellDropWindowAt: number; // 丢弃计数窗口起点（每窗口归零）
   extendTimer?: ReturnType<typeof setTimeout>; // EXTEND 拨号下一跳的连接超时句柄；CREATED 到达或拆电路时清
+  // ---- Mixnet（Phase 2C，默认关；仅 mixnet 启用时使用）：本电路当前因混入延迟而“扣在手里”的 setTimeout 句柄集合。----
+  // 每个 setTimeout 在到点把一个被延迟的转发/后向 cell 真正发出；其回调先把自己从此集合摘除。拆电路时清空全部（不让延迟 cell 在 teardown 后还发）。
+  mixTimers?: Set<ReturnType<typeof setTimeout>>;
 }
 
 /** 中继的电路表。circId 全局随机唯一 → 用两张表按“来向”区分：前向 cell 落 incoming，后向 cell 落 outgoing。 */

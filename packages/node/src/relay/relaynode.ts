@@ -33,6 +33,10 @@ import {
   CMD_RENDEZVOUS1,
   CMD_RENDEZVOUS2,
   CMD_RDV_DATA,
+  CMD_DROP,
+  sampleExpMs,
+  DEFAULT_DELAY_MEAN_MS,
+  DEFAULT_MAX_DELAY_MS,
   RDV_COOKIE_LEN,
   CELL_DATA_LEN,
   PERIOD_LEN,
@@ -92,6 +96,22 @@ const MAX_CIRCUITS_PER_CONN = 512;
  */
 const MAX_CIRCUITS_PER_IP = 256;
 
+/**
+ * Mixnet 模式（Phase 2C，opt-in；构造器不传 = 关 = 行为与历史完全一致，同步转发）。
+ * 启用时，本中继把**每个**要转发的前向 cell（转下一跳）与每个要套层送回的后向 cell 各**扣住一个随机指数延迟**
+ * （均值 delayMeanMs，钳到 maxDelayMs）再发出 → 打散 input→output 时序相关（全局被动观察者的关联攻击）。
+ * 延迟**双向**施加（前向 'f' 转发 + 后向 'b' 套层），与 Loopix 每跳均混延迟一致。
+ * maxHeldCells：单中继**同时**扣在手里的延迟 cell 总数硬上限（抗内存：入流已被 2A 的 cell 限速约束，
+ * 故被扣 cell 数 ≲ 速率×均值；此 cap 是兜底，超额则直接丢弃该 cell 不再延迟入队）。
+ */
+export interface MixnetOpts {
+  delayMeanMs?: number; // 每跳指数延迟均值（ms），默认 DEFAULT_DELAY_MEAN_MS=80
+  maxDelayMs?: number; // 单 cell 单跳延迟硬上限（ms），默认 DEFAULT_MAX_DELAY_MS=2000
+  maxHeldCells?: number; // 本中继同时扣住的延迟 cell 总数上限，默认 MIXNET_MAX_HELD_CELLS
+}
+/** 本中继同时“扣在手里”的延迟 cell 总数默认上限（抗内存兜底；远高于 速率×均值 的稳态期望）。 */
+const MIXNET_MAX_HELD_CELLS = 50_000;
+
 /** 可经构造器覆盖的 DoS 加固时序/阈值（测试用极小值以求快与确定）。 */
 export interface RelayDosOpts {
   idleMs?: number;
@@ -148,6 +168,7 @@ export class RelayNode {
   private table = new RelayCircuitTable();
   private idPub: Uint8Array;
   private exitHandler?: ExitHandler;
+  private dropHandler?: () => void; // Mixnet：本跳作终点丢弃一个 CMD_DROP 掩护 cell 时的观察钩子（默认无；仅用于度量/自测，不影响丢弃语义）
   private exitPolicy: ExitPolicy = () => false; // 默认 deny-all
   private streams = new Map<RelayCircuit, Socket>(); // 出口：电路 → 其 TCP 流（v1 每电路 1 条流）
   // HSDir 描述符存储：descIdHex → {json, exp, rev}。跨电路存活（DHT 的意义），仅 TTL 过期/超量被清，不随电路销毁清空。
@@ -169,6 +190,9 @@ export class RelayNode {
   private perIp = new Map<string, number>(); // 每来源 IP 承载的电路计数（聚合该 IP 全部连接；CREATE++ / destroy--）。无 ip 的连接不计入。
   private sweepTimer: ReturnType<typeof setInterval>; // 空闲/超龄电路清扫定时器
   private dos: Required<RelayDosOpts>; // 解析后的 DoS 时序/阈值（默认 = 上面常量）
+  // ---- Mixnet 状态（默认关）----
+  private mix: { delayMeanMs: number; maxDelayMs: number; maxHeldCells: number } | null = null; // null = 关 = 同步转发
+  private heldCells = 0; // 当前全中继被混入延迟“扣在手里”的 cell 总数（cap 用）
 
   constructor(
     readonly id: string, // 本中继钱包地址 0x..（= ntor relayId）
@@ -178,8 +202,16 @@ export class RelayNode {
     readonly host = '127.0.0.1',
     private allowPrivateRelayTargets = isLocalListenHost(host),
     opts: RelayDosOpts = {}, // DoS 加固覆盖项；缺省即生产默认。位置在既有参数之后 → 不破坏 new RelayNode(id,onion,resolve,port,host)
+    mixnet?: MixnetOpts, // Mixnet 模式（Phase 2C，opt-in）；不传 = 关 = 同步转发，行为与历史完全一致。位置在 opts 之后 → 不破坏既有调用
   ) {
     this.idPub = hexToBytes(addressToPublicKeyHex(id));
+    if (mixnet) {
+      this.mix = {
+        delayMeanMs: mixnet.delayMeanMs ?? DEFAULT_DELAY_MEAN_MS,
+        maxDelayMs: mixnet.maxDelayMs ?? DEFAULT_MAX_DELAY_MS,
+        maxHeldCells: mixnet.maxHeldCells ?? MIXNET_MAX_HELD_CELLS,
+      };
+    }
     this.dos = {
       idleMs: opts.idleMs ?? CIRCUIT_IDLE_MS,
       maxAgeMs: opts.maxAgeMs ?? CIRCUIT_MAX_AGE_MS,
@@ -211,6 +243,10 @@ export class RelayNode {
 
   onExit(h: ExitHandler): void {
     this.exitHandler = h;
+  }
+  /** Mixnet 观察钩子：本跳作终点每丢弃一个 CMD_DROP 掩护 cell 触发一次（仅度量/自测；不改变“静默丢弃”语义）。 */
+  onDrop(h: () => void): void {
+    this.dropHandler = h;
   }
   /** 设置出口策略（允许作出口连到哪些 host:port）。不设 = deny-all。 */
   setExitPolicy(p: ExitPolicy): void {
@@ -278,6 +314,13 @@ export class RelayNode {
       clearTimeout(circ.extendTimer); // EXTEND 连接超时计时器（若在途）随电路销毁清除
       circ.extendTimer = undefined;
     }
+    if (circ.mixTimers && circ.mixTimers.size > 0) {
+      // Mixnet：本电路尚“扣在手里”的延迟 cell 一律取消（不在 teardown 后再发出），并归还全局 heldCells 计数。
+      for (const t of circ.mixTimers) clearTimeout(t);
+      this.heldCells -= circ.mixTimers.size;
+      if (this.heldCells < 0) this.heldCells = 0; // 防御性兜底
+      circ.mixTimers.clear();
+    }
     this.streams.get(circ)?.destroy();
     this.streams.delete(circ);
     this.hsReasm.delete(circ); // 清理在途 HS 请求重组态（描述符存储 hsdescs 不动——跨电路存活）
@@ -307,6 +350,33 @@ export class RelayNode {
     }
     if (source !== circ.prevConn) circ.prevConn.send({ t: 'DESTROY', c: circ.prevCirc, r: reason });
     if (closePrev) circ.prevConn.close();
+  }
+
+  /**
+   * Mixnet 转发整形：把“要在 conn 上发出 msg”这一动作，按本中继配置同步发或延迟发。
+   * - mixnet 关（this.mix===null）→ 立即 conn.send（与历史行为逐字节一致，零开销）。
+   * - mixnet 开 → 采样一个指数延迟（均值/上限按 opts），setTimeout 到点再发；把该 timer 记到 circ.mixTimers
+   *   + 计入全局 heldCells（拆电路时统一 clear+归还）。若全局扣留数已达 maxHeldCells → 直接丢弃该 cell（不入队、不延迟），
+   *   作抗内存兜底（入流已被 2A cell 限速约束，正常永不触顶）。
+   * 仅用于**转发/后向**路径（中间跳转下一跳、后向套层送回 prev）；CREATE/CREATED/DESTROY 等控制 cell 不走此路（不延迟）。
+   */
+  private mixSend(circ: RelayCircuit, conn: CellLink, msg: CellMsg): void {
+    if (!this.mix) {
+      conn.send(msg);
+      return;
+    }
+    if (this.heldCells >= this.mix.maxHeldCells) return; // 扣留已满 → 丢该 cell（兜底，不再延迟入队）
+    const delay = sampleExpMs(this.mix.delayMeanMs, this.mix.maxDelayMs);
+    if (!circ.mixTimers) circ.mixTimers = new Set();
+    const timer = setTimeout(() => {
+      circ.mixTimers?.delete(timer); // 先摘除自身（destroyCircuit 据 size 归还计数，避免双减）
+      this.heldCells--;
+      if (this.heldCells < 0) this.heldCells = 0;
+      if (conn.isOpen()) conn.send(msg);
+    }, delay);
+    timer.unref?.(); // 不阻止进程退出
+    circ.mixTimers.add(timer);
+    this.heldCells++;
   }
 
   private onCell(link: CellLink, m: CellMsg): void {
@@ -395,11 +465,18 @@ export class RelayNode {
           const act = relayForward(circ, hexToBytes(m.b), m.n);
           if (act.kind === 'drop') return;
           if (act.kind === 'forward') {
+            // Mixnet：转发到下一跳的前向 cell 经 mixSend 整形（mixnet 关时即同步发，零行为变化）。
             if (circ.nextConn && circ.nextCirc)
-              circ.nextConn.send({ t: 'RELAY', c: circ.nextCirc, d: 'f', n: m.n, b: bytesToHex(act.body) });
+              this.mixSend(circ, circ.nextConn, { t: 'RELAY', c: circ.nextCirc, d: 'f', n: m.n, b: bytesToHex(act.body) });
             return;
           }
           // act.kind === 'self'：是给我的命令（本跳是终点/出口）
+          // Mixnet 掩护 cell：本跳是终点且剥出 CMD_DROP → **静默丢弃**。不投递给出口 TCP/exitHandler/HSDir/会合/app，也不回任何后向。
+          // （中间跳永远走不到这里：CMD_DROP 对中间跳是深层密文 → relayForward 判 forward 盲转发，看不出是 drop。）
+          if (act.cmd === CMD_DROP) {
+            this.dropHandler?.(); // 仅观察（度量/自测）；丢弃语义不变（不投递、不回应）
+            return;
+          }
           if (act.cmd === CMD_EXTEND) this.handleExtend(circ, act.data);
           else if (act.cmd === CMD_BEGIN) this.handleBegin(circ, act.data);
           else if (act.cmd === CMD_DATA) {
@@ -424,7 +501,8 @@ export class RelayNode {
         circ.lastSeen = Date.now(); // 后向活动也刷新空闲计时
         const body = relayAddBackwardLayer(circ, hexToBytes(m.b), m.n);
         if (!body) return;
-        circ.prevConn.send({ t: 'RELAY', c: circ.prevCirc, d: 'b', n: m.n, b: bytesToHex(body) });
+        // Mixnet：后向 cell 套本跳层后经 mixSend 整形（双向均混延迟；mixnet 关时即同步发）。
+        this.mixSend(circ, circ.prevConn, { t: 'RELAY', c: circ.prevCirc, d: 'b', n: m.n, b: bytesToHex(body) });
         return;
       }
       case 'DESTROY': {
