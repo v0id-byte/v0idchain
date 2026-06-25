@@ -1,6 +1,6 @@
 # HS-PROTOCOL — .v0id 匿名隐藏服务网络协议规范
 
-**状态**：Phase 1（洋葱路由传输层）+ Phase 2（双向 rendezvous 隐藏服务）已实现并验证。概率支付、entry guards、Mixnet 模式为后续阶段。
+**状态**：Phase 1（洋葱路由传输层）+ Phase 2（双向 rendezvous 隐藏服务）+ Phase 2A（entry guards + 中继 DoS 加固 + 描述符 anti-rollback，见 §19）已实现并验证。概率支付、Mixnet 模式为后续阶段。
 **与 Tor 不互通**：本网络借用 Tor 的成熟设计（ntor / 定长 cell / telescoping），但用本链自己的 PROTOID、原生 x25519 与链上目录，是独立网络。
 **设计与批判背景**见 `~/.claude/plans/tor-v0idchain-purring-pixel.md`。
 
@@ -167,11 +167,10 @@ curl --socks5 127.0.0.1:9050 http://example.com/                          # 经 
 
 **已交付（Phase 2，详见 §12–18）**：**双向 rendezvous 隐藏服务**——自认证 `.v0id` 地址、ed25519 周期密钥盲化、加密描述符 + 盲签名、中继即 HSDir 的盲化 DHT、intro points + 会合点(RP) 拼接、端到端 ntor（服务认证、客户端匿名）、`v0id start --hs-target` 托管 + `--socks` 经 rendezvous 连 `.v0id`。
 
+**Phase 2A 已交付（公网暴露前的门槛，见 §19）**：entry guards（钉住入口）、中继 DoS 加固（TTL/空闲清扫 + cell 限速 + EXTEND 超时 + 按连接/按源 IP 上限）、描述符 anti-rollback（签名 revision）、客户端后向严格防重放。
+
 **待办**：
-- **DoS 加固（公网暴露前的门槛）**：按 IP/连接限速、电路 TTL + 空闲清扫、失败/死 `nextConn` 清理、`handleExtend` 连接超时（当前死下一跳会留半开电路 + 客户端 `extend()` 挂起）。
-- **Entry guards**（钉住入口抗统计去匿名）—— v1 每电路自选入口，使用越多越弱，**真实部署前必做**（隐藏服务的 IP/RP/HSDir 电路同样受此局限）。
-- **后向严格防重放窗口**；**客户端响应按 circId/cmd 关联**（当前单 pending+FIFO，注入/乱序后向 cell 会让请求错配→电路 DoS）。
-- **HSDir 发布速率限制 / 描述符 intra-period 防回滚**（见 §18 诚实边界）。
+- **HSDir 发布速率限制**（PoW / stake 门槛；HSDir 看不到匿名发布者，按源限速对其不适用）。
 - **Mixnet 模式**（每跳延迟 + cover traffic，抗流量关联）—— cell 已留 `delayMs`/`cover`，Phase 5。
 - **概率支付 / staking·slashing**（$V0ID 激励，不按电路上链）—— Phase 3–4。
 
@@ -332,12 +331,23 @@ CMD_HS_END(10)     HSDir→客户端：一次应答结束（PUBLISH 失败时不
 - **§15 rendezvous = 所有安全关键属性在活体攻击下 HOLD**：客户端认证 / 无 MITM、对 RP 的端到端机密性、匿名性 / 无 IP 泄露、拼接完整性。
 - **两个 MED 级 DoS 发现已修**：① INTRODUCE2 重放放大——半可信引入点重放一条 INTRODUCE1 即可逼服务反复建 RP 电路 → 修：按客户端 ntor 临时钥做防重放缓存（`seenIntros`，5 分钟 TTL，上限 4096 逐出最旧），重放即丢不做昂贵动作；② 服务 `rpCircs` 无界增长 → 修：并发会合上限 `MAX_RDV_CIRCS=256` + 会合电路死亡自动移除。
 
-## 18. 诚实边界（Phase 2，**不软化**）
+## 18. 诚实边界（**不软化**；Phase 2A 已消化掉的项见 §19）
 
 - **仍不防全局被动对手的端到端流量/时序关联**（与 Tor 相同——低延迟洋葱的根本局限，待 Mixnet 阶段缓解）。
-- **Entry guards 仍是 TODO**：当前每电路随机选入口（隐藏服务的引入/会合/HSDir 电路同样如此）→ 重度使用下会被统计去匿名；**真实部署前必做**。
-- **HSDir 垃圾发布无按源限速**：按设计 HSDir 看不到匿名发布者，因而无法对其限速；对 PUBLISH 加 PoW / stake 门槛是未来选项。当前仅由存储上限（`MAX_HSDESCS=10000` + TTL）兜底。
-- **后向 cell 防重放为 best-effort**（客户端侧单调计数器去重），与 Phase 1 v1 的姿态一致。
-- **描述符无 intra-period 防回滚**：一个“当前周期内仍合法但陈旧”的描述符可被重放，直到周期滚动（攻击者可压制更新、强迫客户端用旧引入点）；在 DHT 层加 revision-counter 是未来工作。
-- **`IntroPoint.relayOnionPubHex` 在当前测试 harness 里是占位符**（填 `00…`）：本实现连接不依赖它（客户端用 authKey 寻址引入点、用服务静态 onion 公钥封信封），但**真实部署必须**从链上中继的 `okey` 填入真实值。
+- **HSDir 垃圾发布无按源限速**：按设计 HSDir 看不到匿名发布者，无法对其限速；对 PUBLISH 加 PoW/stake 门槛是未来选项。当前由存储上限（`MAX_HSDESCS=10000` + TTL）+ 反抢注绑定兜底。（注：§19 的按源 IP 上限作用在中继/电路层，非 HSDir 发布层。）
+- **`IntroPoint.relayOnionPubHex` 在当前测试 harness 里是占位符**（填 `00…`）：连接不依赖它（客户端用 authKey 寻址引入点、用服务静态 onion 公钥封信封），但**真实部署必须**从链上中继 `okey` 填真实值。
 - **低残留**：客户端不对伪造的 RENDEZVOUS2 重试（只有真正的 RP 能注入一条 → 退化为“恶意 RP 拒绝服务”，不构成认证绕过）。
+- **`hsservice` 暂以 `rev=0` 发布、重发不自增**：anti-rollback 机制已就位（§19），但要真正用 intra-period 更新需让 `hsservice` 每次重发自增 `rev`。
+
+---
+
+## 19. Phase 2A — 公网暴露前的加固（entry guards + DoS + anti-rollback）
+
+> 已实现并经独立对抗 agent 复核（guards/DoS/anti-rollback 三项要害**全 HOLDS**，未发现新的 CRITICAL/HIGH 绕过）。脚本 `scripts/{guards-test,relay-dos-test,backward-replay-test}.ts` 全 ALL PASS。
+
+- **Entry guards（`guards.ts`，§18 旧 TODO 已消化）**：钉住一个持久采样守卫集（`sampleSize=3`，落 `.data/guards.json` 0600，寿命 ~30 天轮换）跨所有电路（SOCKS + HS 的引入/会合/HSDir 电路共享）复用作 hop0 → 只有这固定几个中继见过你作入口。**只在钉住集内选、绝不退化随机**（"无守卫→随机"仅在目录空=网络死时触发；**对抗复核确认：链上目录无删除交易，攻击者无法把你的已发布守卫从目录里挤掉来逼随机**）。死守卫→`markUnreachable` 瞬态冷却(10min)切**钉住的备份**、到点自动恢复主守卫（不永久轮换、不退随机）。简化处（vs Tor）：均匀采样无带宽加权、无守卫可达性探测。
+- **中继 DoS 控制（`relaynode.ts`/`circuit.ts`）**：① 电路 TTL + 空闲清扫（`lastSeen`，空闲>10min/寿命>1h 回收，max-age 对活跃电路也生效→堵廉价保活）；② 每电路 cell 令牌桶限速（`CELL_RATE=500/s` 桶 1000，洪泛→销毁；桶数学经核：大 elapsed 经 `min(burst,…)` 不溢出）；③ EXTEND 连接超时(10s，堵黑洞跳半开挂起，timer 不泄漏)；④ 按连接电路上限(512) + **按源 IP 上限(256)**（堵"4 条连接占满整中继"）。
+- **描述符 anti-rollback（`hsdesc.ts`/`relaynode.ts`，§18 旧项已消化）**：描述符加**被签名覆盖**的 `rev`；HSDir 按 descId 只留最高 rev、`existing.rev >= new` 即拒 → 重放旧描述符压不掉新版。`rev` 只能由盲私钥签 → 攻击者无法冒名抬高 rev 卡死受害者更新。
+- **客户端后向严格防重放（`client.ts`/`hsclient.ts`，§18 旧 best-effort 已收紧）**：rdv / stream / hs-request 三条客户端后向消费路径均加严格单调 `n<=bwdMax`→丢（仅 MAC 通过才推进）。中继后向路径仍 best-effort（telescoping 多源 EXTENDED 计数命名空间不同，无单调序——故防御落在客户端）。
+
+**2A 诚实残留**：① **跨多连接的按源 IP 之外无更细计量**——per-IP 上限的入站侧会把同一对端中继多路复用的电路计入其 IP（256 默认对中小中继无碍；高流量中继可后续按链上中继 host 集豁免）；② 守卫均匀采样的女巫残留照旧（对手控 K/N 中继即约 K/N 概率成你主守卫，女巫需余额+挖块成本）；③ cell 限速仅前向（恶意下一跳后向洪泛由客户端去重 + 逐 cell 加密兜底）。
