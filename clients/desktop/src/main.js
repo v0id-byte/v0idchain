@@ -76,12 +76,22 @@ function pushStatus(patch) {
   if (win && !win.isDestroyed()) win.webContents.send('v0id:status', patch);
 }
 
-// ---- 拉起守护进程：corepack pnpm exec tsx <cliEntry> start --socks … ----
-// 用 corepack 跑 tsx（仓库工具链），数据目录放在 Electron 的 userData 下，避免污染仓库。
+// ---- 拉起守护进程 ----
+// 守护进程跑的是同一条 `v0id start --socks …`（节点 + 本地 SOCKS5），只是「怎么拉起」分两种模式：
+//
+//   • 开发（未打包，app.isPackaged=false）：`corepack pnpm exec tsx <repo>/packages/cli/src/index.ts …`，
+//     用仓库工具链直接跑 TS 源（需仓库 + pnpm + tsx 在场）。cwd=repoRoot 让依赖按仓库解析。
+//
+//   • 打包后（app.isPackaged=true）：.app 里没有仓库/pnpm/tsx。改用 esbuild 预打好的单文件 CJS
+//     （resources/daemon/v0id-daemon.cjs，随 extraResources 进 Contents/Resources/daemon/），
+//     并用 Electron 自带的二进制当 Node 跑它：spawn(process.execPath, [cjs, …], { ELECTRON_RUN_AS_NODE:'1' })。
+//     ELECTRON_RUN_AS_NODE 让 Electron 退化成纯 Node（不开窗、不加载 Chromium），即「内嵌 Node」。
+//     —— 这样打包应用零外部依赖即可自起守护进程。node-datachannel（--webrtc 才用的原生模块）
+//        已被 externalize 出 bundle，--socks 路径根本不 require 它，故无需随包附带任何 .node。
 function spawnDaemon() {
   const dataDir = path.join(app.getPath('userData'), 'v0id');
-  const args = [
-    'pnpm', 'exec', 'tsx', cliEntry,
+  // `start …` 之后的参数两种模式完全一致；区别只在前面用什么把它跑起来。
+  const startArgs = [
     'start',
     '--name', 'browser',
     '--data-dir', dataDir,
@@ -91,18 +101,35 @@ function spawnDaemon() {
   ];
   if (PEERS.trim()) {
     // PEERS 现在默认就是 seeds.js 的出厂种子（除非 V0ID_PEERS 覆盖），所以这里几乎总会带上 --peers。
-    args.push('--peers', PEERS.trim());
+    startArgs.push('--peers', PEERS.trim());
   }
 
   pushStatus({ phase: 'starting', socksPort: SOCKS_PORT, dataDir });
-  log(`spawn: corepack ${args.join(' ')}  (cwd=${repoRoot})`);
 
-  // cwd 设为 repoRoot，让 corepack/tsx 用仓库的 pnpm 与依赖解析。
-  daemon = spawn('corepack', args, {
-    cwd: repoRoot,
-    env: { ...process.env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let cmd, args, opts;
+  if (app.isPackaged) {
+    // 打包：用 Electron-as-Node 跑 bundle 出来的守护进程 CJS。
+    const daemonCjs = path.join(process.resourcesPath, 'daemon', 'v0id-daemon.cjs');
+    cmd = process.execPath;
+    args = [daemonCjs, ...startArgs];
+    opts = {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    };
+    log(`spawn(packaged): ELECTRON_RUN_AS_NODE=1 ${cmd} ${args.join(' ')}`);
+  } else {
+    // 开发：corepack pnpm exec tsx <cliEntry> start …（cwd=repoRoot 让 corepack/tsx 按仓库解析依赖）。
+    cmd = 'corepack';
+    args = ['pnpm', 'exec', 'tsx', cliEntry, ...startArgs];
+    opts = {
+      cwd: repoRoot,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    };
+    log(`spawn(dev): corepack ${args.join(' ')}  (cwd=${repoRoot})`);
+  }
+
+  daemon = spawn(cmd, args, opts);
 
   daemon.stdout.on('data', (b) => onDaemonLine(b.toString()));
   daemon.stderr.on('data', (b) => onDaemonLine(b.toString(), true));
