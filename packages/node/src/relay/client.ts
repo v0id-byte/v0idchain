@@ -29,6 +29,7 @@ import {
 } from '@v0idchain/core';
 import { type CellMsg, decodeCell, encodeCell } from './cells.js';
 import { encodeFramed, FrameReassembler } from './hsdir.js';
+import { type AntiReplayState, newAntiReplay, accept } from './antireplay.js';
 
 /** 一跳的选路信息（来自链上中继目录 parseRelays）。 */
 export interface HopSpec {
@@ -65,11 +66,12 @@ export class CircuitClient {
   private rdvMode = false;
   private rdvHandlers = new Map<number, (data: Uint8Array) => void>();
   private rdvDestroyCb: (() => void) | null = null;
-  // 后向 cell 解封前的严格去重：客户端按 n 单调记忆，重放（同/旧 n）即丢。
+  // 后向 cell 解封前的去重：客户端用**滑动窗口防重放**记忆已见 n，重放（已见/太老）即丢，但接受窗口内乱序 n。
   // 适用于建路后的全部三种后向消费模式（streaming / hsing / rdvMode）——它们各自的后向 cell 都由**终点跳**
-  // originateBackward 发出（共用单一单调 n 命名空间）。建路阶段不用本检查：telescoping 的多条 EXTENDED 来自
-  // 不同发起跳、n 命名空间互不相干（task 注：中继后向防重放因此只能是 best-effort；严格防线落在此处客户端侧）。
-  private bwdMaxN = -1;
+  // originateBackward 发出（共用单一近连续 n 命名空间）。Mixnet 逐跳延迟同样会重排后向 cell → 必须用窗口而非
+  // 严格单调，否则被重排到后面的合法后向 cell 会被误丢。建路阶段不用本检查：telescoping 的多条 EXTENDED 来自
+  // 不同发起跳、n 命名空间互不相干（task 注：中继后向防重放因此只能是 best-effort；窗口防线落在此处客户端侧）。
+  private bwdReplay: AntiReplayState = newAntiReplay();
   // Mixnet 客户端环路 cover（Phase 2C）：周期发 CMD_DROP 掩护 cell 到终点跳，让电路恒有流量 → 观察者分不清何时有真数据。
   private coverTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -83,10 +85,9 @@ export class CircuitClient {
         return;
       }
       if (m.t !== 'RELAY' || m.d !== 'b') return;
-      if (m.n <= this.bwdMaxN) return; // 后向重放/乱序 → 丢
       const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
       if (!inner) return; // MAC 失败 → 丢
-      this.bwdMaxN = m.n;
+      if (!accept(this.bwdReplay, m.n)) return; // 仅 MAC 合法后推进窗口：重放/太老 → 丢；窗口内乱序 → 接受
       this.rdvHandlers.get(inner.cmd)?.(inner.data);
       return;
     }
@@ -100,12 +101,11 @@ export class CircuitClient {
         return;
       }
       if (m.t !== 'RELAY' || m.d !== 'b') return;
-      // 后向严格防重放：HS 应答全部由终点跳（HSDir）originateBackward 发出，共用一个单调 n 命名空间
-      // → 重放/旧 n 即丢（与 rdvMode 同法）。否则一条重放的 CMD_HS_RESP 会被重组器重复消费。
-      if (m.n <= this.bwdMaxN) return;
+      // 后向滑动窗口防重放：HS 应答全部由终点跳（HSDir）originateBackward 发出，共用一个近连续 n 命名空间
+      // → 重放/太老即丢、窗口内乱序接受（与 rdvMode 同法）。否则一条重放的 CMD_HS_RESP 会被重组器重复消费。
       const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
       if (!inner || !this.hsReq) return; // MAC 失败/无在途请求 → 丢
-      this.bwdMaxN = m.n;
+      if (!accept(this.bwdReplay, m.n)) return; // 仅 MAC 合法后推进窗口
       if (inner.cmd === CMD_HS_RESP) this.hsReq.onResp(inner.data);
       else if (inner.cmd === CMD_HS_END) {
         const r = this.hsReq;
@@ -133,12 +133,11 @@ export class CircuitClient {
       return;
     }
     if (m.t !== 'RELAY' || m.d !== 'b') return;
-    // 后向严格防重放：流阶段所有后向 cell（CONNECTED/DATA/END）均由出口跳 originateBackward，共用单调 n
-    // → 重放/旧 n 即丢（与 rdvMode 同法）。否则一条重放的 CMD_DATA 会令流多收一份字节。
-    if (m.n <= this.bwdMaxN) return;
+    // 后向滑动窗口防重放：流阶段所有后向 cell（CONNECTED/DATA/END）均由出口跳 originateBackward，共用近连续 n
+    // → 重放/太老即丢、窗口内乱序接受（与 rdvMode 同法）。否则一条重放的 CMD_DATA 会令流多收一份字节。
     const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
     if (!inner) return;
-    this.bwdMaxN = m.n;
+    if (!accept(this.bwdReplay, m.n)) return; // 仅 MAC 合法后推进窗口
     if (inner.cmd === CMD_CONNECTED) {
       const w = this.connectWaiter;
       this.connectWaiter = null;

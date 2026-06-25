@@ -6,6 +6,7 @@ import { RelayNode, type RelayResolver } from '../packages/node/src/relay/relayn
 import { CircuitClient, type HopSpec } from '../packages/node/src/relay/client.js';
 import { decodeCell } from '../packages/node/src/relay/cells.js';
 import { RelayCircuitTable, relayAddBackwardLayer, relayForward, type RelayCircuit, type CellLink } from '../packages/node/src/relay/circuit.js';
+import { newAntiReplay } from '../packages/node/src/relay/antireplay.js';
 
 let failures = 0;
 const check = (name: string, cond: boolean) => {
@@ -81,7 +82,7 @@ async function main() {
       prevConn: dummy,
       prevCirc: 'z',
       keys: { encForward: fk(1), encBackward: fk(2), macForward: fk(3), macBackward: fk(4) },
-      maxFwdCtr: -1,
+      fwdReplay: newAntiReplay(),
       bwdBase: 0,
       bwdLocal: 0,
       createdAt: 0,
@@ -92,10 +93,13 @@ async function main() {
       cellDropWindowAt: 0,
     };
     const body = new Uint8Array(CELL_BODY_LEN);
+    // 滑动窗口防重放（替代旧严格单调）：首见的乱序 n 现在被接受（Mixnet 重排必需），只有**重复**的 n 才作重放丢弃。
     check('首个前向 n=0 被接受', relayForward(fake, body, 0).kind !== 'drop');
     check('重放 n=0 被丢弃', relayForward(fake, body, 0).kind === 'drop');
     check('递增 n=5 被接受', relayForward(fake, body, 5).kind !== 'drop');
-    check('乱序/重放 n=3(<5) 被丢弃', relayForward(fake, body, 3).kind === 'drop');
+    check('乱序但首见的 n=3(<5) 现被接受（窗口内乱序合法）', relayForward(fake, body, 3).kind !== 'drop');
+    check('重放已见的 n=5 被丢弃（真重放仍被拦）', relayForward(fake, body, 5).kind === 'drop');
+    check('重放已见的 n=3 被丢弃（真重放仍被拦）', relayForward(fake, body, 3).kind === 'drop');
     check('达到 2^48 nonce 上限被丢弃', relayForward(fake, body, MAX_CELL_CTR).kind === 'drop');
     check('后向达到 2^48 nonce 上限被丢弃', relayAddBackwardLayer(fake, body, MAX_CELL_CTR) === null);
 

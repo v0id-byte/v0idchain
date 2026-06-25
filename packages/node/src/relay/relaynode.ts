@@ -56,6 +56,7 @@ import {
   makeBwdBase,
   takeCellToken,
 } from './circuit.js';
+import { newAntiReplay } from './antireplay.js';
 
 /** 目录解析器：中继地址 → 其 cell 入口 host:port。生产用 parseRelays(chain)，测试可注入静态 map。 */
 export type RelayResolver = (id: string) => { host: string; port: number } | undefined;
@@ -412,7 +413,7 @@ export class RelayNode {
           prevConn: link,
           prevCirc: m.c,
           keys: r.keys,
-          maxFwdCtr: -1, // -1 = 尚未见 cell；使首个 n=0 被接受、之后 n=0 重放即丢
+          fwdReplay: newAntiReplay(), // 前向滑动窗口防重放（首个 n=0 被接受、重复/太老/越界丢；接受 Mixnet 重排的乱序 cell）
           bwdBase: makeBwdBase(randomBytes(3)),
           bwdLocal: 0,
           createdAt: now,

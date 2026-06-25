@@ -4,11 +4,13 @@
 // 跑：corepack pnpm exec tsx scripts/mixnet-test.ts
 //
 // 反相关性诚实说明：本测试不主张“抵抗流量分析”这一强结论，只验证机制存在且按设计工作（延迟可测、cover 被丢、调度器速率达标、
-// 真数据仍正确、默认关时零行为变化）。注意一个 v1 已知耦合：mixnet 开启时各跳独立随机延迟会**重排前向 cell**，而前向
-// 防重放要求 n 严格增 → 被重排到后面的前向 cell 会在中继被当重放丢弃。故“真数据经 mixnet 正确”用**串行请求/应答
-// （sendData，任一时刻仅 1 个前向 cell 在途）**验证（无重排）；cover 调度器速率用**未开延迟的中继**隔离验证（把“客户端
-// 调度速率”这一客户端属性与“中继 mixnet 重排”解耦）。详见返回的设计说明。
+// 真数据仍正确、默认关时零行为变化）。
+// 【已修复的耦合】mixnet 各跳独立随机延迟会**重排前向/后向 cell**。旧的严格单调防重放会把被重排到后面的合法 cell 当重放丢弃
+// → 多 cell 流丢包。现已改为**滑动窗口防重放**（antireplay.ts）：接受窗口内尚未见过的乱序 cell、仍拦真重放/太老/越界。
+// 因此本测试新增 §⑦“mixnet 下多 cell 前向流不丢字节”组合验证（>2000B write 拆成多个前向 cell、经真延迟重排后全字节到达）；
+// cover 调度器速率仍用**未开延迟的中继**隔离验证（把“客户端调度速率”这一客户端属性与“中继 mixnet 重排”解耦）。详见返回的设计说明。
 import { randomBytes } from 'node:crypto';
+import { createServer } from 'node:net';
 import {
   getPublicKey,
   publicKeyToAddress,
@@ -166,6 +168,58 @@ async function main() {
   OFF.close();
   ON.close();
   await sleep(150);
+
+  // ============ ⑦ 组合验证：mixnet 下多 cell 前向流不丢字节（滑动窗口防重放修复的核心场景）============
+  // 关键：3 跳电路里 guard/middle 会**转发**前向 cell（出口是终点）。mixnet 开 → guard/middle 各自随机延迟 →
+  // 前向 cell 在它们处被重排 → 旧严格单调防重放会把被重排到后面的 cell 当重放丢 → 流丢字节。窗口防重放修复后：
+  // 一个 >2000B 的 write() 拆成多个前向 cell（每片 ≤485B），经真延迟重排后**全部字节**应抵达出口并原样回显，零丢失。
+  // 顺序可能被重排（协议不保证流内重组——这是 mixnet 的固有性质，本测试只断言“不丢字节”），故用**字节多重集相等**
+  // （总长 + 排序后逐字节相等）作“无丢失”判据：任一前向 cell 被误丢 → 少一整片(≈485B) → 多重集必不等。
+  {
+    const ECHO_PORT = 7860;
+    const echo = createServer((s) => s.on('data', (d) => s.write(d)));
+    await new Promise<void>((r) => echo.listen(ECHO_PORT, '127.0.0.1', () => r()));
+    const MIX = makeRelays(7850, { delayMeanMs: 40, maxDelayMs: 2000 }); // mixnet 开 → 前向在 guard/middle 被重排
+    MIX.relays.forEach((r) => r.setExitPolicy((host, port) => host === '127.0.0.1' && port === ECHO_PORT));
+    await sleep(150);
+    const cMix = await build3Hop(MIX.hops);
+
+    // 构造一个所有 4 字节大端计数器拼接的缓冲（每 4 字节一个递增编号 → 任意 ≥4B 的丢失/损坏都可检出）。
+    const COUNTERS = 700; // 700×4 = 2800B > 2000B → 拆成 ceil(2800/485)=6 个前向 cell（多 cell，必经重排）
+    const sent = new Uint8Array(COUNTERS * 4);
+    const dv = new DataView(sent.buffer);
+    for (let i = 0; i < COUNTERS; i++) dv.setUint32(i * 4, i, false);
+
+    const recv: number[] = [];
+    let resolveRecv: (() => void) | null = null;
+    const recvWait = new Promise<void>((r) => (resolveRecv = r));
+    cMix.onData((b) => {
+      for (const v of b) recv.push(v);
+      if (resolveRecv && recv.length >= sent.length) resolveRecv();
+    });
+    const connected = await withTimeout(cMix.beginStream('127.0.0.1', ECHO_PORT), 8000, 'mix beginStream');
+    check('⑦ mixnet 下出口 CONNECT 成功', connected === true);
+
+    cMix.write(sent); // >2000B → 多个前向 cell，经 mixnet 真延迟在 guard/middle 重排
+    await withTimeout(recvWait, 15000, 'mix multi-cell stream');
+    await sleep(400); // 给可能仍在途（被延迟）的尾部 cell 充足时间抵达，确认不会再多收（无重复/无残留）
+
+    const got = Uint8Array.from(recv);
+    check(`⑦ 全字节抵达不丢失（收到 ${got.length} / 发送 ${sent.length}）`, got.length === sent.length);
+    const a = Array.from(sent).sort((x, y) => x - y);
+    const b2 = Array.from(got).sort((x, y) => x - y);
+    check('⑦ 字节多重集完全一致（无任何前向 cell 被误丢为重放）', a.length === b2.length && a.every((v, i) => v === b2[i]));
+    // 诚实附注：报告顺序是否被重排（不作 pass/fail——协议不保证流内重组；这里仅记录 mixnet 确实在重排）。
+    let inOrder = got.length === sent.length;
+    for (let i = 0; inOrder && i < got.length; i++) if (got[i] !== sent[i]) inOrder = false;
+    console.log(`  · ⑦ 字节顺序${inOrder ? '恰好保持（本次延迟未造成跨 cell 重排）' : '被 mixnet 重排（符合预期；不丢字节即达标）'}`);
+
+    cMix.endStream();
+    cMix.close();
+    MIX.close();
+    echo.close();
+    await sleep(150);
+  }
 
   // ============ ④ cover 调度器速率：startCover(rate) 在 ~1s 内大致发出 rate 个 cover ============
   // 隔离“客户端调度速率”：用**未开 mixnet 延迟**的中继 → 前向不重排、cover 全部按序抵达终点被丢，dropCount 精确反映发出数。
