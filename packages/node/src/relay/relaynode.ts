@@ -356,10 +356,14 @@ export class RelayNode {
   /**
    * Mixnet 转发整形：把“要在 conn 上发出 msg”这一动作，按本中继配置同步发或延迟发。
    * - mixnet 关（this.mix===null）→ 立即 conn.send（与历史行为逐字节一致，零开销）。
-   * - mixnet 开 → 采样一个指数延迟（均值/上限按 opts），setTimeout 到点再发；把该 timer 记到 circ.mixTimers
+   * - mixnet 开 → 采样一个指数延迟（均值/上限按 opts），追加到“同电路同出方向”的 FIFO 延迟队列后再发；
+   *   把该 timer 记到 circ.mixTimers
    *   + 计入全局 heldCells（拆电路时统一 clear+归还）。若全局扣留数已达 maxHeldCells → 直接丢弃该 cell（不入队、不延迟），
    *   作抗内存兜底（入流已被 2A cell 限速约束，正常永不触顶）。
    * 仅用于**转发/后向**路径（中间跳转下一跳、后向套层送回 prev）；CREATE/CREATED/DESTROY 等控制 cell 不走此路（不延迟）。
+   *
+   * 注意：这里不对同一输出方向做独立 timer 竞速。滑窗防重放能允许乱序、不误丢，但 TCP stream / HS 分帧仍要求字节按
+   * cell 序交付；因此每个方向保 FIFO，只把相邻 cell 间隔随机化。不同电路/不同方向仍独立采样，保留基础时序整形效果。
    */
   private mixSend(circ: RelayCircuit, conn: CellLink, msg: CellMsg): void {
     if (!this.mix) {
@@ -368,13 +372,19 @@ export class RelayNode {
     }
     if (this.heldCells >= this.mix.maxHeldCells) return; // 扣留已满 → 丢该 cell（兜底，不再延迟入队）
     const delay = sampleExpMs(this.mix.delayMeanMs, this.mix.maxDelayMs);
+    const now = Date.now();
+    const toPrev = conn === circ.prevConn;
+    const readyAt = toPrev ? (circ.mixPrevReadyAt ?? now) : (circ.mixNextReadyAt ?? now);
+    const sendAt = Math.max(now, readyAt) + delay;
+    if (toPrev) circ.mixPrevReadyAt = sendAt;
+    else circ.mixNextReadyAt = sendAt;
     if (!circ.mixTimers) circ.mixTimers = new Set();
     const timer = setTimeout(() => {
       circ.mixTimers?.delete(timer); // 先摘除自身（destroyCircuit 据 size 归还计数，避免双减）
       this.heldCells--;
       if (this.heldCells < 0) this.heldCells = 0;
       if (conn.isOpen()) conn.send(msg);
-    }, delay);
+    }, Math.max(0, sendAt - now));
     timer.unref?.(); // 不阻止进程退出
     circ.mixTimers.add(timer);
     this.heldCells++;

@@ -45,6 +45,11 @@ export interface RelayCircuit {
   // ---- Mixnet（Phase 2C，默认关；仅 mixnet 启用时使用）：本电路当前因混入延迟而“扣在手里”的 setTimeout 句柄集合。----
   // 每个 setTimeout 在到点把一个被延迟的转发/后向 cell 真正发出；其回调先把自己从此集合摘除。拆电路时清空全部（不让延迟 cell 在 teardown 后还发）。
   mixTimers?: Set<ReturnType<typeof setTimeout>>;
+  // Mixnet 延迟在“同一电路、同一出方向”上必须保 FIFO：TCP/HS 分帧等上层协议依赖 cell 序，若独立 timer 直接乱序发出，
+  // 滑窗防重放虽不会误丢 cell，但出口/客户端会按到达顺序交付字节而破坏流语义。下面两个时间戳是 prev/next 出方向的
+  // 下一可发送时间水位；每个新 cell 追加在该方向队尾，仍有随机间隔，但不重排同一有序流。
+  mixPrevReadyAt?: number;
+  mixNextReadyAt?: number;
 }
 
 /** 中继的电路表。circId 全局随机唯一 → 用两张表按“来向”区分：前向 cell 落 incoming，后向 cell 落 outgoing。 */
