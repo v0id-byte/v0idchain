@@ -143,8 +143,9 @@ export class RelayNode {
   private exitHandler?: ExitHandler;
   private exitPolicy: ExitPolicy = () => false; // 默认 deny-all
   private streams = new Map<RelayCircuit, Socket>(); // 出口：电路 → 其 TCP 流（v1 每电路 1 条流）
-  // HSDir 描述符存储：descIdHex → {json, exp}。跨电路存活（DHT 的意义），仅 TTL 过期/超量被清，不随电路销毁清空。
-  private hsdescs = new Map<string, { json: string; exp: number }>();
+  // HSDir 描述符存储：descIdHex → {json, exp, rev}。跨电路存活（DHT 的意义），仅 TTL 过期/超量被清，不随电路销毁清空。
+  // rev = 该 descId 当前存的描述符的修订号；发布时只接受 rev 严格更高者（同周期防回滚，见 handleHsPublish）。
+  private hsdescs = new Map<string, { json: string; exp: number; rev: number }>();
   // 进行中的分帧 HS 请求重组器（按电路 + 命令；一条电路同一时刻一种 HS 请求在途）。随电路销毁清理。
   private hsReasm = new Map<RelayCircuit, { cmd: number; reasm: FrameReassembler }>();
   // ---- 引入点/会合点状态（Phase 2B-c）。本节点同时可担任 IP 与 RP；下面三张表互不干扰，均随电路销毁清理。----
@@ -538,9 +539,10 @@ export class RelayNode {
   }
 
   // 发布：msg = descIdHex(64 ascii) ‖ descriptorJSON(utf8)。
-  // 双重校验：① 描述符盲签名自洽（verifyDescriptorPublishable，不需 A）；
-  //          ② descIdHex === descriptorId(ap,tp)（把存储键钉死到被签名的盲公钥 → 不能越键写入）。
-  // 通过 → 存（带 TTL）+ 回 RESP("OK") 再 END；失败 → 仅 END（无 OK = 失败）。
+  // 三重校验：① 描述符盲签名自洽（verifyDescriptorPublishable，不需 A；也校验 rev 是合法非负整数）；
+  //          ② descIdHex === descriptorId(ap,tp)（把存储键钉死到被签名的盲公钥 → 不能越键写入）；
+  //          ③ 同周期防回滚：仅当 desc.rev **严格高于**已存条目的 rev 才接受（HSDir 只留每个 descId 见过的最高 rev）。
+  // 通过 → 存/替换（带 TTL）+ 回 RESP("OK") 再 END；失败/被回滚拒 → 仅 END（无 OK = 失败）。
   private handleHsPublish(circ: RelayCircuit, msg: Uint8Array): void {
     const fail = () => this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
     if (msg.length < 64) return fail();
@@ -562,8 +564,11 @@ export class RelayNode {
     }
     if (descIdHex !== boundId) return fail();
     this.pruneHsdescs();
-    if (!this.hsdescs.has(descIdHex) && this.hsdescs.size >= MAX_HSDESCS) return fail(); // 满 + 非更新 → 拒
-    this.hsdescs.set(descIdHex, { json, exp: Date.now() + 2 * PERIOD_LEN * 1000 });
+    const existing = this.hsdescs.get(descIdHex);
+    // 防回滚：rev 被签名覆盖（伪造必败验签）→ 已存 rev ≥ 新 rev 即拒，旧描述符无法压制/覆盖更新版。
+    if (existing && existing.rev >= desc.rev) return fail();
+    if (!existing && this.hsdescs.size >= MAX_HSDESCS) return fail(); // 满 + 非更新 → 拒
+    this.hsdescs.set(descIdHex, { json, exp: Date.now() + 2 * PERIOD_LEN * 1000, rev: desc.rev });
     this.sendBackward(circ, CMD_HS_RESP, utf8ToBytes('OK'));
     this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
   }

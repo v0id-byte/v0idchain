@@ -143,6 +143,47 @@ async function main() {
   wrongKeyClient.close();
   check('越键发布（descId≠descriptorId(ap,tp)）被拒（false）', wrongKeyOk === false);
 
+  // ---- 防回滚：同周期 rev 单调，HSDir 只留见过的最高 rev（旧 rev 不能压制新版）----
+  // 在同一个 HSDir 上独立验证：先 rev=2，再回滚到 rev=1（应被拒、不覆盖），再升到 rev=3（应接受）。
+  {
+    const rbHsdir = hsdirs[0];
+    const desc2 = buildDescriptor(seed, TP, introPoints, '02'.repeat(32), 2); // 不同 inner，便于区分取回的是哪版
+    const desc1 = buildDescriptor(seed, TP, introPoints, '01'.repeat(32), 1);
+    const desc3 = buildDescriptor(seed, TP, introPoints, '03'.repeat(32), 3);
+    const json2 = JSON.stringify(desc2);
+    const json3 = JSON.stringify(desc3);
+
+    const pc2 = await circuitTo(rbHsdir);
+    const ok2 = await withTimeout(pc2.hsPublish(descId, json2), 5000, 'publish rev2');
+    pc2.close();
+    check('发布 rev=2 被接受', ok2 === true);
+
+    const fc2 = await circuitTo(rbHsdir);
+    const got2 = await withTimeout(fc2.hsFetch(descId), 5000, 'fetch after rev2');
+    fc2.close();
+    check('rev=2 发布后取回的是 rev=2 的描述符', got2 === json2);
+
+    const pc1 = await circuitTo(rbHsdir);
+    const ok1 = await withTimeout(pc1.hsPublish(descId, JSON.stringify(desc1)), 5000, 'publish rev1 rollback');
+    pc1.close();
+    check('回滚发布 rev=1（≤ 已存 rev=2）被拒（false）', ok1 === false);
+
+    const fc1 = await circuitTo(rbHsdir);
+    const stillRev2 = await withTimeout(fc1.hsFetch(descId), 5000, 'fetch after rollback attempt');
+    fc1.close();
+    check('回滚尝试未覆盖：取回仍是 rev=2', stillRev2 === json2);
+
+    const pc3 = await circuitTo(rbHsdir);
+    const ok3 = await withTimeout(pc3.hsPublish(descId, json3), 5000, 'publish rev3');
+    pc3.close();
+    check('发布 rev=3（> 已存 rev=2）被接受', ok3 === true);
+
+    const fc3 = await circuitTo(rbHsdir);
+    const got3 = await withTimeout(fc3.hsFetch(descId), 5000, 'fetch after rev3');
+    fc3.close();
+    check('rev=3 发布后取回的是 rev=3 的描述符', got3 === json3);
+  }
+
   // ---- 收尾 ----
   for (const r of relays) void r.close();
   process.stdout.write(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}\n`, () => process.exit(failures === 0 ? 0 : 1));

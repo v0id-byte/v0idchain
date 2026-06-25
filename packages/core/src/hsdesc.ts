@@ -199,6 +199,7 @@ interface DescInner {
 export interface Descriptor {
   v: number;
   tp: number;
+  rev: number; // 同周期内单调修订号（被签名覆盖）：HSDir 只留每个 descId 见过的最高 rev → 防同周期回滚/压制更新
   ap: string; // hex(Ap)
   enc: string; // hex(nonce || ciphertext)
   sig: string; // hex(signBlinded(...))
@@ -217,18 +218,24 @@ function descKeyFrom(A: Uint8Array, TP: number): Uint8Array {
 }
 
 const HSDESC_DOMAIN = utf8ToBytes('v0id-hsdesc-v1');
-// 被签名的字节：域串 || u64le(TP) || Ap || blob —— 把周期、盲身份、密文一并钉进签名。
+// 被签名的字节：域串 || u64le(TP) || u64le(REV) || Ap || blob —— 把周期、修订号、盲身份、密文一并钉进签名。
+// rev 进签名是防回滚的根：篡改 rev（想用旧描述符冒充新版）会破坏签名 → verify 必败，HSDir 据签名拒之。
 // 内部共享构造（buildDescriptor 签 / parseDescriptor 验 / verifyDescriptorPublishable 验 三处同源，绝不能各写一份）。
-function descSignBytes(apBytes: Uint8Array, tp: number, blob: Uint8Array): Uint8Array {
-  return concatBytes(HSDESC_DOMAIN, u64le(tp), apBytes, blob);
+function descSignBytes(apBytes: Uint8Array, tp: number, rev: number, blob: Uint8Array): Uint8Array {
+  return concatBytes(HSDESC_DOMAIN, u64le(tp), u64le(rev), apBytes, blob);
 }
 
-/** 构造描述符：加密 inner + 用盲私钥签名。需要 seed（服务持有身份种子）。 */
+/**
+ * 构造描述符：加密 inner + 用盲私钥签名。需要 seed（服务持有身份种子）。
+ * @param rev 同周期修订号（默认 0）。服务每次更新引入点/重发应**递增** rev，使新描述符的 rev 高于旧的，
+ *            HSDir 才会接受替换（见 verifyDescriptorPublishable + HSDir 的最高-rev 规则）。
+ */
 export function buildDescriptor(
   seed: Uint8Array,
   TP: number,
   introPoints: IntroPoint[],
   serviceOnionPubHex: string,
+  rev = 0,
 ): Descriptor {
   const A = identityPub(seed);
   const { Ap } = blindSecret(seed, TP);
@@ -237,18 +244,22 @@ export function buildDescriptor(
   const nonce = randomBytes(24);
   const ct = xchacha20poly1305(descKey, nonce).encrypt(inner);
   const blob = concatBytes(nonce, ct);
-  const sig = signBlinded(seed, TP, descSignBytes(Ap, TP, blob));
-  return { v: 1, tp: TP, ap: bytesToHex(Ap), enc: bytesToHex(blob), sig: bytesToHex(sig) };
+  const sig = signBlinded(seed, TP, descSignBytes(Ap, TP, rev, blob));
+  return { v: 1, tp: TP, rev, ap: bytesToHex(Ap), enc: bytesToHex(blob), sig: bytesToHex(sig) };
 }
 
 /**
  * 解析+验证描述符（客户端：只持有 .v0id 地址）。任一步失败 → null。
  *   1. 地址 → A；2. blindPublic(A,tp) 必须等于 desc.ap（绑定身份↔盲公钥）；
- *   3. 标准 ed25519.verify(sig, signBytes, Ap)；4. 由 A 派生 descKey 解密 blob；5. JSON 解析。
+ *   3. 标准 ed25519.verify(sig, signBytes, Ap)（signBytes 含 rev → 篡改 rev 必致验签失败）；
+ *   4. 由 A 派生 descKey 解密 blob；5. JSON 解析。
+ * 返回内层明文外加被签名的 rev（客户端据此分辨/择优同周期多版本）。
  */
-export function parseDescriptor(addr: string, desc: Descriptor): DescInner | null {
+export function parseDescriptor(addr: string, desc: Descriptor): (DescInner & { rev: number }) | null {
   const A = decodeV0idAddress(addr);
   if (A === null) return null;
+  // rev 须是有限非负整数（畸形 rev 直接拒；同时 u64le(rev) 才不会被 BigInt 抛错）。
+  if (typeof desc.rev !== 'number' || !Number.isInteger(desc.rev) || desc.rev < 0) return null;
   let Ap: Uint8Array;
   try {
     Ap = blindPublic(A, desc.tp);
@@ -264,10 +275,10 @@ export function parseDescriptor(addr: string, desc: Descriptor): DescInner | nul
   } catch {
     return null;
   }
-  // 标准 ed25519 验签（铁锚：用库验签器，不是自写）。zip215:false 走严格 RFC8032。
+  // 标准 ed25519 验签（铁锚：用库验签器，不是自写）。zip215:false 走严格 RFC8032。signBytes 含 rev。
   let ok = false;
   try {
-    ok = ed25519.verify(sig, descSignBytes(Ap, desc.tp, blob), Ap, { zip215: false });
+    ok = ed25519.verify(sig, descSignBytes(Ap, desc.tp, desc.rev, blob), Ap, { zip215: false });
   } catch {
     return null;
   }
@@ -280,7 +291,7 @@ export function parseDescriptor(addr: string, desc: Descriptor): DescInner | nul
     const descKey = descKeyFrom(A, desc.tp);
     const inner = xchacha20poly1305(descKey, nonce).decrypt(ct);
     const parsed = JSON.parse(new TextDecoder().decode(inner)) as DescInner;
-    return parsed;
+    return { ...parsed, rev: desc.rev }; // 附上被签名的 rev（已通过验签 → 可信）
   } catch {
     return null;
   }
@@ -299,6 +310,9 @@ export function verifyDescriptorPublishable(desc: Descriptor): boolean {
     desc.v !== 1 ||
     typeof desc.tp !== 'number' ||
     !Number.isFinite(desc.tp) ||
+    typeof desc.rev !== 'number' ||
+    !Number.isInteger(desc.rev) ||
+    desc.rev < 0 || // rev 须有限非负整数（畸形/负 rev 拒；亦保 u64le(rev) 不抛）
     typeof desc.ap !== 'string' ||
     typeof desc.enc !== 'string' ||
     typeof desc.sig !== 'string'
@@ -316,7 +330,7 @@ export function verifyDescriptorPublishable(desc: Descriptor): boolean {
   }
   if (apBytes.length !== 32) return false; // 盲公钥必须 32 字节（否则 verify 必抛/必败，提前挡掉）
   try {
-    return ed25519.verify(sig, descSignBytes(apBytes, desc.tp, blob), apBytes, { zip215: false });
+    return ed25519.verify(sig, descSignBytes(apBytes, desc.tp, desc.rev, blob), apBytes, { zip215: false });
   } catch {
     return false; // 畸形签名/点 → 抛错即视为不可发布
   }
