@@ -39,6 +39,11 @@ import {
   makeRelayClaim,
   parseRelays,
   relaysToJSON,
+  makeStake,
+  computeStakeState,
+  STAKE_ESCROW_ADDRESS,
+  UNSTAKE_PREFIX,
+  type StakeRole,
 } from '@v0idchain/core';
 import { P2P } from './p2p.js';
 
@@ -210,6 +215,27 @@ export class V0idNode {
   /** 链上中继目录（地址→描述符），可 JSON 序列化 */
   relays() {
     return relaysToJSON(parseRelays(this.bc.chain));
+  }
+
+  // ---- 中继质押托管（Phase 3A-1）----
+  /** 质押：转给质押托管地址 + memo `STAKE|<role>`，锁定该角色最低押金 STAKE_MIN[role]（需 ≥ 押金+手续费 余额）。 */
+  stake(role: StakeRole): { ok: boolean; tx?: Transaction; error?: string } {
+    const r = makeStake(role);
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, STAKE_ESCROW_ADDRESS, r.amount!, r.memo!, minFeeFor(r.amount!));
+  }
+
+  /** 赎回：发 UNSTAKE 交易（amount=0），过锁定期后取回本金-已罚没。stakeId = STAKE 交易 txid。 */
+  unstake(stakeId: string): { ok: boolean; tx?: Transaction; error?: string } {
+    return this.submit(this.wallet, this.wallet.address, 0, `${UNSTAKE_PREFIX}${stakeId}`, MIN_FEE);
+  }
+
+  /** 本节点地址名下的质押池列表（只读，从链上质押状态过滤出 staker=本地址）。 */
+  stakes() {
+    const me = this.wallet.address;
+    return [...computeStakeState(this.bc.chain).entries()]
+      .filter(([, p]) => p.staker === me)
+      .map(([id, p]) => ({ id, ...p }));
   }
 
   // ---- 链上抢红包 ----

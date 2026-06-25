@@ -11,6 +11,8 @@ import {
   MESSAGE_BURN,
   CLAIM_PREFIX,
   REFUND_PREFIX,
+  UNSTAKE_PREFIX,
+  SLASH_PREFIX,
 } from './config.js';
 import type { Wallet } from './wallet.js';
 
@@ -116,8 +118,13 @@ export function verifyTransaction(t: Transaction): boolean {
   if (!Number.isInteger(t.amount) || t.amount < 0 || t.amount > Number.MAX_SAFE_INTEGER) return false;
   if (!Number.isInteger(burn) || burn < 0 || burn > Number.MAX_SAFE_INTEGER) return false;
   // 空操作交易（既不转账 amount=0 又不销毁 burn=0）一律拒：转账须 amount>0，消息须 burn>0。
-  // 例外：红包的 CLAIM/REFUND 是 amount=0（领/退由共识从托管池支付，不在本交易里转币）。
-  const zeroOk = typeof t.memo === 'string' && (t.memo.startsWith(CLAIM_PREFIX) || t.memo.startsWith(REFUND_PREFIX));
+  // 例外：红包 CLAIM/REFUND 与质押 UNSTAKE/SLASH 都是 amount=0（由共识从托管池支付/移交，不在本交易里转币）。
+  const zeroOk =
+    typeof t.memo === 'string' &&
+    (t.memo.startsWith(CLAIM_PREFIX) ||
+      t.memo.startsWith(REFUND_PREFIX) ||
+      t.memo.startsWith(UNSTAKE_PREFIX) ||
+      t.memo.startsWith(SLASH_PREFIX));
   if (t.amount === 0 && burn === 0 && !zeroOk) return false;
   // 手续费同样必须是整数且在安全范围内（同样的浮点累积误差会撕裂共识）。此处只判范围，最低值按类型在下方判。
   if (!Number.isInteger(t.fee) || t.fee < 0 || t.fee > Number.MAX_SAFE_INTEGER) return false;
