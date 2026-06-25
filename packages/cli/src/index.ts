@@ -186,13 +186,14 @@ program
       }
       if (o.socks) {
         const socksPort = Number(o.socksPort);
-        // hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则回退随机，保证 SOCKS 不因守卫缺失而完全断网。
+        // hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则失败/等待冷却恢复，绝不回退随机入口。
         const pickHops = (): HopSpec[] => {
           const all = node.relays();
           if (all.length < 3) throw new Error('链上中继不足 3 个，暂无法建路');
           const hop = (d: (typeof all)[number]): HopSpec => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port });
           const gid = guardManager!.currentGuard(all);
-          const guard = (gid && all.find((d) => d.address === gid)) || all[Math.floor(Math.random() * all.length)];
+          const guard = gid ? all.find((d) => d.address === gid) : undefined;
+          if (!guard) throw new Error('钉住守卫均不可用，暂无法建路');
           // middle：≠ guard 的随机中继；exit：≠ guard、≠ middle 的随机中继。
           const afterGuard = all.filter((d) => d.address !== guard.address);
           const middle = afterGuard[Math.floor(Math.random() * afterGuard.length)];

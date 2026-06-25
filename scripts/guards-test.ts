@@ -93,7 +93,7 @@ async function main() {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  // ---- 4c. 全部钉住守卫不可达 → currentGuard 返回 undefined（由调用方兜底，如随机回退）----
+  // ---- 4c. 全部钉住守卫不可达 → currentGuard 返回 undefined（调用方须失败/等待冷却，不能随机回退）----
   {
     const tmp = mkdtempSync(join(tmpdir(), 'guards-'));
     let clock = 6_000_000;
@@ -103,7 +103,7 @@ async function main() {
     check('全不可达前：钉住集 = sampleSize(3)', pinned.length === 3);
     for (const id of pinned) gm.markUnreachable(id); // 把整撮钉住守卫全标记不可达
     const none = gm.currentGuard(dir8);
-    check('全部钉住守卫不可达 → currentGuard 返回 undefined（交调用方兜底）', none === undefined);
+    check('全部钉住守卫不可达 → currentGuard 返回 undefined（不得随机回退）', none === undefined);
     // 冷却到点后又能恢复（不是死局）。
     clock += 600_001;
     check('冷却到点后守卫集恢复可用（返回钉住集内某守卫）', pinned.includes(gm.currentGuard(dir8) ?? ''));

@@ -204,6 +204,11 @@ export class RelayNode {
   private sweep(): void {
     const now = Date.now();
     for (const c of this.table.all()) {
+      // HiddenService 建好的引入点电路是长期注册态：描述符会继续发布这些 intro 信息，但服务端
+      // 当前不会在收到 DESTROY 后自动重建/重发布。若被普通 idle/max-age 清扫，客户端会拿到陈旧 intro
+      // 而无法接入。因此 introByCirc 注册的电路不参与通用 DoS 清扫；它们仍会在链路关闭、显式 DESTROY、
+      // shutdown 等正常路径中清理登记。
+      if (this.introByCirc.has(c)) continue;
       if (now - c.lastSeen > this.dos.idleMs) this.destroyCircuit(c, undefined, 'idle');
       else if (now - c.createdAt > this.dos.maxAgeMs) this.destroyCircuit(c, undefined, 'max-age');
     }
