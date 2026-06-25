@@ -1,7 +1,7 @@
 // 本地 HTTP 控制接口：CLI 子命令（send/balance/mine…）通过它和运行中的节点对话。
 // 用 node:http，零额外依赖。只监听 127.0.0.1。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { isValidAddress, minFeeFor } from '@v0idchain/core';
+import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor } from '@v0idchain/core';
 import type { V0idNode } from './node.js';
 import type { RoleManager } from './relay/rolemanager.js';
 
@@ -145,7 +145,11 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           }
           case '/stake': {
             // 质押：转给托管地址 + memo STAKE|<role>，锁定 STAKE_MIN[role]。
-            // 激活高度（16000）前，共识层会从 node.stake → submit 返回错误（不抛/不崩）→ 这里 400 + {error} 干净回传。
+            // 激活高度前 `STAKE|` 转托管仍会被旧/未激活共识当作普通转账，
+            // 所以 API 必须先挡住，避免 Bearer 客户端把押金转进托管却不生成质押池。
+            if (node.bc.height < STAKING_ACTIVATION_HEIGHT) {
+              return json(400, { error: `质押尚未激活（当前高度 ${node.bc.height}，激活高度 ${STAKING_ACTIVATION_HEIGHT}）` });
+            }
             const r = node.stake(String(body.role ?? '') as Parameters<typeof node.stake>[0]);
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
