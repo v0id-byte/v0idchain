@@ -36,6 +36,9 @@ import {
 import { randomBytes } from 'node:crypto';
 import { CircuitClient } from './client.js';
 
+const HS_FETCH_TIMEOUT_MS = 10_000;
+const RDV_TIMEOUT_MS = 30_000;
+
 /** 选路：给定“终点跳”的中继地址，建一条以它为终点的 3 跳电路（guard/middle 由实现挑）。 */
 export type BuildCircuit = (exitRelayId: string) => Promise<CircuitClient>;
 /** 中继目录：返回当前可用中继地址列表（用于选 RP / 定位 HSDir）。 */
@@ -93,8 +96,10 @@ export class RdvChannel {
   }
   /** 主动关闭（销毁底层 RP 电路）。 */
   close(): void {
+    if (this.closed) return;
     this.closed = true;
     this.circ.close();
+    this.closeCb?.();
   }
 }
 
@@ -120,66 +125,90 @@ export async function connectHiddenService(
   // 1. 从某个负责的 HSDir 取回并解析描述符。
   const hsdirs = responsibleHsDirs(descId, relays, 3);
   let desc: Descriptor | null = null;
+  let inner: ReturnType<typeof parseDescriptor> | null = null;
   for (const hsdirId of hsdirs) {
     const c = await build(hsdirId);
     let json: string | null = null;
     try {
-      json = await c.hsFetch(descId);
+      json = await withTimeout(c.hsFetch(descId), HS_FETCH_TIMEOUT_MS, null);
     } finally {
       c.close();
     }
-    if (json) {
-      try {
-        desc = JSON.parse(json) as Descriptor;
-      } catch {
-        desc = null;
-      }
-      if (desc) break;
+    if (!json) continue;
+    try {
+      const candidate = JSON.parse(json) as Descriptor;
+      if (candidate.tp !== TP || descriptorId(hexToBytes(candidate.ap), candidate.tp) !== descId) continue;
+      const parsed = parseDescriptor(addr, candidate);
+      if (!parsed || parsed.introPoints.length === 0) continue;
+      desc = candidate;
+      inner = parsed;
+      break;
+    } catch {
+      continue;
     }
   }
-  if (!desc) throw new Error('取不到描述符（服务未发布 / 地址错误）');
-  const inner = parseDescriptor(addr, desc);
-  if (!inner || inner.introPoints.length === 0) throw new Error('描述符解析失败 / 无引入点');
+  if (!desc || !inner) throw new Error('取不到描述符（服务未发布 / 地址错误）');
   const serviceOnionPub = hexToBytes(inner.serviceOnionPubHex);
 
   // 2. 建到 RP 的电路、占会合槽（cookie），await RENDEZVOUS_ESTABLISHED；电路常开。
   const rpRelayId = pickRp(relays, inner.introPoints);
   const cookie = randomBytes(RDV_COOKIE_LEN);
   const rpCirc = await build(rpRelayId);
-  rpCirc.enterRdvMode();
-  // 先挂好 RENDEZVOUS2 等待器（服务可能在我们发完 INTRODUCE1 后很快回来）。
-  const rdv2Promise = new Promise<Uint8Array>((res) => rpCirc.onRdv(CMD_RENDEZVOUS2, (d) => res(d)));
-  await rpCirc.sendAwaitRdv(CMD_ESTABLISH_RENDEZVOUS, cookie, CMD_RENDEZVOUS_ESTABLISHED);
+  let ipCirc: CircuitClient | null = null;
+  try {
+    rpCirc.enterRdvMode();
+    // 先挂好 RENDEZVOUS2 等待器（服务可能在我们发完 INTRODUCE1 后很快回来）。
+    const rdv2Promise = new Promise<Uint8Array>((res) => rpCirc.onRdv(CMD_RENDEZVOUS2, (d) => res(d)));
+    await rpCirc.sendAwaitRdv(CMD_ESTABLISH_RENDEZVOUS, cookie, CMD_RENDEZVOUS_ESTABLISHED);
 
-  // 3. ntor 客户端起手；密封 INTRODUCE 信封；经引入点发 INTRODUCE1。
-  const ntor = ntorClientStart();
-  const rpPubHex = rpRelayId.startsWith('0x') ? rpRelayId.slice(2) : rpRelayId;
-  const introPlaintext = encodeIntroducePayload(rpPubHex, cookie, ntor.ephPublic);
-  const ip = inner.introPoints[0];
-  const sealed = introduceSeal(serviceOnionPub, introPlaintext);
-  const authKey = hexToBytes(ip.authKeyHex);
-  // INTRODUCE1 data = authKey(32) ‖ ephPub(32) ‖ ct。引入点据 authKey 寻址服务、原样转 rest（看不懂信封）。
-  const intro1 = new Uint8Array(authKey.length + sealed.ephPub.length + sealed.ct.length);
-  intro1.set(authKey, 0);
-  intro1.set(sealed.ephPub, authKey.length);
-  intro1.set(sealed.ct, authKey.length + sealed.ephPub.length);
-  const ipCirc = await build(ip.relayId);
-  ipCirc.enterRdvMode();
-  ipCirc.sendToTerminus(CMD_INTRODUCE1, intro1);
+    // 3. ntor 客户端起手；密封 INTRODUCE 信封；经引入点发 INTRODUCE1。
+    const ntor = ntorClientStart();
+    const rpPubHex = rpRelayId.startsWith('0x') ? rpRelayId.slice(2) : rpRelayId;
+    const introPlaintext = encodeIntroducePayload(rpPubHex, cookie, ntor.ephPublic);
+    const ip = inner.introPoints[0];
+    const sealed = introduceSeal(serviceOnionPub, introPlaintext);
+    const authKey = hexToBytes(ip.authKeyHex);
+    // INTRODUCE1 data = authKey(32) ‖ ephPub(32) ‖ ct。引入点据 authKey 寻址服务、原样转 rest（看不懂信封）。
+    const intro1 = new Uint8Array(authKey.length + sealed.ephPub.length + sealed.ct.length);
+    intro1.set(authKey, 0);
+    intro1.set(sealed.ephPub, authKey.length);
+    intro1.set(sealed.ct, authKey.length + sealed.ephPub.length);
+    ipCirc = await build(ip.relayId);
+    ipCirc.enterRdvMode();
+    ipCirc.sendToTerminus(CMD_INTRODUCE1, intro1);
 
-  // 4. await RENDEZVOUS2(serverEph‖auth)，完成 ntor → 端到端密钥。引入点电路用完即弃。
-  const r2 = await rdv2Promise;
-  ipCirc.close(); // 引入只需投递一次，之后不再需要引入电路
-  if (r2.length < 64) throw new Error('RENDEZVOUS2 应答过短');
-  const serverEph = r2.subarray(0, 32);
-  const auth = r2.subarray(32, 64);
-  const keys = ntorClientFinish(ntor, A, serviceOnionPub, serverEph, auth);
-  if (!keys) {
+    // 4. await RENDEZVOUS2(serverEph‖auth)，完成 ntor → 端到端密钥。引入点电路用完即弃。
+    const r2 = await withTimeout(rdv2Promise, RDV_TIMEOUT_MS);
+    ipCirc.close(); // 引入只需投递一次，之后不再需要引入电路
+    if (r2.length < 64) throw new Error('RENDEZVOUS2 应答过短');
+    const serverEph = r2.subarray(0, 32);
+    const auth = r2.subarray(32, 64);
+    const keys = ntorClientFinish(ntor, A, serviceOnionPub, serverEph, auth);
+    if (!keys) {
+      rpCirc.close();
+      throw new Error('会合 ntor 认证失败（服务身份未通过）');
+    }
+    // 客户端：发用 encForward，收用 encBackward（与中继侧 forward=客户端→服务 一致）。
+    return new RdvChannel(rpCirc, keys.encForward, keys.encBackward);
+  } catch (err) {
+    ipCirc?.close();
     rpCirc.close();
-    throw new Error('会合 ntor 认证失败（服务身份未通过）');
+    throw err;
   }
-  // 客户端：发用 encForward，收用 encBackward（与中继侧 forward=客户端→服务 一致）。
-  return new RdvChannel(rpCirc, keys.encForward, keys.encBackward);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T>;
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutValue: T): Promise<T>;
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutValue?: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const hasTimeoutValue = arguments.length >= 3;
+  const timeout = new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (hasTimeoutValue) resolve(timeoutValue as T);
+      else reject(new Error('隐藏服务请求超时'));
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // 选 RP：从目录里挑一个**不是**任何引入点、也不是已知 HSDir 角色冲突的中继（简化：避开引入点 relayId）。
