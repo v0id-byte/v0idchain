@@ -1,6 +1,6 @@
 // 中继质押托管自检（Phase 3A-1）。跑：corepack pnpm exec tsx scripts/staking-selftest.ts
 // 覆盖：STAKE 开池/扣款/锁定、UNSTAKE 锁定期+本金退还+防重复、SLASH 度量者权限+移交国库+罚后赎回、
-//       分叉安全（computeState ≡ validateChain ≡ Blockchain.validateChain）、质押门槛选路过滤、金标向量。
+//       分叉安全（computeState ≡ validateChain ≡ Blockchain.validateChain）、质押门槛选路过滤、激活/配置向量。
 import {
   Blockchain,
   Wallet,
@@ -19,7 +19,7 @@ import {
   STAKE_MIN,
   STAKE_LOCK_BLOCKS,
   MEASURER_ADDRESS,
-  DEV_MEASURER_SEED,
+  STAKING_ACTIVATION_HEIGHT,
   GENESIS_PREMINE,
   GENESIS_PREMINE_ADDRESS,
   BLOCK_REWARD,
@@ -36,11 +36,13 @@ function check(label: string, cond: boolean) {
 const supply = (bc: Blockchain) => [...bc.computeState().balances.values()].reduce((s, v) => s + v, 0);
 const conserved = (bc: Blockchain) => supply(bc) === GENESIS_PREMINE + bc.height * BLOCK_REWARD;
 
-console.log(`\n— 金标向量：度量者地址由公开 DEV_MEASURER_SEED 确定性派生（跨实现锁定）—`);
-const measurer = Wallet.fromPrivateKeyHex(DEV_MEASURER_SEED);
-check('fromPrivateKeyHex(DEV_MEASURER_SEED).address === MEASURER_ADDRESS', measurer.address === MEASURER_ADDRESS);
+console.log(`\n— 配置向量：生产配置不导出度量者私钥，质押有显式激活高度 —`);
+const measurer = Wallet.generate(); // 自检只能验证非度量者会被拒；生产 MEASURER_ADDRESS 的私钥不在仓库内。
+check('MEASURER_ADDRESS 是地址而非私钥/种子', MEASURER_ADDRESS.startsWith('0x') && MEASURER_ADDRESS.length === 66);
+check('质押激活高度 > 当前 checkpoint 历史', STAKING_ACTIVATION_HEIGHT > 300);
 check('托管地址 = 0x…2（与红包 …1 区分）', STAKE_ESCROW_ADDRESS === '0x' + '0'.repeat(63) + '2');
 check('角色最低押金 Guard ≥ HSDir ≥ Middle', STAKE_MIN.guard >= STAKE_MIN.hsdir && STAKE_MIN.hsdir >= STAKE_MIN.middle);
+
 
 console.log(`\n— 纯解析器：parseStakeCreate / parseUnstakeId / parseSlash（非法返回 null）—`);
 check('STAKE|guard → {role:guard}', parseStakeCreate(`${STAKE_PREFIX}guard`)?.role === 'guard');
@@ -54,6 +56,22 @@ check('SLASH|<id>|7|3 → {amount:7,epoch:3}', sl?.stakeId === fakeId && sl?.amo
 check('SLASH 金额 0 非法 → null', parseSlash(`${SLASH_PREFIX}${fakeId}|0|3`) === null);
 check('SLASH 缺字段 → null', parseSlash(`${SLASH_PREFIX}${fakeId}|7`) === null);
 check('makeStake(guard) 金额 = STAKE_MIN.guard', makeStake('guard').amount === STAKE_MIN.guard);
+
+if (STAKING_ACTIVATION_HEIGHT > 0) {
+  console.log(`\n— 激活门控：激活前不把历史 memo/托管地址转账解释成质押操作 —`);
+  const pre = new Blockchain();
+  const user = Wallet.generate();
+  for (let i = 0; i < 6; i++) await pre.mine(user.address);
+  const ordinaryToEscrow = createTransaction(user, STAKE_ESCROW_ADDRESS, 1, pre.nonceOf(user.address), 'historical transfer', MIN_FEE);
+  check('激活前普通转账到质押托管地址可按普通历史交易处理', pre.addTransaction(ordinaryToEscrow).ok);
+  await pre.mine(user.address);
+  check('激活前不会创建质押池', pre.computeState().stakes.size === 0);
+  check('激活前 UNSTAKE 零额新边界被拒',
+    !pre.addTransaction(createTransaction(user, user.address, 0, pre.nonceOf(user.address), `${UNSTAKE_PREFIX}${fakeId}`, MIN_FEE)).ok);
+  check('激活前链整链校验通过', Blockchain.validateChain(pre.chain).ok);
+  console.log(failed === 0 ? `\n🎉 激活前门控自检通过 PASS\n` : `\n💥 ${failed} 项失败 ${failed} FAILED\n`);
+  process.exit(failed === 0 ? 0 : 1);
+}
 
 console.log(`\n— STAKE：开质押池、托管入账、质押人被扣（押金+手续费）—`);
 const bc = new Blockchain();

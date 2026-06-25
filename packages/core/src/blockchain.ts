@@ -41,6 +41,7 @@ import {
   REFUND_PREFIX,
   RED_EXPIRY,
   STAKE_ESCROW_ADDRESS,
+  STAKING_ACTIVATION_HEIGHT,
   STAKE_PREFIX,
   UNSTAKE_PREFIX,
   SLASH_PREFIX,
@@ -175,8 +176,12 @@ function redOpError(
   atHeight: number,
 ): string | null {
   const m = tx.memo;
+  const stakingActive = atHeight >= STAKING_ACTIVATION_HEIGHT;
+  if (!stakingActive && (m.startsWith(UNSTAKE_PREFIX) || m.startsWith(SLASH_PREFIX))) {
+    return `质押尚未激活（激活高度 ${STAKING_ACTIVATION_HEIGHT}）`;
+  }
   // ---- 质押操作（STAKE/UNSTAKE/SLASH）：与红包 RED/CLAIM/REFUND 同款合法性校验 ----
-  if (m.startsWith(UNSTAKE_PREFIX)) {
+  if (stakingActive && m.startsWith(UNSTAKE_PREFIX)) {
     if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
     if (tx.amount !== 0) return '赎回金额须为 0';
     const id = parseUnstakeId(m);
@@ -188,7 +193,7 @@ function redOpError(
     if (atHeight < p.lockedUntil) return `质押锁定中（需到第 ${p.lockedUntil} 块）`;
     return null;
   }
-  if (m.startsWith(SLASH_PREFIX)) {
+  if (stakingActive && m.startsWith(SLASH_PREFIX)) {
     if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
     if (tx.amount !== 0) return '罚没金额须为 0';
     if (tx.from !== MEASURER_ADDRESS) return '只有度量者能罚没';
@@ -201,7 +206,7 @@ function redOpError(
     return null;
   }
   // 质押 = 转给托管地址（旧节点也当普通转账锁进托管 → 不静默分叉）。发往托管地址的交易**必须**是合法质押。
-  if (tx.to === STAKE_ESCROW_ADDRESS) {
+  if (stakingActive && tx.to === STAKE_ESCROW_ADDRESS) {
     if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
     const meta = parseStakeCreate(m);
     if (!meta) return '发往质押托管地址的交易必须是合法质押（STAKE|guard或middle或hsdir）';
@@ -300,7 +305,7 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
   }
   // ---- 质押托管（Phase 3A-1）：STAKE/UNSTAKE/SLASH，与红包 RED/CLAIM/REFUND 同款，共识权威在此 ----
   // 质押：转给托管地址 → 锁押金、开质押池。余额效果 = 普通转账到托管（旧节点也如此），额外开池。
-  if (tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
+  if (atHeight >= STAKING_ACTIVATION_HEIGHT && tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
     const meta = parseStakeCreate(m);
     if (meta && tx.amount >= STAKE_MIN[meta.role]) {
       credit(tx.from, -(tx.amount + tx.fee));
@@ -315,7 +320,7 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
     // 发往托管的非法 STAKE → 合法链上不会发生（validateChain/redOpError 已拦）；稳妥起见落到 NORMAL
   }
   // 赎回：质押人取回本金 - 已罚没（已被 redOpError 校验过锁定期/归属/未赎回）
-  if (m.startsWith(UNSTAKE_PREFIX) && tx.amount === 0) {
+  if (atHeight >= STAKING_ACTIVATION_HEIGHT && m.startsWith(UNSTAKE_PREFIX) && tx.amount === 0) {
     const id = parseUnstakeId(m);
     const p = id ? st.stakes.get(id) : undefined;
     if (p && !p.withdrawn) {
@@ -328,7 +333,7 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
     }
   }
   // 罚没：度量者把失职押金从托管移交国库（GENESIS_PREMINE_ADDRESS）；已被 redOpError 校验过度量者权限/池存在
-  if (m.startsWith(SLASH_PREFIX) && tx.amount === 0 && tx.from === MEASURER_ADDRESS) {
+  if (atHeight >= STAKING_ACTIVATION_HEIGHT && m.startsWith(SLASH_PREFIX) && tx.amount === 0 && tx.from === MEASURER_ADDRESS) {
     const s = parseSlash(m);
     const p = s ? st.stakes.get(s.stakeId) : undefined;
     if (s && p && !p.withdrawn) {
@@ -397,7 +402,7 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
     }
   }
   // 质押操作在选包阶段与 applyTx 完全一致（无区块 hash 依赖 → 可原样推进，杜绝选包/校验分歧）
-  if (tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
+  if (atHeight >= STAKING_ACTIVATION_HEIGHT && tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
     const meta = parseStakeCreate(m);
     if (meta && tx.amount >= STAKE_MIN[meta.role]) {
       credit(tx.from, -(tx.amount + tx.fee));
@@ -410,7 +415,7 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
       return;
     }
   }
-  if (m.startsWith(UNSTAKE_PREFIX) && tx.amount === 0) {
+  if (atHeight >= STAKING_ACTIVATION_HEIGHT && m.startsWith(UNSTAKE_PREFIX) && tx.amount === 0) {
     const id = parseUnstakeId(m);
     const p = id ? st.stakes.get(id) : undefined;
     if (p && !p.withdrawn) {
@@ -422,7 +427,7 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
       return;
     }
   }
-  if (m.startsWith(SLASH_PREFIX) && tx.amount === 0 && tx.from === MEASURER_ADDRESS) {
+  if (atHeight >= STAKING_ACTIVATION_HEIGHT && m.startsWith(SLASH_PREFIX) && tx.amount === 0 && tx.from === MEASURER_ADDRESS) {
     const s = parseSlash(m);
     const p = s ? st.stakes.get(s.stakeId) : undefined;
     if (s && p && !p.withdrawn) {

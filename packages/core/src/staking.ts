@@ -14,6 +14,7 @@ import {
   UNSTAKE_PREFIX,
   SLASH_PREFIX,
   STAKE_ESCROW_ADDRESS,
+  STAKING_ACTIVATION_HEIGHT,
   STAKE_MIN,
   STAKE_LOCK_BLOCKS,
   MEASURER_ADDRESS,
@@ -85,6 +86,7 @@ export function makeStake(role: StakeRole): { ok: boolean; memo?: string; amount
 export function computeStakeState(chain: Block[]): Map<string, StakePool> {
   const stakes = new Map<string, StakePool>();
   for (const b of chain) {
+    if (b.index < STAKING_ACTIVATION_HEIGHT) continue;
     for (const tx of b.transactions) {
       const m = tx.memo;
       if (!m) continue;
