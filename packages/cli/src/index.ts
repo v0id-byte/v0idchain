@@ -2,20 +2,46 @@
 // v0idChain CLI —— start / mine / send / balance / peers / info / wallet
 import { Command } from 'commander';
 import { join } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
-import { V0idNode, startHttpApi, SocksProxy, loadOrCreateOnionKey, RoleManager } from '@v0idchain/node';
+import { mkdirSync, existsSync, readFileSync } from 'node:fs';
+import {
+  V0idNode,
+  startHttpApi,
+  SocksProxy,
+  loadOrCreateOnionKey,
+  RoleManager,
+  Measurer,
+  makeProbeSink,
+  computeReward,
+  decideSlashes,
+  type HopSpec,
+  type ProbeTarget,
+} from '@v0idchain/node';
 import {
   Wallet,
+  Blockchain,
   loadWallet,
   writeWalletFile,
   loadOrCreateApiToken,
   loadApiToken,
   bytesToHex,
+  createTransaction,
+  computeStakeState,
+  parseSlash,
+  parseRelaysFiltered,
+  relaysToJSON,
   SYMBOL,
   MIN_FEE,
   minFeeFor,
   MESSAGE_BURN,
   GENESIS_PREMINE_ADDRESS,
+  MEASURER_ADDRESS,
+  STAKING_ACTIVATION_HEIGHT,
+  EPOCH_BLOCKS,
+  REWARD_EPOCH_POOL,
+  SLASH_AFTER_EPOCHS,
+  SLASH_FRACTION,
+  SLASH_PREFIX,
+  type RelayDescriptor,
 } from '@v0idchain/core';
 
 // --- 小工具：极简 ANSI 颜色 ---
@@ -30,6 +56,13 @@ const c = {
 const short = (addr: string) => (addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr);
 const difficultyText = (d: number) => d > 255 ? `nBits 0x${d.toString(16).padStart(8, '0')}` : `${d}bit`;
 const defaultDataDir = (name: string) => join(process.cwd(), '.data', name);
+
+/** 从一个钱包 JSON 文件路径加载 Wallet（含明文 privateKey 字段）；不存在返回 null。供激励工具按 --*-wallet 指定路径加载签名密钥。 */
+function loadWalletFile(path: string): Wallet | null {
+  if (!existsSync(path)) return null;
+  const data = JSON.parse(readFileSync(path, 'utf8')) as { privateKey: string };
+  return Wallet.fromPrivateKeyHex(data.privateKey);
+}
 
 /**
  * 调用运行中节点的 HTTP API。token 优先用 --token，否则从数据目录的 api.token 自动读取
@@ -483,6 +516,265 @@ txCmd(red.command('refund'))
     const r = await api(o, 'POST', '/redpacket/refund', { id });
     console.log(c.green('↩️  已申请退款'), c.dim('txid='), r.txid);
     if (o.wait) await waitConfirm(o, r.txid);
+  });
+
+// ============================================================================
+//  中继激励链下工具（Phase 3A-2/3/4）：度量者 measure / 奖励 reward-epoch / 罚没 slash-epoch
+//  —— 全部链下：measure 探测出 attestation；reward-epoch 默认只预览（有限国库池，--send 才真发）；
+//     slash-epoch 默认只预览（--send 才从度量者钱包成形并提交 SLASH）。中心化、诚实的度量者。
+// ============================================================================
+
+/** 拉运行中节点的整链，构造一个只读 Blockchain（用于 height / computeStakeState / relays）。 */
+async function fetchChain(o: any): Promise<Blockchain> {
+  const chain = (await api(o, 'GET', '/chain')) as any[];
+  return Blockchain.fromJSON({ chain, mempool: [] });
+}
+
+/** 当前 epoch = floor(height / EPOCH_BLOCKS)。 */
+const epochOf = (height: number) => Math.floor(height / EPOCH_BLOCKS);
+
+/** 从链上目录取「有有效质押」的中继作为探测/激励对象（requireStake=true：只认押了押金的）。 */
+function stakedRelays(bc: Blockchain): RelayDescriptor[] {
+  return relaysToJSON(parseRelaysFiltered(bc.chain, true));
+}
+
+// ---- measure：度量者守护，每 epoch 探测每个中继 K 次 → 在线判定 + 签 attestation + 落盘 ----
+apiOpt(program.command('measure'))
+  .description('中继度量者（链下、中心化、仅存活性）：每个 epoch 穿过每个中继建测试电路探测在线，签发 attestation')
+  .option('--measurer-wallet <path>', '度量者钱包文件路径（默认 ./.data/measurer/wallet.json）')
+  .option('--probes <k>', '每中继每 epoch 探测次数 K', '3')
+  .option('--sink-port <port>', '本进程探测出口 sink 的监听端口（默认使用链上 sink 描述符端口）')
+  .option('--sink-wallet <path>', '探测出口 sink 的已发布中继钱包（默认 = --measurer-wallet；其地址必须能被目标中继从链上解析）')
+  .option('--sink-data-dir <dir>', '探测出口 sink 的 onion.json 所在数据目录（默认 = 钱包所在目录；公钥必须匹配链上描述符）')
+  .option('--sink-host <host>', '本进程 sink 监听地址（仅本机联调可用；生产请确保链上描述符 host 能从目标中继拨通）', '127.0.0.1')
+  .option('--once', '只跑一个 epoch 就退出（默认持续每个 epoch 跑一轮）', false)
+  .option('--interval <ms>', '两轮度量之间的最小间隔（ms）', '60000')
+  .action(async (o) => {
+    // 1) 加载度量者签名钱包（不存在则报错——绝不偷偷新建，签名密钥必须是运营者有意放置的）。
+    const wPath = o.measurerWallet || join(defaultDataDir('measurer'), 'wallet.json');
+    const w = loadWalletFile(wPath);
+    if (!w) {
+      console.error(c.red(`找不到度量者钱包：${wPath}`));
+      console.error(c.dim('先 `v0id wallet new --name measurer` 生成，或用 --measurer-wallet 指向已有钱包文件。'));
+      process.exit(1);
+    }
+    // 2) 地址校验：只有 .address === MEASURER_ADDRESS 的钱包签的 SLASH 才会被链接受。不符则**大声警告**（度量仍可跑，但其 SLASH 上链会被拒）。
+    if (w.address !== MEASURER_ADDRESS) {
+      console.log(c.yellow('⚠ 警告：本钱包地址 ≠ 共识固定的 MEASURER_ADDRESS。'));
+      console.log(c.dim(`    本钱包 ${short(w.address)}`));
+      console.log(c.dim(`    共识需 ${short(MEASURER_ADDRESS)}`));
+      console.log(c.yellow('    → 度量/奖励仍可进行，但本钱包签发的 SLASH 会被全网拒绝（链上罚没需 MEASURER_ADDRESS 私钥，部署期才具备）。'));
+    } else {
+      console.log(c.green('✓ 度量者钱包地址 == MEASURER_ADDRESS（其 SLASH 可被共识接受）'));
+    }
+    const dataDir = join(wPath, '..'); // 度量者状态（measurer-state.json）落钱包所在目录
+    const measurer = new Measurer({ dataDir, measurerPriv: w.privateKey, measurerAddress: w.address, probesPerEpoch: Number(o.probes) });
+
+    // 3) 探测出口 sink：解析器从链上目录拨号（含被探中继 + sink 自身）。每轮起一个、跑完关掉。
+    const runOneEpoch = async () => {
+      const bc = await fetchChain(o);
+      const height = bc.height;
+      const epoch = epochOf(height);
+      const relays = stakedRelays(bc);
+      const stakes = computeStakeState(bc.chain);
+      if (measurer.current.lastEpoch >= epoch) {
+        console.log(c.dim(`[epoch ${epoch} @#${height}] 已完成过该 epoch（state.lastEpoch=${measurer.current.lastEpoch}），等待链进入下一个 epoch，避免重复滚动掉线历史。`));
+        return;
+      }
+      if (relays.length === 0) {
+        console.log(c.dim(`[epoch ${epoch} @#${height}] 链上暂无「有质押」的中继，跳过本轮。`));
+        return;
+      }
+      const sinkWalletPath = o.sinkWallet || wPath;
+      const sinkWallet = loadWalletFile(sinkWalletPath);
+      if (!sinkWallet) {
+        console.error(c.red(`找不到探测 sink 钱包：${sinkWalletPath}`));
+        console.error(c.dim('sink 必须使用已发布到链上、目标中继可解析的中继身份；请提供 --sink-wallet 和 --sink-data-dir。'));
+        process.exit(1);
+      }
+      const sinkDesc = relays.find((r) => r.address === sinkWallet.address);
+      if (!sinkDesc) {
+        console.error(c.red(`探测 sink ${short(sinkWallet.address)} 不在链上有质押中继目录中，目标中继无法解析 EXTEND 第二跳。`));
+        console.error(c.dim('请先把 sink 作为有质押的中继发布上链，或用 --sink-wallet 指向一个已发布 sink 身份。'));
+        process.exit(1);
+      }
+      const sinkDataDir = o.sinkDataDir || join(sinkWalletPath, '..');
+      const sinkOnion = loadOrCreateOnionKey(sinkDataDir);
+      const sinkOnionPubHex = bytesToHex(sinkOnion.pub);
+      if (sinkOnionPubHex !== sinkDesc.onionPubHex) {
+        console.error(c.red(`探测 sink onion 公钥与链上描述符不一致：本地 ${sinkOnionPubHex.slice(0, 16)}…，链上 ${sinkDesc.onionPubHex.slice(0, 16)}…`));
+        console.error(c.dim('请用 --sink-data-dir 指向发布该链上描述符时使用的 onion.json。'));
+        process.exit(1);
+      }
+      // resolver：被探中继和 sink 均来自链上目录；目标中继可用同一链上目录解析 sink id。
+      const dir = new Map<string, { host: string; port: number }>(relays.map((r) => [r.address, { host: r.host, port: r.port }]));
+      const sinkPort = o.sinkPort !== undefined ? Number(o.sinkPort) : sinkDesc.port;
+      if (sinkPort !== sinkDesc.port) {
+        console.log(c.yellow(`  ⚠ sink 本地监听端口 ${sinkPort} ≠ 链上描述符端口 ${sinkDesc.port}；独立目标中继会拨链上端口，生产请保持一致。`));
+      }
+      const { sink, node: sinkNode } = makeProbeSink((id) => dir.get(id), sinkPort, o.sinkHost, { id: sinkWallet.address, onion: sinkOnion });
+      const targets: ProbeTarget[] = relays.map((r) => ({ id: r.address, onionPubHex: r.onionPubHex, host: r.host, port: r.port }));
+      console.log(c.dim(`[epoch ${epoch} @#${height}] 探测 ${targets.length} 个中继，每个 ${o.probes} 次…`));
+      try {
+        const atts = await measurer.runEpoch(targets, sink, stakes, height, epoch);
+        for (const a of atts) {
+          const tag = a.online ? c.green('在线') : c.red('离线');
+          console.log(`  ${tag} ${short(a.relayId)}  uptime=${(a.uptime * 100).toFixed(0)}% (${a.ok}/${a.probes})`);
+        }
+        console.log(c.dim(`  → 已签发 ${atts.length} 份 attestation 并落盘 ${join(dataDir, 'measurer-state.json')}（0600）`));
+      } finally {
+        await sinkNode.close();
+      }
+    };
+
+    await runOneEpoch();
+    if (o.once) return process.exit(0);
+    console.log(c.dim(`持续度量中（每轮最少间隔 ${o.interval}ms）。Ctrl-C 退出。`));
+    setInterval(() => void runOneEpoch().catch((e) => console.error(c.red('度量出错：' + (e instanceof Error ? e.message : String(e))))), Number(o.interval));
+  });
+
+// ---- reward-epoch：按 attestation + 质押算每中继应得奖励。默认**只预览**；--send 才从国库真发（有限池） ----
+apiOpt(program.command('reward-epoch'))
+  .description('计算某 epoch 的中继奖励（链下）。默认只打印预览表；--send 才从国库（央行预挖）真转账发放')
+  .option('--epoch <n>', '结算哪个 epoch（默认 = 当前链高对应的 epoch）')
+  .option('--measurer-wallet <path>', '读 attestation 用的度量者状态目录里的钱包（默认 ./.data/measurer/wallet.json，仅定位 state）')
+  .option('--treasury-wallet <path>', '国库（央行预挖）钱包文件路径（--send 时必需；默认 ./.data/treasury/wallet.json）')
+  .option('--send', '真的从国库给中继转账发奖励（会花掉有限的预挖国库！默认关）', false)
+  .action(async (o) => {
+    const bc = await fetchChain(o);
+    const height = bc.height;
+    const epoch = o.epoch !== undefined ? Number(o.epoch) : epochOf(height);
+    const stakes = computeStakeState(bc.chain);
+    // 读度量者落盘的 attestation（来自 measure 的 state.json）。
+    const mDir = o.measurerWallet ? join(o.measurerWallet, '..') : defaultDataDir('measurer');
+    const stateFile = join(mDir, 'measurer-state.json');
+    if (!existsSync(stateFile)) {
+      console.error(c.red(`找不到度量者状态 ${stateFile}——先跑 \`v0id measure\` 产出 attestation。`));
+      process.exit(1);
+    }
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    const atts = (state.attestations ?? []).filter((a: any) => a.epoch === epoch);
+    if (atts.length === 0) {
+      console.log(c.yellow(`度量者状态里没有 epoch ${epoch} 的 attestation（state.lastEpoch=${state.lastEpoch}）。先对该 epoch 跑 measure。`));
+      process.exit(1);
+    }
+    const lines = computeReward(atts, stakes, height, epoch);
+    const payable = lines.filter((l) => l.amount > 0); // 真发放只发 amount>0 的（预览仍显示全部含 0）
+
+    console.log(c.bold(`\n奖励预览  epoch=${epoch}  链高=${height}  池=${REWARD_EPOCH_POOL} ${SYMBOL}/epoch  国库=${short(GENESIS_PREMINE_ADDRESS)}`));
+    console.log(c.dim('  中继                角色     uptime   权重      应发'));
+    for (const l of lines) {
+      console.log(`  ${short(l.relayId).padEnd(18)} ${l.role.padEnd(7)} ${(l.uptime * 100).toFixed(0).padStart(5)}%  ${l.weight.toFixed(3).padStart(7)}   ${String(l.amount).padStart(4)} ${SYMBOL}`);
+    }
+    const total = payable.reduce((s, l) => s + l.amount, 0);
+    console.log(c.dim(`  合计应发 ${total} ${SYMBOL}（≤ 池 ${REWARD_EPOCH_POOL}；权重归一化后 floor 取整，剩余留国库）`));
+
+    if (!o.send) {
+      console.log(c.cyan('\n  （预览模式：未发任何币。确认无误后加 --send --treasury-wallet <国库钱包> 才真发放。）\n'));
+      return;
+    }
+    // ---- --send：从国库钱包给每个 payable 中继真转账 ----
+    console.log(c.yellow('\n  ⚠⚠ --send：即将从有限的国库预挖给中继真转账发奖励，这会花掉国库余额！⚠⚠'));
+    const tPath = o.treasuryWallet || join(defaultDataDir('treasury'), 'wallet.json');
+    if (!existsSync(tPath)) {
+      console.error(c.red(`找不到国库钱包：${tPath}（--send 必须显式提供持有国库私钥的钱包）`));
+      process.exit(1);
+    }
+    const treasury = loadWalletFile(tPath)!;
+    if (treasury.address !== GENESIS_PREMINE_ADDRESS) {
+      console.log(c.yellow(`  ⚠ 该钱包地址 ${short(treasury.address)} ≠ 国库地址 ${short(GENESIS_PREMINE_ADDRESS)}；转账会从该钱包余额出（可能不是预挖国库）。`));
+    }
+    // 本地按 mempool 中本钱包的待打包数顺延 nonce（与 node.submit 同款）。
+    let nonce = bc.nonceOf(treasury.address);
+    let sent = 0;
+    for (const l of payable) {
+      const tx = createTransaction(treasury, l.relayId, l.amount, nonce++, `reward|epoch${epoch}`, minFeeFor(l.amount));
+      const r = await api(o, 'POST', '/tx/submit', { tx }).catch((e) => ({ error: String(e) }));
+      if ((r as any).ok) {
+        sent++;
+        console.log(c.green(`  ✓ 发 ${l.amount} ${SYMBOL} → ${short(l.relayId)}`), c.dim('txid=' + tx.txid.slice(0, 12) + '…'));
+      } else {
+        console.log(c.red(`  ✖ 发给 ${short(l.relayId)} 失败：${(r as any).error}`));
+      }
+    }
+    console.log(c.green(`\n  已提交 ${sent}/${payable.length} 笔奖励转账（待矿工打包确认）。\n`));
+  });
+
+// ---- slash-epoch：按连续掉线历史决定罚没。默认**只预览**；--send 才从度量者钱包成形并提交 SLASH ----
+apiOpt(program.command('slash-epoch'))
+  .description('按连续掉线历史计算保守罚没（链下）。默认只预览；--send 才从度量者钱包成形并提交 SLASH')
+  .option('--epoch <n>', 'SLASH memo 里记的 epoch（默认 = 当前链高对应的 epoch）')
+  .option('--measurer-wallet <path>', '度量者钱包文件路径（--send 时签发 SLASH 用；默认 ./.data/measurer/wallet.json）')
+  .option('--send', '真的从度量者钱包成形并提交 SLASH 交易（默认关，只预览）', false)
+  .action(async (o) => {
+    const bc = await fetchChain(o);
+    const height = bc.height;
+    const epoch = o.epoch !== undefined ? Number(o.epoch) : epochOf(height);
+    const stakes = computeStakeState(bc.chain);
+    const mDir = o.measurerWallet ? join(o.measurerWallet, '..') : defaultDataDir('measurer');
+    const stateFile = join(mDir, 'measurer-state.json');
+    if (!existsSync(stateFile)) {
+      console.error(c.red(`找不到度量者状态 ${stateFile}——先跑 \`v0id measure\` 积累连续掉线历史。`));
+      process.exit(1);
+    }
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    const history = state.offlineHistory ?? {};
+    const alreadySlashed = new Set<string>();
+    for (const b of bc.chain) {
+      for (const tx of b.transactions) {
+        const s = parseSlash(tx.memo);
+        if (s) alreadySlashed.add(`${s.stakeId}|${s.epoch}`);
+      }
+    }
+    const decisionsAll = decideSlashes(history, stakes);
+    const decisions = decisionsAll.filter((d) => !alreadySlashed.has(`${d.stakeId}|${epoch}`));
+
+    console.log(c.bold(`\n罚没预览  epoch=${epoch}  链高=${height}  阈值=连续掉线≥${SLASH_AFTER_EPOCHS} epoch  比例=${(SLASH_FRACTION * 100).toFixed(0)}%剩余本金`));
+    // 激活高度警告：SLASH 仅在高度 ≥ STAKING_ACTIVATION_HEIGHT 才被共识接受。
+    if (height < STAKING_ACTIVATION_HEIGHT) {
+      console.log(c.yellow(`  ⚠ 当前链高 ${height} < 质押激活高度 ${STAKING_ACTIVATION_HEIGHT}：此高度提交的 SLASH 会被共识拒（质押尚未激活）。`));
+    }
+    const skippedAlreadySlashed = decisionsAll.length - decisions.length;
+    if (skippedAlreadySlashed > 0) {
+      console.log(c.yellow(`  已跳过 ${skippedAlreadySlashed} 个本 epoch 链上已有 SLASH memo 的质押，避免重复罚没同一离线区间。`));
+    }
+    if (decisions.length === 0) {
+      console.log(c.dim('  本轮无可罚没对象（无人连续掉线达阈值、剩余本金过小，或本 epoch 已罚过）。\n'));
+      return;
+    }
+    console.log(c.dim('  质押id            中继              角色    连续掉线  剩余本金  罚没'));
+    for (const d of decisions) {
+      console.log(`  ${d.stakeId.slice(0, 12)}…  ${short(d.staker).padEnd(16)} ${d.role.padEnd(6)} ${String(d.consecutiveOffline).padStart(6)}  ${String(d.remaining).padStart(7)}  ${String(d.amount).padStart(4)} ${SYMBOL}`);
+    }
+
+    if (!o.send) {
+      console.log(c.cyan('\n  （预览模式：未提交任何 SLASH。确认无误后加 --send --measurer-wallet <度量者钱包> 才提交。）\n'));
+      return;
+    }
+    // ---- --send：从度量者钱包成形 + 提交 SLASH ----
+    const wPath = o.measurerWallet || join(defaultDataDir('measurer'), 'wallet.json');
+    if (!existsSync(wPath)) {
+      console.error(c.red(`找不到度量者钱包：${wPath}`));
+      process.exit(1);
+    }
+    const w = loadWalletFile(wPath)!;
+    if (w.address !== MEASURER_ADDRESS) {
+      console.log(c.yellow(`  ⚠ 度量者钱包地址 ${short(w.address)} ≠ MEASURER_ADDRESS ${short(MEASURER_ADDRESS)}：提交的 SLASH 会被全网拒（链上罚没需 MEASURER_ADDRESS 私钥，部署期才具备）。`));
+    }
+    let nonce = bc.nonceOf(w.address);
+    let sent = 0;
+    for (const d of decisions) {
+      const memo = `${SLASH_PREFIX}${d.stakeId}|${d.amount}|${epoch}`;
+      const tx = createTransaction(w, w.address, 0, nonce++, memo, MIN_FEE);
+      const r = await api(o, 'POST', '/tx/submit', { tx }).catch((e) => ({ error: String(e) }));
+      if ((r as any).ok) {
+        sent++;
+        console.log(c.green(`  ✓ SLASH ${d.amount} ${SYMBOL}  ${d.stakeId.slice(0, 12)}…`), c.dim('txid=' + tx.txid.slice(0, 12) + '…'));
+      } else {
+        console.log(c.red(`  ✖ SLASH ${d.stakeId.slice(0, 12)}… 失败：${(r as any).error}`));
+      }
+    }
+    console.log(c.green(`\n  已提交 ${sent}/${decisions.length} 笔 SLASH（待矿工打包；非 MEASURER_ADDRESS 签发会被拒）。\n`));
   });
 
 // ---- wallet（直接读数据目录，不需要节点在跑） ----

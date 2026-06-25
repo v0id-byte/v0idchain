@@ -203,3 +203,31 @@ export const EPOCH_BLOCKS = 10;
 export const BOOTSTRAP_BONUS_UNTIL_HEIGHT = 50_000;
 /** 早期引导奖励倍率：BOOTSTRAP_BONUS_UNTIL_HEIGHT 之前，奖励再 ×此倍率。后续阶段消费。可调。 */
 export const BOOTSTRAP_BONUS_MULT = 2;
+
+// ---- 中继激励工具（Phase 3A-2/3/4：链下度量者 / 奖励 / 罚没的参数）----
+// 注：这些常量被**链下工具**（packages/node measurer + CLI reward-epoch/slash-epoch）消费，
+// 不进共识状态机。它们影响“度量者愿意发什么 SLASH / 国库愿意发多少奖励”，而非链如何校验这些交易
+// （链对 SLASH 的合法性只认 MEASURER_ADDRESS 与 parseSlash 的范围，见 staking.ts / blockchain.ts）。
+
+/**
+ * 连续掉线多少个 epoch 才罚没（保守、仅惩罚“持续掉线”而非偶发抖动）。取 3：一个中继要连续 3 个
+ * 完整度量周期（3×EPOCH_BLOCKS≈240 秒 @8s）都探测不通，度量者才会形成一笔 SLASH。单次/偶发掉线不罚。
+ * 这是链下裁决策略，可按运营经验调（调大=更宽容、调小=更严苛）；不影响链如何校验 SLASH。
+ */
+export const SLASH_AFTER_EPOCHS = 3;
+
+/**
+ * 单次罚没占“剩余本金”的比例（0~1）。取 0.1（10%）：每次只罚一小口，给掉线中继留改正空间，也避免
+ * 度量者误判一次就清空某人押金。amount = floor(SLASH_FRACTION × (本金-已罚没))。保守、可调。
+ * 链侧仍对 SLASH 金额封顶为剩余本金（封顶逻辑见 applyTx），故即便这里配置过大也不会超额罚没。
+ */
+export const SLASH_FRACTION = 0.1;
+
+/**
+ * 每个 epoch 的奖励池预算（$V0ID，从国库 GENESIS_PREMINE 拨付）。**有限启动池**：预挖共 GENESIS_PREMINE=1000，
+ * 取 5/epoch 是一个保守的引导值——意味着即便在 BOOTSTRAP_BONUS_MULT 加成下，单 epoch 也只发个位数到十几币，
+ * 国库够撑很多个周期再耗尽（这是教学/小经济体的“慢放水”起点，绝非永续通胀）。
+ * ⚠️ 这是**链下**预算上限：reward-epoch 默认只预览不发；只有显式 --send 才真的从国库转账、烧掉这笔有限池。
+ * 主网经济体量上来后按需调大；它不进共识、改它不分叉。
+ */
+export const REWARD_EPOCH_POOL = 5;
