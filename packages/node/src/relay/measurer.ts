@@ -384,10 +384,15 @@ export class Measurer {
  * 起一个 prober 自控的「出口 sink」中继：仅在 prober 进程内监听，出口策略只回显（绝不暴露公网出口）。
  * 返回 { sink: HopSpec, node: RelayNode }；探测完务必 node.close()。resolver 须能解析所有待探 target + sink 自身。
  */
-export function makeProbeSink(resolver: RelayResolver, port: number, host = '127.0.0.1'): { sink: HopSpec; node: RelayNode } {
-  const sk = randomBytes(32);
-  const id = publicKeyToAddress(getPublicKey(sk));
-  const onion = generateOnionKeypair();
+export function makeProbeSink(
+  resolver: RelayResolver,
+  port: number,
+  host = '127.0.0.1',
+  identity?: { id: string; onion: ReturnType<typeof generateOnionKeypair> },
+): { sink: HopSpec; node: RelayNode } {
+  const sk = identity ? undefined : randomBytes(32);
+  const id = identity?.id ?? publicKeyToAddress(getPublicKey(sk!));
+  const onion = identity?.onion ?? generateOnionKeypair();
   // allowPrivateRelayTargets 取 host 默认（本地回环 → true），让 sink 能被 target EXTEND 到本地。
   const node = new RelayNode(id, onion, resolver, port, host);
   // 出口处理：把收到的 DATA 原样回显成 'ECHO:<明文>'，供 probeOnce 校验往返。

@@ -30,6 +30,7 @@ import {
   hexToBytes,
   createTransaction,
   computeStakeState,
+  parseSlash,
   parseRelaysFiltered,
   relaysToJSON,
   SYMBOL,
@@ -579,7 +580,10 @@ apiOpt(program.command('measure'))
   .description('中继度量者（链下、中心化、仅存活性）：每个 epoch 穿过每个中继建测试电路探测在线，签发 attestation')
   .option('--measurer-wallet <path>', '度量者钱包文件路径（默认 ./.data/measurer/wallet.json）')
   .option('--probes <k>', '每中继每 epoch 探测次数 K', '3')
-  .option('--sink-port <port>', '本进程探测出口 sink 的监听端口', '9750')
+  .option('--sink-port <port>', '本进程探测出口 sink 的监听端口（默认使用链上 sink 描述符端口）')
+  .option('--sink-wallet <path>', '探测出口 sink 的已发布中继钱包（默认 = --measurer-wallet；其地址必须能被目标中继从链上解析）')
+  .option('--sink-data-dir <dir>', '探测出口 sink 的 onion.json 所在数据目录（默认 = 钱包所在目录；公钥必须匹配链上描述符）')
+  .option('--sink-host <host>', '本进程 sink 监听地址（仅本机联调可用；生产请确保链上描述符 host 能从目标中继拨通）', '127.0.0.1')
   .option('--once', '只跑一个 epoch 就退出（默认持续每个 epoch 跑一轮）', false)
   .option('--interval <ms>', '两轮度量之间的最小间隔（ms）', '60000')
   .action(async (o) => {
@@ -610,15 +614,42 @@ apiOpt(program.command('measure'))
       const epoch = epochOf(height);
       const relays = stakedRelays(bc);
       const stakes = computeStakeState(bc.chain);
+      if (measurer.current.lastEpoch >= epoch) {
+        console.log(c.dim(`[epoch ${epoch} @#${height}] 已完成过该 epoch（state.lastEpoch=${measurer.current.lastEpoch}），等待链进入下一个 epoch，避免重复滚动掉线历史。`));
+        return;
+      }
       if (relays.length === 0) {
         console.log(c.dim(`[epoch ${epoch} @#${height}] 链上暂无「有质押」的中继，跳过本轮。`));
         return;
       }
-      // resolver：被探中继来自链上目录；sink 自身在下面注入。
+      const sinkWalletPath = o.sinkWallet || wPath;
+      const sinkWallet = loadWalletFile(sinkWalletPath);
+      if (!sinkWallet) {
+        console.error(c.red(`找不到探测 sink 钱包：${sinkWalletPath}`));
+        console.error(c.dim('sink 必须使用已发布到链上、目标中继可解析的中继身份；请提供 --sink-wallet 和 --sink-data-dir。'));
+        process.exit(1);
+      }
+      const sinkDesc = relays.find((r) => r.address === sinkWallet.address);
+      if (!sinkDesc) {
+        console.error(c.red(`探测 sink ${short(sinkWallet.address)} 不在链上有质押中继目录中，目标中继无法解析 EXTEND 第二跳。`));
+        console.error(c.dim('请先把 sink 作为有质押的中继发布上链，或用 --sink-wallet 指向一个已发布 sink 身份。'));
+        process.exit(1);
+      }
+      const sinkDataDir = o.sinkDataDir || join(sinkWalletPath, '..');
+      const sinkOnion = loadOrCreateOnionKey(sinkDataDir);
+      const sinkOnionPubHex = bytesToHex(sinkOnion.pub);
+      if (sinkOnionPubHex !== sinkDesc.onionPubHex) {
+        console.error(c.red(`探测 sink onion 公钥与链上描述符不一致：本地 ${sinkOnionPubHex.slice(0, 16)}…，链上 ${sinkDesc.onionPubHex.slice(0, 16)}…`));
+        console.error(c.dim('请用 --sink-data-dir 指向发布该链上描述符时使用的 onion.json。'));
+        process.exit(1);
+      }
+      // resolver：被探中继和 sink 均来自链上目录；目标中继可用同一链上目录解析 sink id。
       const dir = new Map<string, { host: string; port: number }>(relays.map((r) => [r.address, { host: r.host, port: r.port }]));
-      const sinkPort = Number(o.sinkPort);
-      const { sink, node: sinkNode } = makeProbeSink((id) => dir.get(id), sinkPort, '127.0.0.1');
-      dir.set(sink.id, { host: '127.0.0.1', port: sinkPort });
+      const sinkPort = o.sinkPort !== undefined ? Number(o.sinkPort) : sinkDesc.port;
+      if (sinkPort !== sinkDesc.port) {
+        console.log(c.yellow(`  ⚠ sink 本地监听端口 ${sinkPort} ≠ 链上描述符端口 ${sinkDesc.port}；独立目标中继会拨链上端口，生产请保持一致。`));
+      }
+      const { sink, node: sinkNode } = makeProbeSink((id) => dir.get(id), sinkPort, o.sinkHost, { id: sinkWallet.address, onion: sinkOnion });
       const targets: ProbeTarget[] = relays.map((r) => ({ id: r.address, onionPubHex: r.onionPubHex, host: r.host, port: r.port }));
       console.log(c.dim(`[epoch ${epoch} @#${height}] 探测 ${targets.length} 个中继，每个 ${o.probes} 次…`));
       try {
@@ -725,15 +756,27 @@ apiOpt(program.command('slash-epoch'))
     }
     const state = JSON.parse(readFileSync(stateFile, 'utf8'));
     const history = state.offlineHistory ?? {};
-    const decisions = decideSlashes(history, stakes);
+    const alreadySlashed = new Set<string>();
+    for (const b of bc.chain) {
+      for (const tx of b.transactions) {
+        const s = parseSlash(tx.memo);
+        if (s) alreadySlashed.add(`${s.stakeId}|${s.epoch}`);
+      }
+    }
+    const decisionsAll = decideSlashes(history, stakes);
+    const decisions = decisionsAll.filter((d) => !alreadySlashed.has(`${d.stakeId}|${epoch}`));
 
     console.log(c.bold(`\n罚没预览  epoch=${epoch}  链高=${height}  阈值=连续掉线≥${SLASH_AFTER_EPOCHS} epoch  比例=${(SLASH_FRACTION * 100).toFixed(0)}%剩余本金`));
     // 激活高度警告：SLASH 仅在高度 ≥ STAKING_ACTIVATION_HEIGHT 才被共识接受。
     if (height < STAKING_ACTIVATION_HEIGHT) {
       console.log(c.yellow(`  ⚠ 当前链高 ${height} < 质押激活高度 ${STAKING_ACTIVATION_HEIGHT}：此高度提交的 SLASH 会被共识拒（质押尚未激活）。`));
     }
+    const skippedAlreadySlashed = decisionsAll.length - decisions.length;
+    if (skippedAlreadySlashed > 0) {
+      console.log(c.yellow(`  已跳过 ${skippedAlreadySlashed} 个本 epoch 链上已有 SLASH memo 的质押，避免重复罚没同一离线区间。`));
+    }
     if (decisions.length === 0) {
-      console.log(c.dim('  本轮无可罚没对象（无人连续掉线达阈值，或剩余本金过小）。\n'));
+      console.log(c.dim('  本轮无可罚没对象（无人连续掉线达阈值、剩余本金过小，或本 epoch 已罚过）。\n'));
       return;
     }
     console.log(c.dim('  质押id            中继              角色    连续掉线  剩余本金  罚没'));
