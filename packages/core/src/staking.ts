@@ -46,10 +46,12 @@ export function parseSlash(memo: string): { stakeId: string; amount: number; epo
   if (parts.length !== 3) return null;
   const [stakeId, amountStr, epochStr] = parts;
   if (!TXID_RE.test(stakeId)) return null;
+  // 规范十进制形：拒 1e3/0x10/前导零/正负号/空白等非规范写法（跨实现可复现 + 黄金向量稳定）
+  if (!/^[1-9][0-9]*$/.test(amountStr)) return null; // 罚没额：正整数
+  if (!/^(0|[1-9][0-9]*)$/.test(epochStr)) return null; // 周期号：非负整数
   const amount = Number(amountStr);
   const epoch = Number(epochStr);
-  if (!Number.isInteger(amount) || amount < 1) return null; // 罚没额须为正整数
-  if (!Number.isInteger(epoch) || epoch < 0) return null; // 周期号须为非负整数
+  if (!Number.isSafeInteger(amount) || !Number.isSafeInteger(epoch)) return null; // 防超大数丢精度
   return { stakeId, amount, epoch };
 }
 
