@@ -37,6 +37,8 @@ export interface RoleManagerOptions {
   relayPort: number;
   /** 中继对外广播 host（公网/局域网才需要；默认 127.0.0.1）。发布描述符与本地绑定都用它。 */
   relayAdvertiseHost?: string;
+  /** 中继描述符对外广播的**端口**（默认 = relayPort）。经 CF 隧道暴露时设 443：本地仍监听 relayPort，链上广播 443 → 拨号方走 wss://。 */
+  relayAdvertisePort?: number;
   /** 中继 cell 监听绑定地址（默认 0.0.0.0，与 CLI 一致：对外可达）。 */
   relayBindHost?: string;
   /** 出口策略：允许作出口连到的 host:port 集合（来自 --exit-allow；空 = deny-all 纯中继）。 */
@@ -66,6 +68,7 @@ export class RoleManager {
   private readonly onion: OnionKeypair;
   private readonly relayPort: number;
   private readonly relayAdvertiseHost: string;
+  private readonly relayAdvertisePort: number;
   private readonly relayBindHost: string;
   private readonly exitAllow: string[];
   private readonly mixnet?: MixnetOpts;
@@ -95,6 +98,7 @@ export class RoleManager {
     this.onion = opts.onion;
     this.relayPort = opts.relayPort;
     this.relayAdvertiseHost = opts.relayAdvertiseHost ?? '127.0.0.1';
+    this.relayAdvertisePort = opts.relayAdvertisePort ?? opts.relayPort;
     this.relayBindHost = opts.relayBindHost ?? '0.0.0.0';
     this.exitAllow = opts.exitAllow ?? [];
     this.mixnet = opts.mixnet;
@@ -155,12 +159,12 @@ export class RoleManager {
     const tryPublish = () => {
       if (this.relayPublished) return;
       const existing = this.node.relays().find((r) => r.address === this.node.wallet.address);
-      if (existing && existing.onionPubHex === onionPubHex && existing.host === this.relayAdvertiseHost && existing.port === this.relayPort) {
+      if (existing && existing.onionPubHex === onionPubHex && existing.host === this.relayAdvertiseHost && existing.port === this.relayAdvertisePort) {
         this.relayPublished = true;
         return;
       }
       if (this.node.bc.balanceOf(this.node.wallet.address) < 2) return; // 余额不够发布手续费 → 等
-      const pub = this.node.publishRelay(onionPubHex, this.relayAdvertiseHost, this.relayPort);
+      const pub = this.node.publishRelay(onionPubHex, this.relayAdvertiseHost, this.relayAdvertisePort);
       if (pub.ok) this.relayPublished = true;
     };
     tryPublish();
