@@ -551,6 +551,277 @@ body {
   color: var(--fg);
 }
 
+/* ---- 角色板块：控件（Phase E）。沿用 void/像素主题：硬边、无圆角、等宽。 ---- */
+.panel .sub-h {
+  color: var(--dim-2);
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin: 26px 0 10px;
+  border-bottom: 1px solid var(--line-2);
+  padding-bottom: 6px;
+  max-width: 680px;
+}
+/* 一行控件容器 */
+.ctl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+  max-width: 680px;
+}
+/* 开关按钮（中继上线/挖矿/停止托管） */
+.toggle {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--dim);
+  color: var(--dim-2);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+.toggle:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent-dim);
+}
+.toggle.on {
+  border-left-color: var(--ok);
+  color: var(--ok);
+}
+.toggle:disabled {
+  color: var(--line);
+  cursor: not-allowed;
+}
+/* 主操作按钮（质押/发布/发送） */
+.primary-btn {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 9px 18px;
+  cursor: pointer;
+}
+.primary-btn:hover:not(:disabled) {
+  background: var(--accent);
+}
+.primary-btn:disabled {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--line);
+  cursor: not-allowed;
+}
+/* 小按钮（复制/赎回） */
+.mini-btn {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--dim-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.mini-btn:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent-dim);
+}
+.mini-btn:disabled {
+  color: var(--line);
+  cursor: not-allowed;
+}
+/* 下拉（角色选择） */
+.select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.select:focus {
+  border-color: var(--accent-dim);
+  outline: none;
+}
+/* 文本输入（host:port / 间隔 / 转账表单） */
+.text-input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  outline: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.text-input.narrow {
+  flex: 0 0 130px;
+}
+.text-input:focus {
+  border-color: var(--accent-dim);
+}
+.text-input::placeholder {
+  color: var(--dim);
+}
+.text-input:disabled {
+  color: var(--dim);
+  background: var(--bg-2);
+}
+.dim {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* 质押激活前的门禁说明 */
+.gate-note {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  background: var(--panel);
+  padding: 12px 14px;
+  color: var(--dim-2);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-width: 680px;
+  margin: 14px 0;
+}
+.gate-note b {
+  color: var(--warn);
+}
+/* 引导期不发奖励的提示 */
+.reward-note {
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  padding: 9px 12px;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 680px;
+  margin: 12px 0;
+}
+/* 常驻诚实提醒（弱匿名 + 激励中心化） */
+.honest-note {
+  margin-top: 24px;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.6;
+  max-width: 680px;
+}
+
+/* 地址展示盒（隐藏服务地址 / 钱包收款地址） */
+.addr-box {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 14px;
+  max-width: 680px;
+  margin: 14px 0;
+}
+.addr-box .k {
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+.addr-box .addr-val {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.addr-box .addr-val code {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  color: var(--fg);
+  word-break: break-all;
+  flex: 1 1 auto;
+  font-size: 12.5px;
+}
+
+/* 质押池列表 */
+.stake-list {
+  max-width: 680px;
+  margin: 14px 0;
+}
+.stake-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.stake-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--dim-2);
+}
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  padding: 1px 7px;
+}
+.slashed {
+  color: var(--err);
+}
+
+/* 转账表单 */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 480px;
+  margin: 14px 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.field > span {
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 1px;
+}
+.form .text-input {
+  flex: none;
+}
+.form .primary-btn {
+  align-self: flex-start;
+}
+
+/* 操作结果反馈行 */
+.action-msg {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--dim);
+  background: var(--panel);
+  color: var(--dim-2);
+  font-size: 12.5px;
+  max-width: 680px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.action-msg.ok {
+  border-left-color: var(--ok);
+  color: var(--ok);
+}
+.action-msg.err {
+  border-left-color: var(--err);
+  color: var(--err);
+}
+
 /* 状态行（浏览器底部，沿用 MVP 的阶段/链高） */
 .statusbar {
   flex: 0 0 auto;

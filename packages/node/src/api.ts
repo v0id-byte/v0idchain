@@ -88,6 +88,12 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
           }
+          case '/stake':
+            // 本节点自己的质押池（只读、无需令牌）：含锁定高度 / 已罚没 / 是否已赎回。GUI 中继板块据此展示。
+            return json(200, node.stakes());
+          case '/rewards':
+            // 本节点收到的中继激励发放（只读）。引导期暂不发放 → 多半为空数组（见 INCENTIVE-PROTOCOL）。
+            return json(200, node.rewards());
           case '/tx': {
             // 按 txid 查确认状态（只读、无需令牌）：客户端轮询“处理中 → 已到账”。
             const txid = url.searchParams.get('txid') || '';
@@ -135,6 +141,17 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           }
           case '/redpacket/refund': {
             const r = node.refundRedPacket(String(body.id));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/stake': {
+            // 质押：转给托管地址 + memo STAKE|<role>，锁定 STAKE_MIN[role]。
+            // 激活高度（16000）前，共识层会从 node.stake → submit 返回错误（不抛/不崩）→ 这里 400 + {error} 干净回传。
+            const r = node.stake(String(body.role ?? '') as Parameters<typeof node.stake>[0]);
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/unstake': {
+            // 赎回：amount=0 + memo UNSTAKE|<stakeId>，过锁定期后取回本金-已罚没。
+            const r = node.unstake(String(body.stakeId ?? ''));
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/mine': {

@@ -233,6 +233,72 @@ function startChainPoll() {
   app.on('before-quit', () => clearInterval(timer));
 }
 
+// ---- 节点控制 API（renderer 经 preload→这里；令牌只在主进程，绝不下发渲染层）----
+// 令牌路径：守护进程的数据目录 = userData/v0id（见 spawnDaemon），CLI 在那里生成 api.token（0600）。
+// 每次现读（守护进程刚起时文件可能还没落盘 → 读不到时 POST 返回明确错误，由 UI 提示稍候重试）。
+function apiTokenPath() {
+  return path.join(app.getPath('userData'), 'v0id', 'api.token');
+}
+function readApiToken() {
+  try {
+    return fs.readFileSync(apiTokenPath(), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// 统一的本机节点 API 调用：GET 不带令牌；POST 带 Authorization: Bearer。
+// 返回 { ok:true, data } 或 { ok:false, error }——渲染层据此渲染，永不接触令牌或裸 Response。
+// 外部 SOCKS 模式（无守护/无链 API）：直接回 { ok:false, error } 而非抛错，让角色/钱包板块优雅降级。
+async function nodeApi(method, pathname, body) {
+  if (SOCKS_EXTERNAL != null) {
+    return { ok: false, error: '当前为外部 SOCKS 验证模式，无本机节点 API（角色/钱包控制不可用）' };
+  }
+  const headers = { 'content-type': 'application/json' };
+  if (method === 'POST') {
+    const token = readApiToken();
+    if (!token) return { ok: false, error: '节点令牌尚未就绪（守护进程刚启动？请稍候重试）' };
+    headers['authorization'] = `Bearer ${token}`;
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${API_PORT}${pathname}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || `${method} ${pathname} → ${res.status}` };
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: `连接本机节点失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+// ---- 只读（GET，无需令牌）----
+ipcMain.handle('v0id:api:roles', () => nodeApi('GET', '/roles'));
+ipcMain.handle('v0id:api:stakeStatus', () => nodeApi('GET', '/stake'));
+ipcMain.handle('v0id:api:txStatus', (_e, txid) => nodeApi('GET', `/tx?txid=${encodeURIComponent(String(txid ?? ''))}`));
+// 钱包信息：合并 /info 的 address+symbol 与 /balance 的余额（/info 已含 balance，但分开取更直观且 /balance 更轻）。
+ipcMain.handle('v0id:api:walletInfo', async () => {
+  const info = await nodeApi('GET', '/info');
+  if (!info.ok) return info;
+  const d = info.data || {};
+  return { ok: true, data: { address: d.address, balance: d.balance, symbol: d.symbol, minFee: d.minFee } };
+});
+
+// ---- 写（POST，主进程带 Bearer）----
+ipcMain.handle('v0id:api:relayStart', () => nodeApi('POST', '/relay/start'));
+ipcMain.handle('v0id:api:relayStop', () => nodeApi('POST', '/relay/stop'));
+ipcMain.handle('v0id:api:hsStart', (_e, { host, port } = {}) => nodeApi('POST', '/hs/start', { host, port: Number(port) }));
+ipcMain.handle('v0id:api:hsStop', () => nodeApi('POST', '/hs/stop'));
+ipcMain.handle('v0id:api:mineStart', (_e, intervalMs) => nodeApi('POST', '/mine/start', { intervalMs: Number(intervalMs) || 0 }));
+ipcMain.handle('v0id:api:mineStop', () => nodeApi('POST', '/mine/stop'));
+ipcMain.handle('v0id:api:stake', (_e, role) => nodeApi('POST', '/stake', { role: String(role ?? '') }));
+ipcMain.handle('v0id:api:unstake', (_e, stakeId) => nodeApi('POST', '/unstake', { stakeId: String(stakeId ?? '') }));
+ipcMain.handle('v0id:api:send', (_e, { to, amount, memo } = {}) =>
+  nodeApi('POST', '/send', { to: String(to ?? ''), amount: Number(amount), memo: String(memo ?? '') }),
+);
+
 // ---- IPC：renderer 请求导航 ----
 // 校验：以 .v0id 结尾的主机名（可带路径），或 http/https URL。返回规整后的 URL，由 renderer 设 webview.src。
 ipcMain.handle('v0id:navigate', (_e, raw) => {
