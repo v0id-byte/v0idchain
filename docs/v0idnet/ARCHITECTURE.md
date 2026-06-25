@@ -22,8 +22,8 @@ flowchart TB
     GRD["entry guards · DoS 加固 · Mixnet(opt-in)"]
   end
   subgraph BC["区块链层 ($V0ID)"]
-    DIR["中继目录 (RELAY| memo)"]
-    STK["质押 / 罚没 (STAKE|)"]
+    DIR["中继目录 (RELAY memo)"]
+    STK["质押 / 罚没 (STAKE)"]
     PAY["激励结算 (国库转账)"]
   end
   BR --> RDV --> CIR
@@ -86,7 +86,9 @@ sequenceDiagram
   C->>G: RELAY[EXTEND→E]
   G->>M: RELAY
   M->>E: CREATE
-  E-->>M-->>G-->>C: EXTENDED
+  E-->>M: CREATED
+  M-->>G: RELAY
+  G-->>C: RELAY[EXTENDED]
   Note over C,E: 第3层密钥 · 电路建成
   C->>G: 数据(3 层洋葱)
   G->>M: 剥1层
