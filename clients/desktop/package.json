@@ -1,14 +1,20 @@
 {
   "name": "v0id-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "v0id 浏览器 —— 一个把 v0idchain 守护进程 + .v0id 隐藏服务网络包成 GUI 的极简 Electron 浏览器 MVP",
+  "description": "v0id 浏览器 —— 把 v0idchain 守护进程 + .v0id 隐藏服务网络包成 GUI 的 Electron 浏览器（React 多板块外壳 + 多标签 .v0id 浏览器）",
   "main": "src/main.js",
   "scripts": {
+    "dev": "vite --config src/renderer/vite.config.js",
+    "build": "vite build --config src/renderer/vite.config.js",
     "start": "electron .",
     "browser-core-test": "node scripts/browser-core-test.mjs"
   },
   "devDependencies": {
-    "electron": "^33.2.0"
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.7"
   }
 }

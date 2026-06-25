@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      CSP：限制窗口自身受信页面（React 外壳）的远程加载。
+      - script-src 'self'：只跑打包进来的本地脚本（Vite 生产产物是本地 .js，无内联脚本）。
+      - style-src 'self' 'unsafe-inline'：Vite 注入的样式 + 我们的内联 style。
+      - 注意：CSP 不约束 <webview> 内的不可信 .v0id 页面——它们在独立的 OOPIF 进程里，
+        受 webview 的 partition session（SOCKS 代理 + deny-all 权限 + WebRTC 加固）约束。
+      dev 模式（Vite dev server）需要 'unsafe-inline'/ws，所以这条 meta CSP 只在生产 index.html 生效；
+      dev 时由 Vite 提供较宽的开发态策略（仅本机、热更新）。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'"
+    />
+    <title>v0id 浏览器</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.jsx"></script>
+  </body>
+</html>
