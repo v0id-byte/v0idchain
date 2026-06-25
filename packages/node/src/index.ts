@@ -10,3 +10,5 @@ export * from './relay/identity.js';
 export * from './relay/guards.js';
 // 隐藏服务守护桥接（.v0id 匿名网络 Phase 2B-d：rendezvous 接进节点 + SOCKS5）
 export * from './relay/hsbridge.js';
+// 角色管理器（Phase 2F-1：运行时切换中继/隐藏服务/挖矿，供 GUI 经 HTTP API 控制）
+export * from './relay/rolemanager.js';
