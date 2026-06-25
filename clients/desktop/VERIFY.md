@@ -47,13 +47,18 @@ corepack pnpm exec tsx clients/desktop/scripts/demo-network.mjs
 
 ```bash
 cd clients/desktop
-pnpm install --ignore-workspace        # 首次：装 electron（务必带 --ignore-workspace，见排错）
+pnpm install --ignore-workspace        # 首次：装 React/Vite/electron（务必带 --ignore-workspace，见排错）
+pnpm build                             # 构建 React 渲染层 → src/renderer/dist/（首次或改过 .jsx 后必跑）
 V0ID_SOCKS_EXTERNAL=9050 pnpm start     # 让浏览器用终端 1 已起的 SOCKS:9050，而不自起守护
 ```
 
-浏览器窗口打开后，状态行应显示 **「外部 SOCKS :9050（demo 网络）」**（绿点 = 就绪、可导航）。
+浏览器窗口打开后：左侧栏在「浏览器 / 浏览客户端 / 中继 / 托管站点 / 链·挖矿 / 钱包」之间切换，
+默认停在**「浏览器」板块**。底部状态行应显示 **「外部 SOCKS :9050（demo 网络）」**（绿点 = 就绪、可导航）。
+新标签起始页会提示「外部 SOCKS 验证模式已启用」。
 
-在地址栏**粘贴终端 1 那个 `.v0id` 地址** → 回车（或点「前往」）。
+在地址栏**粘贴终端 1 那个 `.v0id` 地址** → 回车。
+
+> 想用热更新改 UI：`pnpm dev`（终端 A）+ `V0ID_SOCKS_EXTERNAL=9050 V0ID_RENDERER_DEV_URL=http://localhost:5173 pnpm start`（终端 B）。
 
 ---
 
@@ -88,6 +93,31 @@ webview 里渲染出这一页：
 
 ---
 
+## React 外壳 + 浏览器板块 GUI 清单（在 Mac 上亲手点一遍）
+
+渲染层已从单 webview 改成 React 多板块外壳。除了上面那页能渲染出来，还请逐项确认：
+
+1. **左侧栏 6 个板块都可切换**：浏览器 / 浏览客户端 / 中继 / 托管站点 / 链·挖矿 / 钱包。
+   后 5 个是占位面板——显示角色说明 + 「下一阶段 (E)」提示；自起守护（不带 `V0ID_SOCKS_EXTERNAL`）时
+   还会显示只读链状态（链高/对等）。外部 SOCKS 模式下链状态显示「不可用」（正常，demo 网络无链 API）。
+2. **多标签**：点标签条右侧 `+` 新建标签；每个标签独立加载、可单独关闭（`✕`）；切回旧标签其内容仍在
+   （非活动标签只是隐藏、未销毁）。
+3. **前进/后退/刷新**：在一个标签里先访问 demo 的 `.v0id`，再点站内链接（或手动导航到别处）后，
+   「‹」可后退、「›」可前进，到边界时按钮置灰；加载中刷新键变「✕」（停止）。
+4. **地址校验**：乱输（如 `hello`）→ 出现「地址无效」覆盖层；合法 `.v0id` 或 `http(s)://` → 正常加载。
+5. **书签**：访问到一个页面后，点地址栏右侧 ☆ → 变实心 ★（已收藏）；新建一个标签，其起始页「书签」区
+   应出现刚才那条，点它能打开；点书签卡角的 `✕` 可删除。**关掉应用再开**，书签仍在
+   （存于 `userData/bookmarks.json`）。
+6. **起始页诚实**：新标签起始页只列你自己的书签 + 引导文案，**不含任何预置的假 `.v0id` 地址**。
+7. **历史/会话默认不落盘**：`.v0id` 页面用**内存型** partition（`v0id`，无 `persist:` 前缀），
+   cookie / 缓存 / localStorage / 已访问链接全随进程退出蒸发——磁盘上不留浏览痕迹。
+   起始页底部「本次会话最近访问」也只在本次运行内有效、**关窗重开后清空**。唯一落盘的是你主动收藏的书签。
+   （可旁证：访问后查 `~/Library/Application Support/v0id-browser/`，不应出现含 `.v0id` 主机的持久 Partitions 数据。）
+8. **弹窗/越权被拦**：`.v0id` 页面里的 `window.open` / `target=_blank` 一律被拒（不会弹出未加固的新窗口）；
+   地址栏也拒绝环回/私网地址（如 `127.0.0.1`、`localhost`、`192.168.*`），防止恶意页诱导去打本机守护 API。
+
+---
+
 ## 排错
 
 - **端口 9050 被占。** 换一个端口，两个终端**必须一致**：
@@ -100,6 +130,8 @@ webview 里渲染出这一页：
   `pnpm install --ignore-workspace`。**别漏 `--ignore-workspace`**：仓库根有 `pnpm-workspace.yaml`，
   裸跑 `pnpm install` 会被「吸」进根 workspace 而**不在本目录装 electron**（装了个空）。
   （用 `npm install` 没有这个问题。）
+- **窗口显示「渲染层未构建」指引页。** 没跑过 `pnpm build`（或改了 `.jsx` 没重建）。在 `clients/desktop`
+  下 `pnpm build` 后重开；或用开发模式 `pnpm dev` + `V0ID_RENDERER_DEV_URL=http://localhost:5173 pnpm start`。
 - **状态行不是「外部 SOCKS …」、绿点不亮。** 多半是终端 2 没设 `V0ID_SOCKS_EXTERNAL`（那样它会去自起守护并连真链，
   和本验证无关），或终端 1 的 SOCKS 端口与终端 2 给的不一致。
 
@@ -135,7 +167,8 @@ webview 里渲染出这一页：
 GUI 这一步必须你在有显示的 Mac 上亲手点。但 GUI 将走的**那条核心路径**已可无头证明（CI 友好）：
 
 ```bash
-# 在 <根> 下：完整路径 SOCKS5 → rendezvous → 隐藏服务（含正例取回 body + 负例干净失败）
+# 在 <根> 下跑（用根工具链的 tsx；clients/desktop 的 --ignore-workspace 安装里没有 tsx）：
+# 完整路径 SOCKS5 → rendezvous → 隐藏服务（含正例取回 body + 负例干净失败）
 corepack pnpm exec tsx clients/desktop/scripts/browser-core-test.mjs   # 期望末行 ALL PASS
 ```
 

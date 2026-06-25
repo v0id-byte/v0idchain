@@ -17,6 +17,8 @@ const { app, BrowserWindow, ipcMain, session } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const path = require('node:path');
+const fs = require('node:fs');
+const { DEFAULT_PEERS } = require('./seeds');
 
 // ---- 配置 ----
 // repoRoot：本文件在 <repo>/clients/desktop/src/main.js → 上溯三级到仓库根。
@@ -28,9 +30,20 @@ const cliEntry = path.join(repoRoot, 'packages', 'cli', 'src', 'index.ts');
 const SOCKS_EXTERNAL = process.env.V0ID_SOCKS_EXTERNAL ? Number(process.env.V0ID_SOCKS_EXTERNAL) : null;
 // SOCKS 端口：外部模式用 V0ID_SOCKS_EXTERNAL；否则用 V0ID_SOCKS_PORT（默认 9050），即守护进程要监听的端口。
 const SOCKS_PORT = SOCKS_EXTERNAL ?? Number(process.env.V0ID_SOCKS_PORT || 9050);
-const PEERS = process.env.V0ID_PEERS || ''; // 逗号分隔的种子 ws 地址；为空则纯本地（无网络，.v0id 无法解析）
+// 守护进程要连的种子：显式 V0ID_PEERS 优先；否则用出厂默认（seeds.js），让应用开箱即用而非本地孤岛。
+// 注意：外部 SOCKS 模式不起守护，PEERS 不参与（demo 网络自带中继）。
+const PEERS = (process.env.V0ID_PEERS || '').trim() || DEFAULT_PEERS.join(',');
+// 本地 HTTP API 端口（守护进程 CLI start 的 --api-port 默认 7001）。/info 等只读状态从这里取。
+const API_PORT = Number(process.env.V0ID_API_PORT || 7001);
+// 开发时若设了 V0ID_RENDERER_DEV_URL（Vite dev server，如 http://localhost:5173），主窗口加载它（热更新）；
+// 否则加载 Vite 构建产物 src/renderer/dist/index.html（生产/打包路径）。
+const RENDERER_DEV_URL = process.env.V0ID_RENDERER_DEV_URL || '';
 // webview 用一个具名 partition，这样它的 session 是我们能单独设代理的那一个。
-const PARTITION = 'persist:v0id';
+// 关键（隐私）：不加 'persist:' 前缀 → 内存型 session。匿名浏览器**默认不把** cookie / 缓存 /
+// localStorage / IndexedDB / 已访问链接 DB 写盘——它们随进程退出蒸发，不在磁盘留下浏览痕迹。
+// （唯一持久化到磁盘的是用户主动收藏的书签，见 bookmarks.json。）renderer 的 <webview> partition
+// 必须与此完全一致（'v0id'，无 persist 前缀），否则代理/权限加固落不到它那个 session 上。
+const PARTITION = 'v0id';
 const PROXY_RULES = `socks5://127.0.0.1:${SOCKS_PORT}`;
 
 // Force Chromium WebRTC traffic through the configured proxy. Without this policy,
@@ -38,6 +51,21 @@ const PROXY_RULES = `socks5://127.0.0.1:${SOCKS_PORT}`;
 // local/public IP addresses outside the v0id SOCKS path. This must be set before
 // any BrowserWindow/webContents is created.
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp');
+
+// 不可信的 .v0id 页面（在 <webview> 里）若调用 window.open / target=_blank，会试图开一个新顶层窗口，
+// 那个新窗口不在我们加固的 partition/权限/WebRTC 策略下 → 可能逃逸代理直连、泄露 IP。一律拒绝弹窗。
+// 同时对 webview 的 webContents 兜底设一次代理 + deny-all 权限（partition session 已设过，这里是防御纵深）。
+app.on('web-contents-created', (_e, contents) => {
+  if (contents.getType() === 'webview') {
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // 阻止 webview 把自己导航到我们窗口之外，或被诱导加载非预期协议（file: 等）。
+    // 同时复用地址栏/书签的 host 校验，避免不可信 .v0id 页面通过链接/表单/重定向
+    // 导航主 frame 到 127.0.0.1、私网 IP 等本机/内网资源，绕过 normalizeTarget 的 SSRF 防护。
+    contents.on('will-navigate', (ev, navUrl) => {
+      if (!isAllowedWebviewNavigation(navUrl)) ev.preventDefault();
+    });
+  }
+});
 
 let daemon = null; // 守护子进程句柄
 let win = null;
@@ -59,8 +87,10 @@ function spawnDaemon() {
     '--data-dir', dataDir,
     '--socks',
     '--socks-port', String(SOCKS_PORT),
+    '--api-port', String(API_PORT),
   ];
   if (PEERS.trim()) {
+    // PEERS 现在默认就是 seeds.js 的出厂种子（除非 V0ID_PEERS 覆盖），所以这里几乎总会带上 --peers。
     args.push('--peers', PEERS.trim());
   }
 
@@ -154,7 +184,30 @@ async function createWindow() {
   denyAllPermissions(win.webContents.session);
   await win.webContents.session.setProxy({ proxyRules: PROXY_RULES });
 
-  win.loadFile(path.join(__dirname, 'index.html'));
+  // 渲染层 = React + Vite。dev：加载 Vite dev server（V0ID_RENDERER_DEV_URL，热更新）；
+  // prod：加载 Vite 构建产物 src/renderer/dist/index.html。两者都是「窗口自身的受信页面」
+  //（contextIsolation + 无 Node），不可信的 .v0id 页面只在其中的 <webview partition="v0id"> 里。
+  const builtIndex = path.join(__dirname, 'renderer', 'dist', 'index.html');
+  if (RENDERER_DEV_URL) {
+    log(`loading renderer from dev server: ${RENDERER_DEV_URL}`);
+    win.loadURL(RENDERER_DEV_URL);
+  } else if (fs.existsSync(builtIndex)) {
+    win.loadFile(builtIndex);
+  } else {
+    // 没构建过 dist：给出明确指引而不是白屏（无 GUI 环境/忘了 build 时最常见）。
+    log(`renderer dist 未找到：${builtIndex} —— 请先在 clients/desktop 跑 \`pnpm build\``);
+    win.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<body style="background:#0a0a0f;color:#d7d7e0;font-family:monospace;padding:40px;line-height:1.7">' +
+            '<h2 style="color:#7c5cff">v0id 浏览器 · 渲染层未构建</h2>' +
+            '<p>请先构建 React 渲染层：</p>' +
+            '<pre style="background:#12121a;padding:12px;border:1px solid #23232f">cd clients/desktop\npnpm install --ignore-workspace\npnpm build</pre>' +
+            '<p>或开发模式（热更新）：另开终端 <code>pnpm dev</code>，再 <code>V0ID_RENDERER_DEV_URL=http://localhost:5173 pnpm start</code>。</p>' +
+            '</body>',
+        ),
+    );
+  }
   win.webContents.on('did-finish-load', () => {
     // 渲染就绪后补一次当前状态（防止 renderer 错过早期事件）。
     pushStatus({ phase: socksReady ? 'socks-ready' : 'starting', socksPort: SOCKS_PORT, partition: PARTITION });
@@ -166,7 +219,7 @@ async function createWindow() {
 function startChainPoll() {
   const tick = async () => {
     try {
-      const res = await fetch('http://127.0.0.1:7001/info');
+      const res = await fetch(`http://127.0.0.1:${API_PORT}/info`);
       if (res.ok) {
         const i = await res.json();
         pushStatus({ chain: { height: i.height, peers: i.peers, syncing: i.syncing } });
@@ -189,10 +242,53 @@ ipcMain.handle('v0id:navigate', (_e, raw) => {
   return { ok: true, url };
 });
 
+// 纯校验（不看 socksReady）：React 多标签 UI 在设 webview.src 前先规整/校验地址用。
+// 与 v0id:navigate 共用同一套 normalizeTarget，行为一致。
+ipcMain.handle('v0id:validate', (_e, raw) => {
+  const url = normalizeTarget(raw);
+  if (!url) return { ok: false, error: '地址无效：请输入 xxxxx.v0id 或 http(s):// 链接' };
+  return { ok: true, url };
+});
+
+// 只读取链/节点状态（占位板块的链高·对等等）。外部 SOCKS 模式无链 API → 返回 null（UI 显示「不可用」）。
+ipcMain.handle('v0id:info', async () => {
+  if (SOCKS_EXTERNAL != null) return null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${API_PORT}/info`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+});
+
+// ---- 书签：持久化为 userData/bookmarks.json（文件 I/O 在主进程，经 preload 暴露给 renderer）----
+ipcMain.handle('v0id:bookmarks:list', () => readBookmarks());
+ipcMain.handle('v0id:bookmarks:add', (_e, entry) => {
+  const url = normalizeTarget(entry && entry.url);
+  if (!url) return { ok: false, error: '地址无效，未加入书签' };
+  const list = readBookmarks();
+  if (list.some((b) => b.url === url)) return { ok: true, list }; // 已存在则幂等返回
+  const title = typeof entry.title === 'string' && entry.title.trim() ? entry.title.trim().slice(0, 200) : url;
+  list.push({ url, title, addedAt: Date.now() });
+  writeBookmarks(list);
+  return { ok: true, list };
+});
+ipcMain.handle('v0id:bookmarks:remove', (_e, url) => {
+  const list = readBookmarks().filter((b) => b.url !== url);
+  writeBookmarks(list);
+  return { ok: true, list };
+});
+
 // 把用户输入规整成可加载的 URL：
 //   - 已带 http://｜https:// → 原样（但 host 必须是 .v0id 或普通域名/IP）
 //   - 裸 host（含 .v0id 或普通域名）→ 补 http://
 //   - 仅允许 host 看起来像 .v0id 结尾，或含点的普通域名/IP（避免把乱输入当地址）
+function isAllowedWebviewNavigation(navUrl) {
+  if (navUrl === 'about:blank') return true;
+  return Boolean(normalizeTarget(navUrl));
+}
+
 function normalizeTarget(raw) {
   if (typeof raw !== 'string') return null;
   let s = raw.trim();
@@ -206,9 +302,28 @@ function normalizeTarget(raw) {
   }
   const host = u.hostname.toLowerCase();
   const isV0id = host.endsWith('.v0id');
-  const isClearnet = host.includes('.') || host === 'localhost'; // 普通域名/IP/localhost
+  // 安全：不可信的 .v0id 页面可能链到 http://127.0.0.1:7001/ 之类去打本机守护 API（SSRF/去匿名）。
+  // 故对**非 .v0id** 的目标拒绝环回 / 私网 / 链路本地字面量。.v0id 地址永不命中（它们以 .v0id 结尾）。
+  if (!isV0id && isLoopbackOrPrivateHost(host)) return null;
+  const isClearnet = host.includes('.'); // 普通域名 / 公网 IP（localhost 已被上面拦掉）
   if (!isV0id && !isClearnet) return null;
   return u.toString();
+}
+
+// 判断主机是否为环回 / 私网 / 链路本地（仅 IP 字面量与 localhost；普通域名的 DNS rebinding 超出此处范围）。
+function isLoopbackOrPrivateHost(host) {
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const h = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host; // 去掉 IPv6 方括号
+  if (h === '::1' || h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true; // IPv6 环回/链路本地/ULA
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a === 127 || a === 0) return true; // 环回 / 本网
+  if (a === 10) return true; // 10/8
+  if (a === 192 && b === 168) return true; // 192.168/16
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
+  if (a === 169 && b === 254) return true; // 链路本地
+  return false;
 }
 
 // ---- 干净杀掉守护子进程：先 SIGTERM，2s 内没退再 SIGKILL ----
@@ -231,8 +346,30 @@ function killDaemon() {
   child.on('exit', () => clearTimeout(t));
 }
 
+// ---- 书签持久化（userData/bookmarks.json）----
+// 结构：[{ url, title, addedAt }]。读失败/损坏一律当空列表（不让坏文件阻断 UI）。
+function bookmarksPath() {
+  return path.join(app.getPath('userData'), 'bookmarks.json');
+}
+function readBookmarks() {
+  try {
+    const raw = fs.readFileSync(bookmarksPath(), 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+function writeBookmarks(list) {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(bookmarksPath(), JSON.stringify(list, null, 2), 'utf8');
+  } catch (e) {
+    log(`书签写入失败：${e.message}`);
+  }
+}
+
 // ---- 极简文件日志（写到 userData/browser.log，便于无 GUI 时排查）----
-const fs = require('node:fs');
 let logStream = null;
 function log(line) {
   const msg = `${new Date().toISOString()}  ${line}\n`;
