@@ -30,6 +30,13 @@ export interface RelayCircuit {
   bwdBase: number; // 本跳后向 n 的随机命名空间基
   bwdLocal: number; // 本跳本地后向计数
   createdAt: number;
+  // ---- DoS 加固（feat/onion-entry-guards）：TTL 清扫 / 每电路 cell 限速 / EXTEND 连接超时。----
+  lastSeen: number; // 最近一次前/后向 cell 的时间戳；空闲清扫据此回收僵尸电路（init = createdAt）
+  cellTokens: number; // 前向 cell 限速令牌桶余量（borrow signalAllowed 思路）
+  cellRefillAt: number; // 上次令牌补充时间戳（按经过时长 × 速率补）
+  cellDropped: number; // 当前窗口内被限速丢弃的 cell 计数（超阈值 → 判定洪泛销毁电路）
+  cellDropWindowAt: number; // 丢弃计数窗口起点（每窗口归零）
+  extendTimer?: ReturnType<typeof setTimeout>; // EXTEND 拨号下一跳的连接超时句柄；CREATED 到达或拆电路时清
 }
 
 /** 中继的电路表。circId 全局随机唯一 → 用两张表按“来向”区分：前向 cell 落 incoming，后向 cell 落 outgoing。 */
@@ -66,6 +73,21 @@ export class RelayCircuitTable {
   all(): RelayCircuit[] {
     return [...this.incoming.values()];
   }
+}
+
+/** 每电路前向 cell 限速：令牌桶（borrow p2p signalAllowed）。按经过时长补令牌，无令牌 → 返回 false（丢该 cell）。
+ *  rate=每秒补令牌数(=稳态吞吐上限)，burst=桶容量(=瞬时突发上限)。在 relaynode 的前向路径里、剥层之前调用。 */
+export function takeCellToken(circ: RelayCircuit, now: number, rate: number, burst: number): boolean {
+  const elapsed = now - circ.cellRefillAt;
+  if (elapsed > 0) {
+    circ.cellTokens = Math.min(burst, circ.cellTokens + (elapsed * rate) / 1000);
+    circ.cellRefillAt = now;
+  }
+  if (circ.cellTokens >= 1) {
+    circ.cellTokens -= 1;
+    return true;
+  }
+  return false;
 }
 
 /** 下一个后向 n（命名空间化，避免跨发起跳重用）。 */

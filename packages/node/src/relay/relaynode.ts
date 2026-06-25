@@ -50,6 +50,7 @@ import {
   relayAddBackwardLayer,
   originateBackward,
   makeBwdBase,
+  takeCellToken,
 } from './circuit.js';
 
 /** 目录解析器：中继地址 → 其 cell 入口 host:port。生产用 parseRelays(chain)，测试可注入静态 map。 */
@@ -61,9 +62,42 @@ export type ExitPolicy = (host: string, port: number) => boolean;
 
 let LID = 0;
 const mintCirc = () => randomBytes(8).toString('hex');
-/** 单中继电路硬上限（粗粒度抗内存耗尽兜底）。细粒度（按 IP/连接限速、TTL 清扫、半开清理）属 Phase 2 加固。 */
+/** 单中继电路硬上限（粗粒度抗内存耗尽兜底）。下面的 DoS 加固在其之上加细粒度回收/限速。 */
 const MAX_CIRCUITS = 2048;
 const CELL_WS_MAX_PAYLOAD = 1 << 12;
+
+// ---- DoS 加固默认值（可经构造器 opts 覆盖；生产默认须明显高于真实用量，绝不误伤合法流量）----
+/** 电路空闲多久没有任何 cell 即被清扫回收（无活动 = 大概率僵尸/半开）。 */
+const CIRCUIT_IDLE_MS = 10 * 60 * 1000; // 10 min
+/** 电路绝对最大寿命（无论是否活跃，到点强制回收，封顶长寿电路占用）。 */
+const CIRCUIT_MAX_AGE_MS = 60 * 60 * 1000; // 1 h
+/** 清扫定时器周期。 */
+const SWEEP_INTERVAL_MS = 30 * 1000; // 30 s
+/** 每电路前向 cell 稳态速率（cells/s）。须远高于流层真实需求（relay-stream-test 的 2000B 传输只需几十 cell）。 */
+const CELL_RATE = 500;
+/** 每电路前向 cell 突发桶容量（瞬时上限）。 */
+const CELL_BURST = 1000;
+/** 单个丢弃统计窗口（ms）：窗口内被限速丢弃的 cell 数超 CELL_FLOOD_KILL → 判定恶意洪泛 → 销毁电路。 */
+const CELL_FLOOD_WINDOW_MS = 1000;
+/** 一个窗口内丢弃达到此数即销毁电路（区分“偶发超速被削峰”与“持续灌爆”）。 */
+const CELL_FLOOD_KILL = 2000;
+/** EXTEND 拨号下一跳的连接超时：超时仍未建立(收到 CREATED) → 拆电路，避免黑洞下一跳令电路半开永挂。 */
+const CONNECT_TIMEOUT_MS = 10 * 1000; // 10 s
+/** 单条 CellLink（=单个客户端连接）可承载的电路数上限（宽松——中继间链路天然多路复用大量电路）。全局 MAX_CIRCUITS 仍是兜底。 */
+const MAX_CIRCUITS_PER_CONN = 512;
+
+/** 可经构造器覆盖的 DoS 加固时序/阈值（测试用极小值以求快与确定）。 */
+export interface RelayDosOpts {
+  idleMs?: number;
+  maxAgeMs?: number;
+  sweepMs?: number;
+  cellRate?: number;
+  cellBurst?: number;
+  floodWindowMs?: number;
+  floodKill?: number;
+  connectTimeoutMs?: number;
+  maxPerConn?: number;
+}
 /** HSDir 存储的描述符条目硬上限（抗内存耗尽：插入前 prune 过期，仍满则拒新存）。 */
 const MAX_HSDESCS = 10000;
 /** 单条 HS 请求（PUBLISH/FETCH）重组上限：64B descIdHex + 一个宽松的描述符 JSON 上限，抗内存放大。 */
@@ -122,6 +156,10 @@ export class RelayNode {
   private rdvByCirc = new Map<RelayCircuit, string>();
   // 作 RP：拼接对（双向）。RENDEZVOUS1 成功后把服务的会合电路 ↔ 客户端的会合电路互链；CMD_RDV_DATA 据此透传到对端。
   private splice = new Map<RelayCircuit, RelayCircuit>();
+  // ---- DoS 加固状态 ----
+  private perConn = new Map<CellLink, number>(); // 每客户端连接(prevConn)承载的电路计数（CREATE++ / destroy--）
+  private sweepTimer: ReturnType<typeof setInterval>; // 空闲/超龄电路清扫定时器
+  private dos: Required<RelayDosOpts>; // 解析后的 DoS 时序/阈值（默认 = 上面常量）
 
   constructor(
     readonly id: string, // 本中继钱包地址 0x..（= ntor relayId）
@@ -130,10 +168,34 @@ export class RelayNode {
     readonly port: number,
     readonly host = '127.0.0.1',
     private allowPrivateRelayTargets = isLocalListenHost(host),
+    opts: RelayDosOpts = {}, // DoS 加固覆盖项；缺省即生产默认。位置在既有参数之后 → 不破坏 new RelayNode(id,onion,resolve,port,host)
   ) {
     this.idPub = hexToBytes(addressToPublicKeyHex(id));
+    this.dos = {
+      idleMs: opts.idleMs ?? CIRCUIT_IDLE_MS,
+      maxAgeMs: opts.maxAgeMs ?? CIRCUIT_MAX_AGE_MS,
+      sweepMs: opts.sweepMs ?? SWEEP_INTERVAL_MS,
+      cellRate: opts.cellRate ?? CELL_RATE,
+      cellBurst: opts.cellBurst ?? CELL_BURST,
+      floodWindowMs: opts.floodWindowMs ?? CELL_FLOOD_WINDOW_MS,
+      floodKill: opts.floodKill ?? CELL_FLOOD_KILL,
+      connectTimeoutMs: opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS,
+      maxPerConn: opts.maxPerConn ?? MAX_CIRCUITS_PER_CONN,
+    };
     this.wss = new WebSocketServer({ host, port, maxPayload: CELL_WS_MAX_PAYLOAD });
     this.wss.on('connection', (ws) => this.wrap(ws));
+    // 周期清扫：回收空闲 > idleMs 或寿命 > maxAgeMs 的电路。unref → 不阻止进程退出。
+    this.sweepTimer = setInterval(() => this.sweep(), this.dos.sweepMs);
+    this.sweepTimer.unref?.();
+  }
+
+  /** 空闲/超龄电路清扫：遍历电路表，回收僵尸电路（半开、被遗弃、超长寿）。 */
+  private sweep(): void {
+    const now = Date.now();
+    for (const c of this.table.all()) {
+      if (now - c.lastSeen > this.dos.idleMs) this.destroyCircuit(c, undefined, 'idle');
+      else if (now - c.createdAt > this.dos.maxAgeMs) this.destroyCircuit(c, undefined, 'max-age');
+    }
   }
 
   onExit(h: ExitHandler): void {
@@ -147,6 +209,7 @@ export class RelayNode {
     return this.table.size;
   }
   async close(): Promise<void> {
+    clearInterval(this.sweepTimer);
     for (const c of this.table.all()) this.destroyCircuit(c, undefined, 'shutdown', true);
     await new Promise<void>((r) => this.wss.close(() => r()));
   }
@@ -183,7 +246,19 @@ export class RelayNode {
   }
 
   private destroyCircuit(circ: RelayCircuit, source?: CellLink, reason = 'destroy', closePrev = false): void {
+    // 幂等：本电路可能经多条路径(链路清理/拼接对递归/超时)被重复销毁；仅当它仍在表中时才走一遍清理 + 记账，
+    // 否则 perConn 计数会被多减。以“仍按 prevCirc 指向本电路”作在表判据。
+    const live = this.table.byPrev(circ.prevCirc) === circ;
     this.table.remove(circ);
+    if (live) {
+      const n = (this.perConn.get(circ.prevConn) ?? 1) - 1; // 该客户端连接的电路计数自减
+      if (n <= 0) this.perConn.delete(circ.prevConn);
+      else this.perConn.set(circ.prevConn, n);
+    }
+    if (circ.extendTimer) {
+      clearTimeout(circ.extendTimer); // EXTEND 连接超时计时器（若在途）随电路销毁清除
+      circ.extendTimer = undefined;
+    }
     this.streams.get(circ)?.destroy();
     this.streams.delete(circ);
     this.hsReasm.delete(circ); // 清理在途 HS 请求重组态（描述符存储 hsdescs 不动——跨电路存活）
@@ -226,12 +301,18 @@ export class RelayNode {
           link.send({ t: 'DESTROY', c: m.c, r: 'overloaded' });
           return;
         }
+        // 每连接电路上限（宽松；防单连接独吞全局额度。中继间链路天然多路复用 → 阈值留得很高）。
+        if ((this.perConn.get(link) ?? 0) >= this.dos.maxPerConn) {
+          link.send({ t: 'DESTROY', c: m.c, r: 'per-conn-limit' });
+          return;
+        }
         // 直接握手：建立“客户端↔本跳”的密钥（本跳是某客户端电路的这一跳）。
         const r = ntorServer(this.idPub, this.onion, hexToBytes(m.x));
         if (!r) {
           link.send({ t: 'DESTROY', c: m.c, r: 'ntor-fail' });
           return;
         }
+        const now = Date.now();
         const circ: RelayCircuit = {
           prevConn: link,
           prevCirc: m.c,
@@ -239,12 +320,18 @@ export class RelayNode {
           maxFwdCtr: -1, // -1 = 尚未见 cell；使首个 n=0 被接受、之后 n=0 重放即丢
           bwdBase: makeBwdBase(randomBytes(3)),
           bwdLocal: 0,
-          createdAt: Date.now(),
+          createdAt: now,
+          lastSeen: now,
+          cellTokens: this.dos.cellBurst, // 满桶起步
+          cellRefillAt: now,
+          cellDropped: 0,
+          cellDropWindowAt: now,
         };
         if (!this.table.add(circ)) {
           link.send({ t: 'DESTROY', c: m.c, r: 'duplicate-circuit' });
           return;
         }
+        this.perConn.set(link, (this.perConn.get(link) ?? 0) + 1); // 记账：该连接 +1 条电路
         link.send({ t: 'CREATED', c: m.c, y: bytesToHex(r.serverEph), a: bytesToHex(r.auth) });
         return;
       }
@@ -252,6 +339,11 @@ export class RelayNode {
         // 下一跳对我们(代客户端)发的 CREATE 的应答 → 包成后向 EXTENDED 还给客户端。
         const circ = this.table.byNext(m.c);
         if (!circ || circ.nextConn !== link) return;
+        circ.lastSeen = Date.now();
+        if (circ.extendTimer) {
+          clearTimeout(circ.extendTimer); // 下一跳已建立 → 取消 EXTEND 连接超时
+          circ.extendTimer = undefined;
+        }
         const data = new Uint8Array(64);
         data.set(hexToBytes(m.y), 0); // Y(32)
         data.set(hexToBytes(m.a), 32); // AUTH(32)
@@ -263,6 +355,17 @@ export class RelayNode {
         if (m.d === 'f') {
           const circ = this.table.byPrev(m.c);
           if (!circ || circ.prevConn !== link) return;
+          const now = Date.now();
+          circ.lastSeen = now; // 有活动 → 刷新空闲计时（清扫不回收活跃电路）
+          // 每电路前向 cell 限速（令牌桶）。无令牌 → 丢该 cell 并计数；窗口内丢弃过多 = 洪泛 → 销毁电路。
+          if (!takeCellToken(circ, now, this.dos.cellRate, this.dos.cellBurst)) {
+            if (now - circ.cellDropWindowAt > this.dos.floodWindowMs) {
+              circ.cellDropWindowAt = now; // 新窗口，丢弃计数归零
+              circ.cellDropped = 0;
+            }
+            if (++circ.cellDropped >= this.dos.floodKill) this.destroyCircuit(circ, undefined, 'flood');
+            return; // 丢弃这一 cell（不转发、不处理）
+          }
           const act = relayForward(circ, hexToBytes(m.b), m.n);
           if (act.kind === 'drop') return;
           if (act.kind === 'forward') {
@@ -292,6 +395,7 @@ export class RelayNode {
         // 后向：来自下一跳，加本跳一层送回 prev
         const circ = this.table.byNext(m.c);
         if (!circ || circ.nextConn !== link) return;
+        circ.lastSeen = Date.now(); // 后向活动也刷新空闲计时
         const body = relayAddBackwardLayer(circ, hexToBytes(m.b), m.n);
         if (!body) return;
         circ.prevConn.send({ t: 'RELAY', c: circ.prevCirc, d: 'b', n: m.n, b: bytesToHex(body) });
@@ -359,6 +463,13 @@ export class RelayNode {
         return;
       }
       next.send({ t: 'CREATE', c: nextCirc, x }); // 缓冲到 open 后发
+      // 连接超时：下一跳若是黑洞（既不 open 也不 error，TCP 永挂），到点没收到 CREATED 就拆电路 + 关 ws，
+      // 避免半开电路无限占用。CREATED 到达（CREATED 分支）或任何销毁路径都会 clearTimeout 本计时器。
+      const timer = setTimeout(() => {
+        if (this.table.byNext(nextCirc) === circ && circ.extendTimer === timer) this.destroyCircuit(circ, undefined, 'extend-timeout');
+      }, this.dos.connectTimeoutMs);
+      timer.unref?.();
+      circ.extendTimer = timer;
     });
   }
 

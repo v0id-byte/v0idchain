@@ -85,6 +85,11 @@ async function main() {
       bwdBase: 0,
       bwdLocal: 0,
       createdAt: 0,
+      lastSeen: 0,
+      cellTokens: 1e9, // 满桶 → 不干扰防重放断言
+      cellRefillAt: 0,
+      cellDropped: 0,
+      cellDropWindowAt: 0,
     };
     const body = new Uint8Array(CELL_BODY_LEN);
     check('首个前向 n=0 被接受', relayForward(fake, body, 0).kind !== 'drop');
