@@ -22,7 +22,12 @@ const path = require('node:path');
 // repoRoot：本文件在 <repo>/clients/desktop/src/main.js → 上溯三级到仓库根。
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const cliEntry = path.join(repoRoot, 'packages', 'cli', 'src', 'index.ts');
-const SOCKS_PORT = Number(process.env.V0ID_SOCKS_PORT || 9050);
+// 外部 SOCKS 模式：设了 V0ID_SOCKS_EXTERNAL=<port> 就不拉守护进程，
+// 而是把 127.0.0.1:<port> 当成「已经在跑的 SOCKS5 代理」直接用（例如 demo-network.mjs 起的 :9050）。
+// 用途：手动验证浏览器时把它指到本地 demo 网络的 SOCKS，无需起真链。不设则保持原来「自起守护」的行为。
+const SOCKS_EXTERNAL = process.env.V0ID_SOCKS_EXTERNAL ? Number(process.env.V0ID_SOCKS_EXTERNAL) : null;
+// SOCKS 端口：外部模式用 V0ID_SOCKS_EXTERNAL；否则用 V0ID_SOCKS_PORT（默认 9050），即守护进程要监听的端口。
+const SOCKS_PORT = SOCKS_EXTERNAL ?? Number(process.env.V0ID_SOCKS_PORT || 9050);
 const PEERS = process.env.V0ID_PEERS || ''; // 逗号分隔的种子 ws 地址；为空则纯本地（无网络，.v0id 无法解析）
 // webview 用一个具名 partition，这样它的 session 是我们能单独设代理的那一个。
 const PARTITION = 'persist:v0id';
@@ -225,16 +230,26 @@ function log(line) {
 
 // ---- 生命周期 ----
 app.whenReady().then(async () => {
-  spawnDaemon();
+  if (SOCKS_EXTERNAL != null) {
+    // 外部 SOCKS 模式：不起守护、不轮询链；只把窗口代理指到已有的 SOCKS，并轮询其就绪。
+    log(`external SOCKS mode: using 127.0.0.1:${SOCKS_EXTERNAL} (no daemon spawned)`);
+    pushStatus({ phase: 'starting', socksPort: SOCKS_EXTERNAL, external: true });
+  } else {
+    spawnDaemon();
+  }
   await createWindow();
-  startChainPoll();
+  if (SOCKS_EXTERNAL == null) startChainPoll(); // 外部 SOCKS（demo 网络）没有链 API，跳过链状态轮询
 
-  // 等 SOCKS 就绪 → 通知 renderer 可以导航了。
+  // 等 SOCKS 就绪 → 通知 renderer 可以导航了。（外部模式等的是别人已经起好的代理。）
   waitSocksReady(SOCKS_PORT)
     .then(() => {
       socksReady = true;
       log(`SOCKS ready on 127.0.0.1:${SOCKS_PORT}`);
-      pushStatus({ phase: 'socks-ready', socksPort: SOCKS_PORT });
+      pushStatus({
+        phase: 'socks-ready',
+        socksPort: SOCKS_PORT,
+        ...(SOCKS_EXTERNAL != null ? { external: true, statusText: `外部 SOCKS :${SOCKS_PORT}（demo 网络）` } : {}),
+      });
     })
     .catch((err) => {
       log(`SOCKS not ready: ${err.message}`);

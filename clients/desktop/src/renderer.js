@@ -22,7 +22,9 @@ const PHASE_TEXT = {
 
 window.v0id.onStatus((patch) => {
   if (patch.phase) {
-    phaseEl.textContent = patch.phase === 'error' && patch.error ? patch.error : PHASE_TEXT[patch.phase] || patch.phase;
+    // 优先用主进程给的明确文案（如外部 SOCKS 模式的「外部 SOCKS :9050（demo 网络）」）。
+    phaseEl.textContent =
+      patch.phase === 'error' && patch.error ? patch.error : patch.statusText || PHASE_TEXT[patch.phase] || patch.phase;
     socksReady = patch.phase === 'socks-ready';
     dot.className = patch.phase === 'socks-ready' ? 'ready' : patch.phase === 'error' || patch.phase === 'daemon-exited' ? 'err' : '';
     go.disabled = !socksReady;
