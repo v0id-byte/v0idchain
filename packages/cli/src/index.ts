@@ -6,12 +6,9 @@ import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import {
   V0idNode,
   startHttpApi,
-  RelayNode,
   SocksProxy,
   loadOrCreateOnionKey,
-  makeHsDeps,
-  serveHiddenService,
-  GuardManager,
+  RoleManager,
   Measurer,
   makeProbeSink,
   computeReward,
@@ -27,7 +24,6 @@ import {
   loadOrCreateApiToken,
   loadApiToken,
   bytesToHex,
-  hexToBytes,
   createTransaction,
   computeStakeState,
   parseSlash,
@@ -160,7 +156,19 @@ program
     });
     node.start();
     const apiToken = loadOrCreateApiToken(dataDir);
-    startHttpApi(node, Number(o.apiPort), apiToken);
+    // 角色管理器：把中继/隐藏服务/挖矿的启停收成一个对象，既供下面的启动旗标调用，也交给 HTTP API → GUI 运行时切换。
+    // onion 密钥/出口策略/中继端口在此一次性备好（与历史 CLI 同值），具体角色由旗标在下方拉起。
+    const exitAllow = String(o.exitAllow).split(',').map((s: string) => s.trim()).filter(Boolean);
+    const roleManager = new RoleManager({
+      node,
+      dataDir,
+      onion: loadOrCreateOnionKey(dataDir),
+      relayPort: Number(o.relayPort || Number(o.p2pPort) + 10),
+      relayAdvertiseHost: o.relayAdvertise || '127.0.0.1',
+      exitAllow,
+      mixnet: o.mixnet ? {} : undefined,
+    });
+    startHttpApi(node, Number(o.apiPort), apiToken, roleManager);
 
     console.log(c.bold(c.cyan('\n  v0idChain ⛓  节点已启动')));
     console.log(`  ${c.dim('名称  ')} ${o.name}`);
@@ -174,96 +182,51 @@ program
     if (peers.length) console.log(`  ${c.dim('对等  ')} ${peers.join(', ')}`);
     if (o.mine) {
       const iv = Number(o.mineInterval);
-      node.startMining(iv);
+      roleManager.startMine(iv);
       console.log(
         c.yellow(iv > 0 ? `  ⛏  自动挖矿已开启（每块间歇 ${iv}ms）` : `  ⛏  自动挖矿已开启（连续挖，出块节奏由 PoW 难度决定）`),
       );
     }
     // ---- .v0id 洋葱中继 / SOCKS5 前端 / 隐藏服务托管 ----
-    if (o.relay || o.socks || o.hsTarget) {
-      // 从链上目录解析中继地址 → cell 入口（用于 EXTEND 拨号 & SOCKS 选路）
-      const resolver = (id: string) => {
-        const d = node.relays().find((r) => r.address === id);
-        return d ? { host: d.host, port: d.port } : undefined;
-      };
-      // 入口守卫：把所有电路的第一跳钉死在一小撮持久守卫上（抗多电路统计去匿名，见 guards.ts）。
-      // SOCKS 与 HS（makeHsDeps）共用**同一个** GuardManager → 两边电路用同一守卫，攻击面统一收窄。
-      const guardManager = o.socks || o.hsTarget ? new GuardManager(dataDir, { selfId: node.wallet.address }) : undefined;
-      // 隐藏服务接线依赖（选路器 + 名录）：SOCKS 的 .v0id 出站与 --hs-target 托管共用一份（每次从链上重新快照）。
-      const hsDeps = o.socks || o.hsTarget ? makeHsDeps(() => node.relays(), guardManager) : undefined;
-      if (o.relay) {
-        const relayPort = Number(o.relayPort || Number(o.p2pPort) + 10);
-        const onion = loadOrCreateOnionKey(dataDir);
-        const adHost = o.relayAdvertise || '127.0.0.1';
-        const onionPubHex = bytesToHex(onion.pub);
-        // --mixnet：开启本中继的逐跳混入延迟（默认参数）。仅中继侧；SOCKS/HS 客户端 cover 的接线为后续工作（需穿过 socks/hsclient 创建电路处）。
-        const relay = new RelayNode(node.wallet.address, onion, resolver, relayPort, '0.0.0.0', undefined, {}, o.mixnet ? {} : undefined);
-        const allow = String(o.exitAllow).split(',').map((s: string) => s.trim()).filter(Boolean);
-        if (allow.length) {
-          const set = new Set(allow);
-          relay.setExitPolicy((host, port) => set.has(`${host}:${port}`));
+    // 启动旗标统一经 roleManager 拉起对应角色（与运行时 HTTP API 同一条路径，行为不变）；CLI 这里只负责把
+    // 旗标翻译成 roleManager.startX(...) + 打印进度。GuardManager/hsDeps/pickHops/自动发布循环都已搬进 RoleManager。
+    if (o.relay) {
+      const onionPubHex = bytesToHex(roleManager.onionPub);
+      void roleManager.startRelay(); // 起 cell 端口 + 5s 自动发布循环（描述符上链需余额≥2，挖矿/收款后自动生效）
+      console.log(`  ${c.dim('中继  ')} cell:${roleManager.relayCellPort}  okey:${onionPubHex.slice(0, 16)}…  出口:${exitAllow.length ? c.yellow(exitAllow.join(',')) : c.dim('deny-all')}${o.mixnet ? '  ' + c.yellow('mixnet:逐跳延迟ON') : ''}`);
+      // 自动发布循环在 RoleManager 内静默重试；这里轮询其 published 状态，首次上链时补打一行确认（保留历史 UX，不让库 console.log）。
+      const watch = setInterval(() => {
+        if (roleManager.status().relay.published) {
+          console.log(`  ${c.green('✓ 中继描述符已上链广播（待挖块生效，全网可发现）')}`);
+          clearInterval(watch);
         }
-        console.log(`  ${c.dim('中继  ')} cell:${relayPort}  okey:${onionPubHex.slice(0, 16)}…  出口:${allow.length ? c.yellow(allow.join(',')) : c.dim('deny-all')}${o.mixnet ? '  ' + c.yellow('mixnet:逐跳延迟ON') : ''}`);
-        // 自动发布描述符：余额够且尚未发布时发一次（挖矿/收款后自动生效）
-        let published = false;
-        const tryPublish = () => {
-          if (published) return;
-          const existing = node.relays().find((r) => r.address === node.wallet.address);
-          if (existing && existing.onionPubHex === onionPubHex && existing.host === adHost && existing.port === relayPort) {
-            published = true;
-            return;
-          }
-          if (node.bc.balanceOf(node.wallet.address) < 2) return;
-          const pub = node.publishRelay(onionPubHex, adHost, relayPort);
-          if (pub.ok) {
-            published = true;
-            console.log(`  ${c.green('✓ 中继描述符已上链广播（待挖块生效，全网可发现）')}`);
-          }
-        };
-        tryPublish();
-        setInterval(tryPublish, 5000).unref();
-      }
-      if (o.socks) {
-        const socksPort = Number(o.socksPort);
-        // hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则失败/等待冷却恢复，绝不回退随机入口。
-        const pickHops = (): HopSpec[] => {
-          const all = node.relays();
-          if (all.length < 3) throw new Error('链上中继不足 3 个，暂无法建路');
-          const hop = (d: (typeof all)[number]): HopSpec => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port });
-          const gid = guardManager!.currentGuard(all);
-          const guard = gid ? all.find((d) => d.address === gid) : undefined;
-          if (!guard) throw new Error('钉住守卫均不可用，暂无法建路');
-          // middle：≠ guard 的随机中继；exit：≠ guard、≠ middle 的随机中继。
-          const afterGuard = all.filter((d) => d.address !== guard.address);
-          const middle = afterGuard[Math.floor(Math.random() * afterGuard.length)];
-          const exitPool = afterGuard.filter((d) => d.address !== middle.address);
-          const exit = exitPool[Math.floor(Math.random() * exitPool.length)];
-          return [hop(guard), hop(middle), hop(exit)];
-        };
-        // 仅当**连守卫(hop0)失败**时才标记其不可达 → 下次 pickHops 经 currentGuard 自动切到钉住备份；
-        // 并发新连接照常复用同一主守卫（不再有时间窗口误标，钉固在正常浏览下稳定）。
-        new SocksProxy(pickHops, socksPort, '127.0.0.1', hsDeps, (g) => guardManager!.markUnreachable(g.id));
-        console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
-      }
-      // ---- 托管 .v0id 隐藏服务：把进来的会合连接转发到本机 host:port ----
-      if (o.hsTarget && hsDeps) {
-        const i = String(o.hsTarget).lastIndexOf(':');
-        const thost = i > 0 ? String(o.hsTarget).slice(0, i) : '';
-        const tport = Number(String(o.hsTarget).slice(i + 1));
-        if (i <= 0 || !Number.isInteger(tport) || tport < 1 || tport > 65535) {
-          console.log(`  ${c.red('✖ --hs-target 格式应为 host:port，例如 127.0.0.1:8080')}`);
-        } else if (node.relays().length < 3) {
-          // 与 --socks 同前置：目录太小先不崩，给一行友好提示（挖矿/更多中继上链后重启即可托管）。
-          console.log(`  ${c.yellow('⚠ 链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重启 --hs-target）')}`);
-        } else {
-          // 异步启动（建引入电路 + 发布描述符需几跳往返）；成功后打印 .v0id 地址，失败给一行提示而非崩进程。
-          serveHiddenService({ dataDir, target: { host: thost, port: tport }, deps: hsDeps, numIntros: Number(o.hsIntros) })
-            .then(({ address }) => {
-              console.log(`  ${c.dim('隐藏  ')} ${c.green(address)}  ${c.dim('→ ' + thost + ':' + tport)}`);
-              console.log(`  ${c.dim('      ')} ${c.dim('别人可 curl --socks5-hostname <某节点SOCKS> ' + address + ' 访问（双方互不知 IP）')}`);
-            })
-            .catch((e) => console.log(`  ${c.yellow('⚠ 隐藏服务托管失败：' + (e instanceof Error ? e.message : String(e)) + '（稍后重试 / 确认中继充足）')}`));
-        }
+      }, 5000);
+      watch.unref?.();
+    }
+    if (o.socks) {
+      const socksPort = Number(o.socksPort);
+      // SOCKS 仍是「启动即常开」的轻量基座：用 roleManager 提供的 pickHops/hsDeps/守卫失败回调拉起，再登记回 roleManager 供 /roles 展示。
+      const w = roleManager.socksWiring();
+      const socks = new SocksProxy(w.pickHops, socksPort, '127.0.0.1', w.hsDeps, w.onGuardFail);
+      roleManager.attachSocks(socks, socksPort);
+      console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
+    }
+    // ---- 托管 .v0id 隐藏服务：把进来的会合连接转发到本机 host:port ----
+    if (o.hsTarget) {
+      const i = String(o.hsTarget).lastIndexOf(':');
+      const thost = i > 0 ? String(o.hsTarget).slice(0, i) : '';
+      const tport = Number(String(o.hsTarget).slice(i + 1));
+      if (i <= 0 || !Number.isInteger(tport) || tport < 1 || tport > 65535) {
+        console.log(`  ${c.red('✖ --hs-target 格式应为 host:port，例如 127.0.0.1:8080')}`);
+      } else {
+        // 异步启动（建引入电路 + 发布描述符需几跳往返）；成功后打印 .v0id 地址，失败（含链上中继不足）给一行提示而非崩进程。
+        roleManager
+          .startHs({ host: thost, port: tport }, Number(o.hsIntros))
+          .then((st) => {
+            console.log(`  ${c.dim('隐藏  ')} ${c.green(st.hs.address ?? '?')}  ${c.dim('→ ' + thost + ':' + tport)}`);
+            console.log(`  ${c.dim('      ')} ${c.dim('别人可 curl --socks5-hostname <某节点SOCKS> ' + (st.hs.address ?? '') + ' 访问（双方互不知 IP）')}`);
+          })
+          .catch((e) => console.log(`  ${c.yellow('⚠ 隐藏服务托管失败：' + (e instanceof Error ? e.message : String(e)) + '（稍后重试 / 确认中继充足）')}`));
       }
     }
 

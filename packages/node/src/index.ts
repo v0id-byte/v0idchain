@@ -12,3 +12,5 @@ export * from './relay/guards.js';
 export * from './relay/hsbridge.js';
 // 中继激励链下工具（Phase 3A-2/3/4：度量者 / 奖励 / 罚没的纯函数 + 探测守护）
 export * from './relay/measurer.js';
+// 角色管理器（Phase 2F-1：运行时切换中继/隐藏服务/挖矿，供 GUI 经 HTTP API 控制）
+export * from './relay/rolemanager.js';

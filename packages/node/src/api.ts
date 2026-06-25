@@ -3,6 +3,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { isValidAddress, minFeeFor } from '@v0idchain/core';
 import type { V0idNode } from './node.js';
+import type { RoleManager } from './relay/rolemanager.js';
 
 function readBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve) => {
@@ -18,7 +19,8 @@ function readBody(req: IncomingMessage): Promise<any> {
   });
 }
 
-export function startHttpApi(node: V0idNode, port: number, token: string) {
+// roles 可选：传入则暴露 GET /roles（只读）+ 角色启停 POST（令牌门控）。不传 = 既有行为不变（4 参可选，不破坏调用方）。
+export function startHttpApi(node: V0idNode, port: number, token: string, roles?: RoleManager) {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     // CORS 只放行本机（localhost/127.0.0.1）页面，绝不用 '*'：
@@ -71,6 +73,15 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             return json(200, node.names());
           case '/relays':
             return json(200, node.relays());
+          case '/roles':
+            // 角色状态（只读、无需令牌，与 /info 同级）：GUI 据此渲染中继/隐藏服务/挖矿开关。
+            // 未接 RoleManager 时回全 off 的占位形，调用方无须区分。
+            return json(200, roles?.status() ?? {
+              socks: { on: false, port: null },
+              relay: { on: false, port: null, address: null, circuits: 0, published: false },
+              hs: { on: false, address: null, target: null },
+              mine: { on: false, intervalMs: null },
+            });
           case '/redpackets':
             return json(200, node.redPackets());
           case '/balance': {
@@ -161,6 +172,41 @@ export function startHttpApi(node: V0idNode, port: number, token: string) {
             const r = node.acceptTx(tx as Parameters<typeof node.acceptTx>[0]);
             return r.ok ? json(200, { ok: true, txid: tx.txid }) : json(400, { error: r.error });
           }
+          // ---- 角色运行时启停（Phase 2F-1，令牌门控；GUI 不重启守护即可切角色）----
+          // 未接 RoleManager（headless 老用法）→ 400「未启用角色控制」。
+          // 角色方法抛错（如链上中继 < 3、hs target 非法）→ 409 + {error}，进程不崩。每个成功都回最新 status()。
+          case '/relay/start':
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            try { return json(200, await roles.startRelay()); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+          case '/relay/stop':
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            try { return json(200, await roles.stopRelay()); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+          case '/hs/start': {
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            const host = String(body.host ?? '');
+            const hport = Number(body.port);
+            if (!host || !Number.isInteger(hport) || hport < 1 || hport > 65535) {
+              return json(400, { error: 'hs 需合法 host 与 port（如 {"host":"127.0.0.1","port":8080}）' });
+            }
+            let intros: number | undefined;
+            if (body.intros !== undefined) {
+              intros = Number(body.intros);
+              if (!Number.isInteger(intros) || intros < 1) return json(400, { error: 'intros 必须是 ≥1 的整数' });
+            }
+            try { return json(200, await roles.startHs({ host, port: hport }, intros)); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+          }
+          case '/hs/stop':
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            try { return json(200, await roles.stopHs()); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+          case '/mine/start': {
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            const iv = body.intervalMs === undefined ? 0 : Number(body.intervalMs);
+            if (!Number.isInteger(iv) || iv < 0) return json(400, { error: 'intervalMs 必须是非负整数（0=连续挖）' });
+            return json(200, roles.startMine(iv));
+          }
+          case '/mine/stop':
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            return json(200, roles.stopMine());
         }
       }
 
