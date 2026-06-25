@@ -35,6 +35,7 @@ import {
 } from '@v0idchain/core';
 import { randomBytes } from 'node:crypto';
 import { CircuitClient } from './client.js';
+import { type AntiReplayState, newAntiReplay, accept } from './antireplay.js';
 
 const HS_FETCH_TIMEOUT_MS = 10_000;
 const RDV_TIMEOUT_MS = 30_000;
@@ -47,11 +48,12 @@ export type RelayDirectory = () => string[];
 /**
  * 端到端会合通道：握手后双方各持一套 CircuitKeys，应用字节 AEAD 封死后经 RP 透传（RP 解不开）。
  * 方向由构造时的 (sendKey, recvKey) 决定——客户端 send=encForward/recv=encBackward；服务镜像。
- * 各方向独立单调计数器（绝不重用 nonce）。底层 cell 通道保序（前向单调 n）→ 收端按 ctr 单调去重防重放。
+ * 各方向独立单调计数器（绝不重用 nonce）。收端用滑动窗口防重放去重：拦真重放/太老 ctr，接受窗口内乱序 ctr
+ * （底层 cell 通道在 Mixnet 下会被逐跳延迟重排 → 必须用窗口而非严格单调，否则被重排到后面的合法 e2e cell 会被误丢）。
  */
 export class RdvChannel {
   private sendCtr = 0;
-  private recvMaxCtr = -1;
+  private recvReplay: AntiReplayState = newAntiReplay();
   private dataCb: ((b: Uint8Array) => void) | null = null;
   private queue: Uint8Array[] = [];
   private closeCb: (() => void) | null = null;
@@ -72,8 +74,7 @@ export class RdvChannel {
   private onCell(data: Uint8Array): void {
     const opened = rdvOpen(this.recvKey, data);
     if (!opened) return; // RP 篡改 / 错密钥 → 丢
-    if (opened.ctr <= this.recvMaxCtr) return; // 重放/乱序 → 丢
-    this.recvMaxCtr = opened.ctr;
+    if (!accept(this.recvReplay, opened.ctr)) return; // 仅 AEAD 合法后推进窗口：重放/太老 → 丢；窗口内乱序 → 接受
     if (this.dataCb) this.dataCb(opened.bytes);
     else this.queue.push(opened.bytes);
   }

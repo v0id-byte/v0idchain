@@ -1,12 +1,16 @@
 // 电路状态 + 中继侧逐 cell 决策（纯逻辑，I/O 在 relaynode.ts / client.ts）。
 //
 // nonce/计数器设计（流加密绝不能 (key,nonce) 重用）：
-// - **前向**：客户端持有单调计数器，每个前向 cell n=fwdN++。全程各跳用同一 n → 同一前向密钥不重用；中继按 n>maxSeen 防重放。
+// - **前向**：客户端持有单调计数器，每个前向 cell n=fwdN++。全程各跳用同一 n → 同一前向密钥不重用；中继按
+//   **滑动窗口防重放**（antireplay.ts，RFC 6479 风格）放行：接受窗口内尚未见过的乱序 n、丢重复/太老/越界 n。
+//   旧实现要求 n 严格增，但 Mixnet 逐跳随机延迟会重排前向 cell → 严格法会误丢被重排到后面的合法 cell（流丢包）；
+//   窗口法在保留全部防重放性质（真重放仍被拦、nonce 悬崖仍守）的同时让乱序合法 cell 通过。
 // - **后向**：cell 由某跳发起，而中继**不知道自己的全局跳位**（这正是匿名性）。故每条 RelayCircuit 建时取一个随机 24-bit
 //   base，后向 n = base·2²⁰ + 本跳本地计数。不同发起跳 base 几乎不可能相撞 → 杜绝 (encBackward_i, nonce) 重用，且无需跳位。
 //   ⚠️ v1 后向防重放为 best-effort（MAC 防伪造；重放只是把同样数据重投给客户端，客户端按自身电路态去重）。
 import type { CircuitKeys } from '@v0idchain/core';
 import { applyLayer, unpackCellBody, packCellBody, nonceFromCounter, MAX_CELL_CTR } from '@v0idchain/core';
+import { type AntiReplayState, accept } from './antireplay.js';
 import type { CellMsg } from './cells.js';
 
 const BWD_LOCAL_BITS = 2 ** 20; // 每跳本地后向计数空间（每电路百万 cell 足够）
@@ -27,7 +31,7 @@ export interface RelayCircuit {
   nextConn?: CellLink; // 延伸后才有；无 = 本跳是出口
   nextCirc?: string;
   keys: CircuitKeys; // 本跳与客户端协商出的 4 把密钥（中继视角）
-  maxFwdCtr: number; // 前向防重放：已见的最大 n（初始 -1 = 尚未见任何 cell，使首个 n=0 也被接受一次）
+  fwdReplay: AntiReplayState; // 前向滑动窗口防重放（替代旧 maxFwdCtr 单调计数；接受窗口内乱序、拦重复/太老/越界）
   bwdBase: number; // 本跳后向 n 的随机命名空间基
   bwdLocal: number; // 本跳本地后向计数
   createdAt: number;
@@ -38,6 +42,9 @@ export interface RelayCircuit {
   cellDropped: number; // 当前窗口内被限速丢弃的 cell 计数（超阈值 → 判定洪泛销毁电路）
   cellDropWindowAt: number; // 丢弃计数窗口起点（每窗口归零）
   extendTimer?: ReturnType<typeof setTimeout>; // EXTEND 拨号下一跳的连接超时句柄；CREATED 到达或拆电路时清
+  // ---- Mixnet（Phase 2C，默认关；仅 mixnet 启用时使用）：本电路当前因混入延迟而“扣在手里”的 setTimeout 句柄集合。----
+  // 每个 setTimeout 在到点把一个被延迟的转发/后向 cell 真正发出；其回调先把自己从此集合摘除。拆电路时清空全部（不让延迟 cell 在 teardown 后还发）。
+  mixTimers?: Set<ReturnType<typeof setTimeout>>;
 }
 
 /** 中继的电路表。circId 全局随机唯一 → 用两张表按“来向”区分：前向 cell 落 incoming，后向 cell 落 outgoing。 */
@@ -110,11 +117,10 @@ export type ForwardAction =
   | { kind: 'forward'; body: Uint8Array } // 还要往下一跳转发
   | { kind: 'drop' }; // 重放 / 畸形
 
-/** 中继处理一个**前向** cell：剥掉本跳一层，判断“给我”还是“转发”。同时做前向计数器防重放 + nonce 上限防护。 */
+/** 中继处理一个**前向** cell：剥掉本跳一层，判断“给我”还是“转发”。同时做前向滑动窗口防重放 + nonce 上限防护。 */
 export function relayForward(circ: RelayCircuit, bodyHex: Uint8Array, n: number): ForwardAction {
-  // 防重放：n 必须严格增（maxFwdCtr 初始 -1 → 首个 n=0 也接受、之后 n=0 重放即丢）。并拒绝逼近 2^53 浮点悬崖的 n。
-  if (!isValidCellCounter(n) || n <= circ.maxFwdCtr) return { kind: 'drop' };
-  circ.maxFwdCtr = n;
+  // 滑动窗口防重放（含 nonce 悬崖检查）：接受窗口内尚未见过的乱序 n（Mixnet 重排必需），丢重复/太老/越界 n。
+  if (!accept(circ.fwdReplay, n)) return { kind: 'drop' };
   const peeled = applyLayer(circ.keys.encForward, nonceFromCounter(n), bodyHex);
   const mine = unpackCellBody(peeled, circ.keys.macForward);
   if (mine) return { kind: 'self', cmd: mine.cmd, data: mine.data };

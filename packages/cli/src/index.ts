@@ -101,6 +101,7 @@ program
   .option('--relay-port <port>', '洋葱中继 cell 入口端口（默认 p2p-port+10）')
   .option('--relay-advertise <host>', '中继对外 host（公网/局域网才需要；默认 127.0.0.1）')
   .option('--exit-allow <list>', '作出口时允许连的 host:port（逗号分隔；默认空=纯中继/守卫，不作出口）', '')
+  .option('--mixnet', 'Mixnet 模式(实验)：本中继逐跳混入随机延迟，抗全局被动观察者的时序相关（默认关；客户端 cover 暂需库级 startCover）', false)
   .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网；亦支持 curl --socks5-hostname … <地址>.v0id）', false)
   .option('--socks-port <port>', 'SOCKS5 监听端口', '9050')
   .option('--hs-target <host:port>', '托管一个 .v0id 隐藏服务，把进来的连接转发到本机 host:port（需链上≥3 中继）')
@@ -159,13 +160,14 @@ program
         const onion = loadOrCreateOnionKey(dataDir);
         const adHost = o.relayAdvertise || '127.0.0.1';
         const onionPubHex = bytesToHex(onion.pub);
-        const relay = new RelayNode(node.wallet.address, onion, resolver, relayPort, '0.0.0.0');
+        // --mixnet：开启本中继的逐跳混入延迟（默认参数）。仅中继侧；SOCKS/HS 客户端 cover 的接线为后续工作（需穿过 socks/hsclient 创建电路处）。
+        const relay = new RelayNode(node.wallet.address, onion, resolver, relayPort, '0.0.0.0', undefined, {}, o.mixnet ? {} : undefined);
         const allow = String(o.exitAllow).split(',').map((s: string) => s.trim()).filter(Boolean);
         if (allow.length) {
           const set = new Set(allow);
           relay.setExitPolicy((host, port) => set.has(`${host}:${port}`));
         }
-        console.log(`  ${c.dim('中继  ')} cell:${relayPort}  okey:${onionPubHex.slice(0, 16)}…  出口:${allow.length ? c.yellow(allow.join(',')) : c.dim('deny-all')}`);
+        console.log(`  ${c.dim('中继  ')} cell:${relayPort}  okey:${onionPubHex.slice(0, 16)}…  出口:${allow.length ? c.yellow(allow.join(',')) : c.dim('deny-all')}${o.mixnet ? '  ' + c.yellow('mixnet:逐跳延迟ON') : ''}`);
         // 自动发布描述符：余额够且尚未发布时发一次（挖矿/收款后自动生效）
         let published = false;
         const tryPublish = () => {
