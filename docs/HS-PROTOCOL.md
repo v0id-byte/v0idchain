@@ -351,3 +351,15 @@ CMD_HS_END(10)     HSDir→客户端：一次应答结束（PUBLISH 失败时不
 - **客户端后向严格防重放（`client.ts`/`hsclient.ts`，§18 旧 best-effort 已收紧）**：rdv / stream / hs-request 三条客户端后向消费路径均加严格单调 `n<=bwdMax`→丢（仅 MAC 通过才推进）。中继后向路径仍 best-effort（telescoping 多源 EXTENDED 计数命名空间不同，无单调序——故防御落在客户端）。
 
 **2A 诚实残留**：① **跨多连接的按源 IP 之外无更细计量**——per-IP 上限的入站侧会把同一对端中继多路复用的电路计入其 IP（256 默认对中小中继无碍；高流量中继可后续按链上中继 host 集豁免）；② 守卫均匀采样的女巫残留照旧（对手控 K/N 中继即约 K/N 概率成你主守卫，女巫需余额+挖块成本）；③ cell 限速仅前向（恶意下一跳后向洪泛由客户端去重 + 逐 cell 加密兜底）。
+
+---
+
+## 20. Phase 2C — Mixnet 模式（每跳延迟 + cover traffic，opt-in）
+
+> 补洋葱单独关不上的最后一个根本性口子 = **全局被动对手的流量/时序关联**。**默认关**（Mixnet 加延迟，opt-in；关时现网行为逐字节不变，14 回归全过）。已实现并验证；**v1 基础≠完整 Loopix**（见诚实残留）。
+
+- **逐跳混入延迟（`mixnet.ts`/`relaynode.ts`，relay-sampled，双向）**：中继开 Mixnet 时对每个转发('f')与后向套层('b') cell 各 hold 一个随机**指数延迟**（均值默认 80ms，clamp 2000ms）再发 → 打散 输入↔输出 时序关联。held cell 按电路 Set 追踪、`destroyCircuit` 清、全局 cap 50k 兜底（入流已被 2A 令牌桶限速）。
+- **cover traffic（`CMD_DROP=20`，加密不可区分）**：cover cell 在线缆上是普通 512B 加密 RELAY cell（cmd 在洋葱密文内，唯**终点**剥层后见并**静默丢**，中继盲转发分辨不出）。客户端 `sendCover()/startCover(rate)` 按 **Poisson** 间隔发环路 cover → 电路常活、观察者分不清真假流量。**刻意不用会泄露的 wire `cv?` 字段。**
+- **滑窗防重放（`antireplay.ts`，让 Mixnet 与流式兼容）**：逐跳独立随机延迟会**重排** cell，而旧的严格单调防重放(n 必严格增)会把乱序 cell 当重放丢→流式掉包。改为 **RFC 6479 式滑动窗口 anti-replay**（W=8192，定长 1024B/窗口）：前向(中继) + 客户端后向(stream/hs/rdv) 都换成窗口——**允许乱序但唯一的 n**、仍拒真重放/太老/nonce 悬崖、首个 n=0 仍接受一次。验证：`antireplay-test`(32 项含 6000 乱序 fuzz)、`mixnet-test §⑦`(多 cell 流经 mixnet 重排后全字节抵达、回退严格即崩=有牙)。
+
+**2C 诚实残留**：① **v1 基础，非完整 Loopix**——无 Sphinx sender-chosen 逐跳延迟、无中继环路 cover、无投递随机目标的 drop cover、无 SURB 应答、未调优 Poisson 参数、无正式匿名度量；只声称机制存在且可用，**不声称已达流量分析免疫**。② CLI `--mixnet` 目前仅接中继侧延迟，客户端 cover 接进 SOCKS/HS 路径是 follow-up。③ 滑窗 anti-replay 的**远期回绕**：持密钥的在径跳注入一个 MAC 有效的远期 n 可滚窗逐出在途 cell → 单电路 drop-DoS（**非重放接受**；该跳本就能丢/伪造，且受令牌桶限速）——所有窗口式 AR（含 IPsec）固有。④ cover 调度器是独立 Poisson 过程，理论上终点侧统计可分离两速率（真 sender-unobservability 需本 v1 未做的调优混合）。
