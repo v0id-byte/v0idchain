@@ -12,6 +12,7 @@ import {
   type OnionKeypair,
   hexToBytes,
   bytesToHex,
+  utf8ToBytes,
   addressToPublicKeyHex,
   CMD_EXTEND,
   CMD_EXTENDED,
@@ -19,9 +20,28 @@ import {
   CMD_BEGIN,
   CMD_CONNECTED,
   CMD_END,
+  CMD_HS_PUBLISH,
+  CMD_HS_FETCH,
+  CMD_HS_RESP,
+  CMD_HS_END,
+  CMD_ESTABLISH_INTRO,
+  CMD_INTRO_ESTABLISHED,
+  CMD_INTRODUCE1,
+  CMD_INTRODUCE2,
+  CMD_ESTABLISH_RENDEZVOUS,
+  CMD_RENDEZVOUS_ESTABLISHED,
+  CMD_RENDEZVOUS1,
+  CMD_RENDEZVOUS2,
+  CMD_RDV_DATA,
+  RDV_COOKIE_LEN,
   CELL_DATA_LEN,
+  PERIOD_LEN,
+  verifyDescriptorPublishable,
+  descriptorId,
+  type Descriptor,
 } from '@v0idchain/core';
 import { type CellMsg, decodeCell, encodeCell } from './cells.js';
+import { encodeFramed, FrameReassembler } from './hsdir.js';
 import {
   RelayCircuitTable,
   type RelayCircuit,
@@ -44,6 +64,10 @@ const mintCirc = () => randomBytes(8).toString('hex');
 /** 单中继电路硬上限（粗粒度抗内存耗尽兜底）。细粒度（按 IP/连接限速、TTL 清扫、半开清理）属 Phase 2 加固。 */
 const MAX_CIRCUITS = 2048;
 const CELL_WS_MAX_PAYLOAD = 1 << 12;
+/** HSDir 存储的描述符条目硬上限（抗内存耗尽：插入前 prune 过期，仍满则拒新存）。 */
+const MAX_HSDESCS = 10000;
+/** 单条 HS 请求（PUBLISH/FETCH）重组上限：64B descIdHex + 一个宽松的描述符 JSON 上限，抗内存放大。 */
+const MAX_HS_REQ_BYTES = 16 * 1024;
 
 function isLocalListenHost(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1';
@@ -85,6 +109,19 @@ export class RelayNode {
   private exitHandler?: ExitHandler;
   private exitPolicy: ExitPolicy = () => false; // 默认 deny-all
   private streams = new Map<RelayCircuit, Socket>(); // 出口：电路 → 其 TCP 流（v1 每电路 1 条流）
+  // HSDir 描述符存储：descIdHex → {json, exp}。跨电路存活（DHT 的意义），仅 TTL 过期/超量被清，不随电路销毁清空。
+  private hsdescs = new Map<string, { json: string; exp: number }>();
+  // 进行中的分帧 HS 请求重组器（按电路 + 命令；一条电路同一时刻一种 HS 请求在途）。随电路销毁清理。
+  private hsReasm = new Map<RelayCircuit, { cmd: number; reasm: FrameReassembler }>();
+  // ---- 引入点/会合点状态（Phase 2B-c）。本节点同时可担任 IP 与 RP；下面三张表互不干扰，均随电路销毁清理。----
+  // 作 IP：authKeyHex → 服务的引入电路（该电路终点是本节点）。客户端 INTRODUCE1 携 authKey → 据此找到服务电路后向转发。
+  private introTable = new Map<string, RelayCircuit>();
+  private introByCirc = new Map<RelayCircuit, string>(); // 反查（电路销毁时摘除 introTable 项）
+  // 作 RP：cookieHex → 客户端的会合电路（终点是本节点）。服务 RENDEZVOUS1 携 cookie → 据此找到客户端电路并拼接。
+  private rdvTable = new Map<string, RelayCircuit>();
+  private rdvByCirc = new Map<RelayCircuit, string>();
+  // 作 RP：拼接对（双向）。RENDEZVOUS1 成功后把服务的会合电路 ↔ 客户端的会合电路互链；CMD_RDV_DATA 据此透传到对端。
+  private splice = new Map<RelayCircuit, RelayCircuit>();
 
   constructor(
     readonly id: string, // 本中继钱包地址 0x..（= ntor relayId）
@@ -149,6 +186,27 @@ export class RelayNode {
     this.table.remove(circ);
     this.streams.get(circ)?.destroy();
     this.streams.delete(circ);
+    this.hsReasm.delete(circ); // 清理在途 HS 请求重组态（描述符存储 hsdescs 不动——跨电路存活）
+    // 引入点/会合点登记摘除。
+    const ak = this.introByCirc.get(circ);
+    if (ak !== undefined) {
+      if (this.introTable.get(ak) === circ) this.introTable.delete(ak);
+      this.introByCirc.delete(circ);
+    }
+    const ck = this.rdvByCirc.get(circ);
+    if (ck !== undefined) {
+      if (this.rdvTable.get(ck) === circ) this.rdvTable.delete(ck);
+      this.rdvByCirc.delete(circ);
+    }
+    // 拼接对：一端塌了，连带销毁对端电路（e2e 通道已断），并解开双向链接。
+    const peer = this.splice.get(circ);
+    if (peer) {
+      this.splice.delete(circ);
+      if (this.splice.get(peer) === circ) {
+        this.splice.delete(peer);
+        this.destroyCircuit(peer, undefined, 'splice-peer-gone');
+      }
+    }
     if (circ.nextConn && circ.nextCirc) {
       if (source !== circ.nextConn) circ.nextConn.send({ t: 'DESTROY', c: circ.nextCirc, r: reason });
       circ.nextConn.close();
@@ -222,7 +280,13 @@ export class RelayNode {
           } else if (act.cmd === CMD_END) {
             this.streams.get(circ)?.end();
             this.streams.delete(circ);
-          }
+          } else if (act.cmd === CMD_HS_PUBLISH || act.cmd === CMD_HS_FETCH) {
+            this.handleHsRequest(circ, act.cmd, act.data);
+          } else if (act.cmd === CMD_ESTABLISH_INTRO) this.handleEstablishIntro(circ, act.data);
+          else if (act.cmd === CMD_INTRODUCE1) this.handleIntroduce1(circ, act.data);
+          else if (act.cmd === CMD_ESTABLISH_RENDEZVOUS) this.handleEstablishRendezvous(circ, act.data);
+          else if (act.cmd === CMD_RENDEZVOUS1) this.handleRendezvous1(circ, act.data);
+          else if (act.cmd === CMD_RDV_DATA) this.handleRdvData(circ, act.data);
           return;
         }
         // 后向：来自下一跳，加本跳一层送回 prev
@@ -327,6 +391,149 @@ export class RelayNode {
       else this.sendBackward(circ, CMD_CONNECTED, Uint8Array.of(1)); // 连接失败
       this.streams.delete(circ);
     });
+  }
+
+  // ---- HSDir：描述符 DHT 的发布/取回（本跳=终点时处理）----
+
+  // 删除所有已过期描述符（插入前调用，顺带回收内存）。
+  private pruneHsdescs(): void {
+    const now = Date.now();
+    for (const [id, e] of this.hsdescs) if (e.exp <= now) this.hsdescs.delete(id);
+  }
+
+  // 把一个面向本跳的 HS 请求 cell 喂进分帧重组器；攒齐整条请求后分派 publish/fetch。
+  private handleHsRequest(circ: RelayCircuit, cmd: number, data: Uint8Array): void {
+    let cur = this.hsReasm.get(circ);
+    // 新请求 / 命令切换 → 起新重组器（一条电路同一时刻只跟一个 HS 请求）。
+    if (!cur || cur.cmd !== cmd) {
+      cur = { cmd, reasm: new FrameReassembler(MAX_HS_REQ_BYTES) };
+      this.hsReasm.set(circ, cur);
+    }
+    if (!cur.reasm.push(data)) {
+      // 帧非法（首块缺长度前缀 / 超上限 / 净荷溢出）→ 丢弃在途态 + END 收尾，不销毁电路（保守）。
+      this.hsReasm.delete(circ);
+      this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
+      return;
+    }
+    if (!cur.reasm.complete) return; // 还没收齐，等后续 cell
+    const msg = cur.reasm.take();
+    this.hsReasm.delete(circ);
+    if (!msg) {
+      this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
+      return;
+    }
+    if (cmd === CMD_HS_PUBLISH) this.handleHsPublish(circ, msg);
+    else this.handleHsFetch(circ, msg);
+  }
+
+  // 发布：msg = descIdHex(64 ascii) ‖ descriptorJSON(utf8)。
+  // 双重校验：① 描述符盲签名自洽（verifyDescriptorPublishable，不需 A）；
+  //          ② descIdHex === descriptorId(ap,tp)（把存储键钉死到被签名的盲公钥 → 不能越键写入）。
+  // 通过 → 存（带 TTL）+ 回 RESP("OK") 再 END；失败 → 仅 END（无 OK = 失败）。
+  private handleHsPublish(circ: RelayCircuit, msg: Uint8Array): void {
+    const fail = () => this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
+    if (msg.length < 64) return fail();
+    const descIdHex = new TextDecoder().decode(msg.subarray(0, 64));
+    const json = new TextDecoder().decode(msg.subarray(64));
+    let desc: Descriptor;
+    try {
+      desc = JSON.parse(json) as Descriptor;
+    } catch {
+      return fail();
+    }
+    if (!verifyDescriptorPublishable(desc)) return fail();
+    // descId 必须等于由**被签名的** ap+tp 算出的 id（绑定存储键 ↔ 盲身份）。
+    let boundId: string;
+    try {
+      boundId = descriptorId(hexToBytes(desc.ap), desc.tp);
+    } catch {
+      return fail();
+    }
+    if (descIdHex !== boundId) return fail();
+    this.pruneHsdescs();
+    if (!this.hsdescs.has(descIdHex) && this.hsdescs.size >= MAX_HSDESCS) return fail(); // 满 + 非更新 → 拒
+    this.hsdescs.set(descIdHex, { json, exp: Date.now() + 2 * PERIOD_LEN * 1000 });
+    this.sendBackward(circ, CMD_HS_RESP, utf8ToBytes('OK'));
+    this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
+  }
+
+  // 取回：msg = descIdHex(64 ascii)。命中且未过期 → RESP(JSON 分帧) + END；未命中/过期 → 仅 END。
+  private handleHsFetch(circ: RelayCircuit, msg: Uint8Array): void {
+    const descIdHex = new TextDecoder().decode(msg.subarray(0, 64));
+    const e = this.hsdescs.get(descIdHex);
+    if (e && e.exp > Date.now()) {
+      for (const cell of encodeFramed(utf8ToBytes(e.json))) this.sendBackward(circ, CMD_HS_RESP, cell);
+    } else if (e) {
+      this.hsdescs.delete(descIdHex); // 顺手清掉过期条目
+    }
+    this.sendBackward(circ, CMD_HS_END, new Uint8Array(0));
+  }
+
+  // ---- 引入点（IP）：服务挂电路候命；客户端经此投递 INTRODUCE（本节点看不懂信封）----
+
+  // 服务在本节点登记一个引入点。data = authKey(32)。authKey 仅作“在本 IP 寻址该服务”的不透明句柄，
+  // 本节点不解读、不验证其与任何身份的关系（服务的认证来自端到端 ntor，IP 无须也无权介入）。
+  // 同一电路只能登记一次；authKey 已被别的活电路占用 → 拒（防抢占既有服务的引入槽）。
+  private handleEstablishIntro(circ: RelayCircuit, data: Uint8Array): void {
+    if (data.length !== 32) return; // 畸形 → 丢（不回应，保守）
+    if (this.introByCirc.has(circ) || this.rdvByCirc.has(circ) || this.splice.has(circ)) return; // 该电路已另有角色
+    const authKeyHex = bytesToHex(data);
+    const existing = this.introTable.get(authKeyHex);
+    if (existing && existing !== circ) return; // 句柄被占（不同电路）→ 拒，避免劫持
+    this.introTable.set(authKeyHex, circ);
+    this.introByCirc.set(circ, authKeyHex);
+    this.sendBackward(circ, CMD_INTRO_ESTABLISHED, new Uint8Array(0));
+  }
+
+  // 客户端→IP：data = authKey(32) ‖ 引入盲信封(rest)。据 authKey 找到服务的引入电路，把 rest 原样后向转给服务。
+  // 本节点对 rest 一无所知（单向 DH 信封，只有服务能解）→ 纯路由。无匹配 → 静默丢（不暴露“该服务是否在线”给探测者）。
+  private handleIntroduce1(circ: RelayCircuit, data: Uint8Array): void {
+    if (data.length < 32) return;
+    const authKeyHex = bytesToHex(data.subarray(0, 32));
+    const serviceCirc = this.introTable.get(authKeyHex);
+    if (!serviceCirc) return; // 无此引入点 → 丢
+    this.sendBackward(serviceCirc, CMD_INTRODUCE2, data.subarray(32));
+  }
+
+  // ---- 会合点（RP）：客户端占槽留 cookie；服务报到后本节点拼接两条电路，之后透传不透明 e2e 密文 ----
+
+  // 客户端在本节点登记一个会合槽。data = cookie(20)。cookie 是客户端随机生成的一次性约定，
+  // 服务稍后用同一 cookie 报到 → 本节点据此把“客户端会合电路”与“服务会合电路”配对。
+  private handleEstablishRendezvous(circ: RelayCircuit, data: Uint8Array): void {
+    if (data.length !== RDV_COOKIE_LEN) return;
+    if (this.introByCirc.has(circ) || this.rdvByCirc.has(circ) || this.splice.has(circ)) return;
+    const cookieHex = bytesToHex(data);
+    const existing = this.rdvTable.get(cookieHex);
+    if (existing && existing !== circ) return; // cookie 撞槽 → 拒
+    this.rdvTable.set(cookieHex, circ);
+    this.rdvByCirc.set(circ, cookieHex);
+    this.sendBackward(circ, CMD_RENDEZVOUS_ESTABLISHED, new Uint8Array(0));
+  }
+
+  // 服务→RP：data = cookie(20) ‖ serverEph(32)‖auth(32)(rest)。据 cookie 找到客户端的会合电路并**拼接**，
+  // 然后把 rest（服务的 ntor 应答）后向转给客户端（CMD_RENDEZVOUS2）。拼接后两电路互为对端，CMD_RDV_DATA 双向透传。
+  private handleRendezvous1(circ: RelayCircuit, data: Uint8Array): void {
+    if (data.length < RDV_COOKIE_LEN) return;
+    if (this.introByCirc.has(circ) || this.rdvByCirc.has(circ) || this.splice.has(circ)) return; // 服务的会合电路须“干净”
+    const cookieHex = bytesToHex(data.subarray(0, RDV_COOKIE_LEN));
+    const clientCirc = this.rdvTable.get(cookieHex);
+    if (!clientCirc) return; // 无此会合槽（或已被消费）→ 丢
+    if (clientCirc === circ || this.splice.has(clientCirc)) return; // 同一电路自拼 / 客户端槽已被拼 → 拒
+    // 消费 cookie：一次性，防第二个 RENDEZVOUS1 重复拼接同一客户端槽（拼接完整性）。
+    this.rdvTable.delete(cookieHex);
+    this.rdvByCirc.delete(clientCirc);
+    // 双向拼接：服务电路 ↔ 客户端电路。
+    this.splice.set(circ, clientCirc);
+    this.splice.set(clientCirc, circ);
+    // 把服务的 ntor 应答交付客户端。
+    this.sendBackward(clientCirc, CMD_RENDEZVOUS2, data.subarray(RDV_COOKIE_LEN));
+  }
+
+  // 拼接任一端→对端：透传不透明 e2e 密文。本节点解不开（密文用双方 ntor 派生的密钥封死）→ 纯转发。
+  private handleRdvData(circ: RelayCircuit, data: Uint8Array): void {
+    const peer = this.splice.get(circ);
+    if (!peer) return; // 未拼接 → 丢
+    this.sendBackward(peer, CMD_RDV_DATA, data);
   }
 
   private sendBackward(circ: RelayCircuit, cmd: number, data: Uint8Array): void {

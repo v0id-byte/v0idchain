@@ -7,3 +7,5 @@ export * from './relay/relaynode.js';
 export * from './relay/client.js';
 export * from './relay/socks.js';
 export * from './relay/identity.js';
+// 隐藏服务守护桥接（.v0id 匿名网络 Phase 2B-d：rendezvous 接进节点 + SOCKS5）
+export * from './relay/hsbridge.js';

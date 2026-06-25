@@ -31,6 +31,28 @@ export const CMD_BEGIN = 4; // 客户端→出口：开流，data = UTF8 "host:p
 export const CMD_CONNECTED = 5; // 出口→客户端：data[0]=0 已连通 / 非 0 失败（出口策略拒或连接失败）
 export const CMD_END = 6; // 任一方向：流关闭
 
+// 隐藏服务描述符 DHT（Phase 2B-b）：客户端经电路把终点跳（=某 HSDir 中继）当应答方，发布/取回描述符。
+// 描述符 > 单 cell（CELL_DATA_LEN≈485B），故 PUBLISH/FETCH/RESP 均按 hsdir.ts 的分帧逐 cell 分片。
+export const CMD_HS_PUBLISH = 7; // 客户端→HSDir：发布，data = 分帧块（首块含 4B 总长 + descIdHex(64) ‖ JSON）
+export const CMD_HS_FETCH = 8; // 客户端→HSDir：取回，data = 分帧块（descIdHex(64)，单 cell 即够）
+export const CMD_HS_RESP = 9; // HSDir→客户端：应答体（发布 = "OK"；取回 = 描述符 JSON），分帧分片
+export const CMD_HS_END = 10; // HSDir→客户端：一次应答结束（PUBLISH 失败时不带任何 RESP 直接 END = 失败）
+
+// 引入点 + 会合点（rendezvous，Phase 2B-c）：双向匿名连接的握手平面。三个角色循 Tor v3 rend-spec 的思路：
+// 服务在若干**引入点(IP)**中继上挂电路候命；客户端建一条到**会合点(RP)**中继的电路并留一个 cookie；
+// 客户端经 IP 把一个加密 INTRODUCE 投给服务（IP 看不懂，只按 authKey 转给服务的引入电路）；
+// 服务收到后另建一条到 RP 的电路、报上 cookie；RP 据 cookie **拼接(splice)**两条电路 → 双方经 RP 透传
+// 不透明的端到端密文（RP 解不开）。IP 永不知 RP / 客户端 IP；RP 永不知双方身份；双方互不知对方 IP。
+export const CMD_ESTABLISH_INTRO = 11; // 服务→IP(终点)：在此中继挂一个引入点，data = authKey(32)
+export const CMD_INTRO_ESTABLISHED = 12; // IP→服务(后向)：引入点已登记
+export const CMD_INTRODUCE1 = 13; // 客户端→IP(终点)：data = authKey(32) ‖ 给服务的引入盲信封（ephPub32 ‖ ct）
+export const CMD_INTRODUCE2 = 14; // IP→服务(后向，沿服务的引入电路)：data = 引入盲信封（IP 原样转，不含 authKey）
+export const CMD_ESTABLISH_RENDEZVOUS = 15; // 客户端→RP(终点)：在此中继占一个会合槽，data = cookie(20)
+export const CMD_RENDEZVOUS_ESTABLISHED = 16; // RP→客户端(后向)：会合槽已登记
+export const CMD_RENDEZVOUS1 = 17; // 服务→RP(终点)：data = cookie(20) ‖ serverEph(32) ‖ auth(32)（报到并交付握手应答）
+export const CMD_RENDEZVOUS2 = 18; // RP→客户端(后向，沿客户端的会合电路)：data = serverEph(32) ‖ auth(32)
+export const CMD_RDV_DATA = 19; // 拼接两端任一方向：承载端到端密文（RP 透传，解不开），data = ctr(8 大端) ‖ 密文
+
 /**
  * cell 计数器上限。nonceFromCounter 用 JS 浮点数运算，超过 2^53 会丢精度 → 相邻计数器映射到同一 nonce
  * → (key,nonce) 重用 → 流密钥重用。设 2^48 硬上限（远低于 2^53，留足余量）；中继/客户端逼近时应拆电路换路。

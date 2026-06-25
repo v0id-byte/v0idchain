@@ -18,9 +18,14 @@ import {
   CMD_BEGIN,
   CMD_CONNECTED,
   CMD_END,
+  CMD_HS_PUBLISH,
+  CMD_HS_FETCH,
+  CMD_HS_RESP,
+  CMD_HS_END,
   CELL_DATA_LEN,
 } from '@v0idchain/core';
 import { type CellMsg, decodeCell, encodeCell } from './cells.js';
+import { encodeFramed, FrameReassembler } from './hsdir.js';
 
 /** 一跳的选路信息（来自链上中继目录 parseRelays）。 */
 export interface HopSpec {
@@ -45,13 +50,58 @@ export class CircuitClient {
   private pending: ((m: CellMsg) => void) | null = null;
   private buffered: CellMsg[] = [];
   private streaming = false;
+  // HS 请求模式（描述符 DHT 发布/取回）：与 streaming 互斥，路由后向 CMD_HS_RESP/CMD_HS_END 到当前在途请求。
+  private hsing = false;
+  private hsReq: { onResp: (cell: Uint8Array) => void; onEnd: () => void } | null = null;
   private connectWaiter: ((ok: boolean) => void) | null = null;
   private dataCb: ((b: Uint8Array) => void) | null = null;
   private dataQueue: Uint8Array[] = [];
   private endCb: (() => void) | null = null;
   private ended = false;
+  // 会合模式（Phase 2B-c）：电路常开，按 cmd 把解封后的后向 cell 派发到注册的回调。与 streaming/hsing 互斥。
+  private rdvMode = false;
+  private rdvHandlers = new Map<number, (data: Uint8Array) => void>();
+  private rdvDestroyCb: (() => void) | null = null;
+  // 后向 cell 解封前的去重：客户端按 n 单调记忆，重放（同/旧 n）即丢（后向防重放为客户端侧 best-effort）。
+  private bwdMaxN = -1;
 
   private onMsg(m: CellMsg): void {
+    if (this.rdvMode) {
+      if (m.t === 'DESTROY') {
+        this.ended = true;
+        const cb = this.rdvDestroyCb;
+        this.rdvDestroyCb = null;
+        cb?.();
+        return;
+      }
+      if (m.t !== 'RELAY' || m.d !== 'b') return;
+      if (m.n <= this.bwdMaxN) return; // 后向重放/乱序 → 丢
+      const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
+      if (!inner) return; // MAC 失败 → 丢
+      this.bwdMaxN = m.n;
+      this.rdvHandlers.get(inner.cmd)?.(inner.data);
+      return;
+    }
+    if (this.hsing) {
+      // HS 请求模式：只期待后向 RELAY cell；解封后路由 CMD_HS_RESP/CMD_HS_END 到在途请求。
+      if (m.t === 'DESTROY') {
+        const r = this.hsReq;
+        this.hsReq = null;
+        r?.onEnd(); // 电路被毁 = 视作 END 收尾（无 RESP → 上层得到失败/null）
+        this.ended = true;
+        return;
+      }
+      if (m.t !== 'RELAY' || m.d !== 'b') return;
+      const inner = unwrapBackward(this.keys(), this.hops.length - 1, hexToBytes(m.b), m.n);
+      if (!inner || !this.hsReq) return; // MAC 失败/无在途请求 → 丢
+      if (inner.cmd === CMD_HS_RESP) this.hsReq.onResp(inner.data);
+      else if (inner.cmd === CMD_HS_END) {
+        const r = this.hsReq;
+        this.hsReq = null;
+        r.onEnd();
+      }
+      return;
+    }
     if (!this.streaming) {
       // 建路阶段：请求/响应（CREATED / 后向 EXTENDED）
       if (this.pending) {
@@ -184,6 +234,96 @@ export class CircuitClient {
     const t = this.hops.length - 1;
     const n = this.fwdN++;
     this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, CMD_END, new Uint8Array(0), n)) });
+  }
+
+  // ---- 隐藏服务描述符 DHT：经本电路把终点跳（=某 HSDir）当应答方，发布/取回描述符 ----
+
+  // 把一条逻辑消息分帧成多个前向 cell（CMD_HS_PUBLISH/CMD_HS_FETCH），按 fwdN 单调发出（保序）。
+  private sendHsRequest(cmd: number, msg: Uint8Array): void {
+    const t = this.hops.length - 1; // 终点跳 = HSDir
+    for (const cell of encodeFramed(msg)) {
+      const n = this.fwdN++;
+      this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, cmd, cell, n)) });
+    }
+  }
+
+  /**
+   * 发布描述符到本电路终点的 HSDir。msg = descIdHex(64 ascii) ‖ descriptorJSON。
+   * 收到 CMD_HS_RESP("OK") 再 CMD_HS_END → true；CMD_HS_END 前未见 "OK" → false（HSDir 拒收）。
+   */
+  hsPublish(descIdHex: string, descJson: string): Promise<boolean> {
+    this.hsing = true;
+    const msg = utf8ToBytes(descIdHex + descJson);
+    return new Promise<boolean>((res) => {
+      let ok = false;
+      this.hsReq = {
+        onResp: (cell) => {
+          if (new TextDecoder().decode(cell) === 'OK') ok = true;
+        },
+        onEnd: () => res(ok),
+      };
+      this.sendHsRequest(CMD_HS_PUBLISH, msg);
+    });
+  }
+
+  /**
+   * 从本电路终点的 HSDir 取回描述符。发 CMD_HS_FETCH(descIdHex)，重组 CMD_HS_RESP 分帧块至 CMD_HS_END。
+   * 命中 → 返回 JSON 字符串；END 时零 RESP 字节（未命中）→ null。
+   */
+  hsFetch(descIdHex: string): Promise<string | null> {
+    this.hsing = true;
+    const msg = utf8ToBytes(descIdHex);
+    return new Promise<string | null>((res) => {
+      const reasm = new FrameReassembler(1 << 20); // 取回侧重组上限（1MiB，宽松；描述符远小于此）
+      let gotResp = false;
+      this.hsReq = {
+        onResp: (cell) => {
+          gotResp = true;
+          reasm.push(cell);
+        },
+        onEnd: () => {
+          if (!gotResp) return res(null); // 零 RESP = 未命中
+          const out = reasm.take();
+          res(out ? new TextDecoder().decode(out) : null); // 帧残缺/非法 → null
+        },
+      };
+      this.sendHsRequest(CMD_HS_FETCH, msg);
+    });
+  }
+
+  // ---- 会合平面（Phase 2B-c）：电路常开，向终点跳发控制/数据命令，按 cmd 派发后向应答 ----
+
+  /** 进入会合模式（电路常开）。之后所有后向 cell 经 MAC 校验后按 cmd 派发到 onRdv 注册的回调。 */
+  enterRdvMode(): void {
+    this.rdvMode = true;
+  }
+  /** 注册某后向 cmd 的处理回调（如 CMD_INTRODUCE2 / CMD_RENDEZVOUS2 / CMD_RDV_DATA）。 */
+  onRdv(cmd: number, cb: (data: Uint8Array) => void): void {
+    this.rdvHandlers.set(cmd, cb);
+  }
+  /** 电路被销毁（对端/链路断）时的通知（用于会合通道收尾）。 */
+  onRdvDestroy(cb: () => void): void {
+    this.rdvDestroyCb = cb;
+    if (this.ended) cb();
+  }
+  /** 向终点跳发一个前向命令（面向终点跳，单 cell；data ≤ CELL_DATA_LEN）。会合控制/数据均经此发出。 */
+  sendToTerminus(cmd: number, data: Uint8Array): void {
+    const t = this.hops.length - 1;
+    const n = this.fwdN++;
+    this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, cmd, data, n)) });
+  }
+  /**
+   * 发一个前向命令并等待某个特定后向 cmd 的应答（建立请求/应答语义，如 ESTABLISH_*→*_ESTABLISHED）。
+   * 须先 enterRdvMode()。命中 awaitCmd → resolve(data)；超时由调用方 withTimeout 兜。
+   */
+  sendAwaitRdv(sendCmd: number, sendData: Uint8Array, awaitCmd: number): Promise<Uint8Array> {
+    return new Promise<Uint8Array>((res) => {
+      this.rdvHandlers.set(awaitCmd, (data) => {
+        this.rdvHandlers.delete(awaitCmd);
+        res(data);
+      });
+      this.sendToTerminus(sendCmd, sendData);
+    });
   }
 
   get hopCount(): number {
