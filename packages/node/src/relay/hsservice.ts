@@ -31,6 +31,8 @@ import { RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.j
 const MAX_RDV_CIRCS = 256; // 单服务并发会合电路上限（抗内存/FD 耗尽）
 const INTRO_REPLAY_TTL = 5 * 60 * 1000; // INTRODUCE 防重放窗口(ms)
 const MAX_SEEN_INTROS = 4096; // 防重放表上限（超则逐出最旧）
+const HS_PERIOD_LEN_SEC = 24 * 60 * 60;
+const REPUBLISH_SLOP_MS = 1_000;
 
 /** 业务回调：与某客户端的端到端通道就绪时调用一次（每个成功会合一个 channel）。 */
 export type RendezvousHandler = (channel: RdvChannel) => void;
@@ -61,6 +63,7 @@ export class HiddenService {
   private seenIntros = new Map<string, number>(); // 防重放：clientNtorEph hex → 首见时刻(ms)，保持插入序便于逐出最旧
   private started = false;
   private stopped = false;
+  private republishTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: HiddenServiceOptions) {
     this.seed = opts.seed;
@@ -78,28 +81,49 @@ export class HiddenService {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-    const relays = this.dir();
-    // 1. 选 numIntros 个引入点中继，各建电路、登记引入点、挂 INTRODUCE2 监听。
-    const introCandidates = shuffle(relays).slice(0, this.numIntros);
-    for (const relayId of introCandidates) {
-      const authKey = randomBytes(32); // 仅作“在此 IP 寻址本服务”的句柄（不参与端到端认证）
-      const circ = await this.build(relayId);
-      circ.enterRdvMode();
-      circ.onRdv(CMD_INTRODUCE2, (data) => this.onIntroduce2(data));
-      await circ.sendAwaitRdv(CMD_ESTABLISH_INTRO, authKey, CMD_INTRO_ESTABLISHED);
-      this.intros.push({ relayId, authKey, circ });
-    }
-    if (this.intros.length === 0) throw new Error('未能建立任何引入点');
+    this.stopped = false;
+    try {
+      const relays = this.dir();
+      // 1. 选 numIntros 个引入点中继，各建电路、登记引入点、挂 INTRODUCE2 监听。
+      const introCandidates = shuffle(relays).slice(0, this.numIntros);
+      for (const relayId of introCandidates) {
+        const authKey = randomBytes(32); // 仅作“在此 IP 寻址本服务”的句柄（不参与端到端认证）
+        const circ = await this.build(relayId);
+        circ.enterRdvMode();
+        circ.onRdv(CMD_INTRODUCE2, (data) => this.onIntroduce2(data));
+        await circ.sendAwaitRdv(CMD_ESTABLISH_INTRO, authKey, CMD_INTRO_ESTABLISHED);
+        this.intros.push({ relayId, authKey, circ });
+      }
+      if (this.intros.length === 0) throw new Error('未能建立任何引入点');
 
-    // 2. 构造描述符（引入点 = 各引入电路的 {relayId, relayOnionPub, authKey}）+ 发布到负责的 HSDir。
-    const TP = timePeriod(this.now());
+      // 2. 构造描述符（引入点 = 各引入电路的 {relayId, relayOnionPub, authKey}）+ 发布到负责的 HSDir。
+      await this.publishDescriptors();
+      this.scheduleRepublish();
+    } catch (err) {
+      this.stop();
+      this.started = false;
+      throw err;
+    }
+  }
+
+  private async publishDescriptors(): Promise<void> {
+    const currentTP = timePeriod(this.now());
+    const periods = [currentTP, currentTP + 1];
+    let publishedCurrent = false;
+    for (const TP of periods) {
+      if ((await this.publishDescriptor(TP)) > 0 && TP === currentTP) publishedCurrent = true;
+    }
+    if (!publishedCurrent) throw new Error('描述符发布失败（无 HSDir 接受）');
+  }
+
+  private async publishDescriptor(TP: number): Promise<number> {
+    const relays = this.dir();
     const introPoints: IntroPoint[] = this.intros.map((it) => ({
       relayId: it.relayId,
       relayOnionPubHex: onionPubOf(relays, it.relayId), // 见下：测试经 dirOnion 提供；缺省占位（IP 的 onion 公钥客户端无需用）
       authKeyHex: bytesToHex(it.authKey),
     }));
-    const serviceOnionPubHex = bytesToHex(this.onion.pub);
-    const desc = buildDescriptor(this.seed, TP, introPoints, serviceOnionPubHex);
+    const desc = buildDescriptor(this.seed, TP, introPoints, bytesToHex(this.onion.pub));
     const json = JSON.stringify(desc);
     const descId = descriptorId(blindPublic(this.A, TP), TP);
     const hsdirs = responsibleHsDirs(descId, relays, 3);
@@ -112,7 +136,21 @@ export class HiddenService {
         c.close();
       }
     }
-    if (publishOk === 0) throw new Error('描述符发布失败（无 HSDir 接受）');
+    return publishOk;
+  }
+
+  private scheduleRepublish(): void {
+    if (this.republishTimer) clearTimeout(this.republishTimer);
+    const nowSec = this.now();
+    const nextBoundarySec = (timePeriod(nowSec) + 1) * HS_PERIOD_LEN_SEC;
+    const delayMs = Math.max(1_000, (nextBoundarySec - nowSec) * 1000 + REPUBLISH_SLOP_MS);
+    this.republishTimer = setTimeout(() => {
+      this.publishDescriptors()
+        .catch(() => undefined)
+        .finally(() => {
+          if (!this.stopped) this.scheduleRepublish();
+        });
+    }, delayMs);
   }
 
   // 收到 INTRODUCE2（沿某引入电路后向到达）：解开信封 → ntorServer → 建到 RP 的电路 → RENDEZVOUS1 报到 → 交付 channel。
@@ -164,12 +202,15 @@ export class HiddenService {
     rpCirc.sendToTerminus(CMD_RENDEZVOUS1, rdv1);
     // 服务侧：发用 encBackward，收用 encForward（镜像客户端）。即刻把 channel 交给业务（发送会缓冲在 cell 通道里）。
     const channel = new RdvChannel(rpCirc, res.keys.encBackward, res.keys.encForward);
+    channel.onClose(() => this.rpCircs.delete(rpCirc)); // 本地 channel.close() 也释放并发配额
     this.handler(channel);
   }
 
   /** 停止：销毁所有引入电路与会合电路（描述符在 HSDir 上靠 TTL 自然过期）。 */
   stop(): void {
     this.stopped = true;
+    if (this.republishTimer) clearTimeout(this.republishTimer);
+    this.republishTimer = null;
     for (const it of this.intros) it.circ.close();
     for (const c of this.rpCircs) c.close();
     this.intros = [];
