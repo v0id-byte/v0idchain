@@ -31,12 +31,14 @@ interface GuardFile {
 export interface GuardManagerOptions {
   sampleSize?: number; // 持久守卫集大小（默认 3：1 主 + 2 备）
   lifetimeMs?: number; // 单个守卫寿命；到期剔除并重采样（默认 30 天）
+  cooldownMs?: number; // 守卫被标记不可达后的冷却时长；冷却内跳过该守卫，到点自动重试（默认 10 分钟）
   now?: () => number; // 时钟注入（测试用）
   selfId?: string; // 本节点地址：永不把自己选作守卫
 }
 
 const DEFAULT_SAMPLE_SIZE = 3;
 const DEFAULT_LIFETIME_MS = 30 * 24 * 3600 * 1000; // 30 天
+const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟：不可达守卫的冷却窗口（短到一次瞬断不长期弃用主守卫）
 
 /**
  * 持久入口守卫管理器：维护一小撮钉住的守卫（落盘 <dataDir>/guards.json，0600），
@@ -46,13 +48,18 @@ export class GuardManager {
   private readonly file: string;
   private readonly sampleSize: number;
   private readonly lifetimeMs: number;
+  private readonly cooldownMs: number;
   private readonly now: () => number;
   private readonly selfId?: string;
+  // 瞬态（内存、**不落盘**）不可达表：id → 标记时刻(ms)。冷却内 currentGuard 跳过该守卫；到点自动失效 → 主守卫被重试。
+  // 不持久化的理由：可达性是当下的网络状态，重启即应重新探测；落盘只会让一次旧瞬断在重启后仍误伤主守卫。
+  private readonly unreachable = new Map<string, number>();
 
   constructor(private readonly dataDir: string, opts: GuardManagerOptions = {}) {
     this.file = join(dataDir, 'guards.json');
     this.sampleSize = opts.sampleSize ?? DEFAULT_SAMPLE_SIZE;
     this.lifetimeMs = opts.lifetimeMs ?? DEFAULT_LIFETIME_MS;
+    this.cooldownMs = opts.cooldownMs ?? DEFAULT_COOLDOWN_MS;
     this.now = opts.now ?? Date.now;
     this.selfId = opts.selfId;
   }
@@ -61,9 +68,13 @@ export class GuardManager {
    * 返回当前应当用作第一跳的守卫地址（主守卫）：
    *   1. 读回持久集；剔除“已到寿（sampledAt+lifetimeMs<now）”或“已不在目录里（中继下线）”的守卫；有变动即落盘。
    *   2. 补足：当守卫数 < sampleSize 时，从目录里**均匀随机**挑一个“不是已有守卫、不在 exclude、不是 self”的中继钉住；落盘。
-   *   3. 返回**第一个 id ∉ exclude** 的守卫（主守卫；其余为主守卫被排除/不可达时的备份）。全被排除/无可用 → undefined。
+   *   3. 返回首个“既不在 exclude、又不在冷却（见 markUnreachable）”的守卫（按钉住顺序，主守卫在前）。
+   *      冷却中的守卫**等同 exclude 一样被跳过**（只是会随冷却到点自动恢复）；若钉住集里没有任何可用者
+   *      （全部 exclude 或全部冷却）→ 返回 undefined，交调用方按既有逻辑兜底（如随机回退 / 报“中继不足”）。
+   *   关键不变量：候选**永远只来自这一小撮持久守卫**；冷却只改变“先用哪个 / 是否暂时无可用”，绝不引入集外中继，
+   *   故匿名面不被放大——“全不可用”宁可回 undefined 让调用方随机兜底，也不返回一个已知不可达的冷却守卫去空转重试。
    * @param directory 当前链上中继目录快照（通常传 node.relays()）。
-   * @param exclude   本次不能用作入口的中继（如该电路的出口 / 已知不可达的守卫）。
+   * @param exclude   本次不能用作入口的中继（如该电路的出口）。
    */
   currentGuard(directory: RelayDescriptor[], exclude?: Set<string>): string | undefined {
     const dirIds = new Set(directory.map((d) => d.address));
@@ -87,16 +98,47 @@ export class GuardManager {
 
     if (guards.length !== before || this.changed(guards)) this.persist(guards);
 
-    // 主守卫 = 第一个不在 exclude 的守卫；其余为备份。
+    // 主守卫 = 首个既不在 exclude 又不在冷却的守卫（冷却中的守卫等同被排除）。钉住集内无可用者 → undefined（调用方兜底）。
     for (const g of guards) {
-      if (!exclude?.has(g.id)) return g.id;
+      if (!exclude?.has(g.id) && !this.inCooldown(g.id)) return g.id;
     }
     return undefined;
+  }
+
+  /**
+   * 标记某守卫当前不可达：记 id → now，使其在 cooldownMs 内被 currentGuard 跳过（自动切到钉住的备份守卫）。
+   * 瞬态、不落盘；冷却到点自动失效 → 主守卫被重新尝试（不永久弃用主守卫，保持入口集稳定/抗去匿名）。
+   * 由电路建造方在 hop0（守卫）连接失败时调用。便宜操作：顺手剪掉已过期项防表无界增长。
+   */
+  markUnreachable(id: string, now: number = this.now()): void {
+    this.unreachable.set(id, now);
+    this.pruneUnreachable(now);
+  }
+
+  // 该守卫此刻是否处于冷却内（标记后未满 cooldownMs）。过期项顺手删除（惰性剪枝）。
+  private inCooldown(id: string): boolean {
+    const at = this.unreachable.get(id);
+    if (at === undefined) return false;
+    if (this.now() - at >= this.cooldownMs) {
+      this.unreachable.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  // 删除所有已过冷却期的不可达标记（保持表小）。
+  private pruneUnreachable(now: number): void {
+    for (const [id, at] of this.unreachable) if (now - at >= this.cooldownMs) this.unreachable.delete(id);
   }
 
   /** 当前持久守卫的 id 列表（诊断/测试用；不触发剪枝/补足）。 */
   allGuards(): string[] {
     return this.load().map((g) => g.id);
+  }
+
+  /** 持久守卫集大小（= 钉住集上限）。建造方据此封顶“换守卫重试”的次数（最多把钉住集都试一遍）。 */
+  get size(): number {
+    return this.sampleSize;
   }
 
   // ---- 内部：持久化（mirror identity.ts/hsbridge.ts 的 0600 落盘纪律）----

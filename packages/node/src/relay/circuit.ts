@@ -14,6 +14,7 @@ const BWD_LOCAL_BITS = 2 ** 20; // 每跳本地后向计数空间（每电路百
 /** cell 平面的一条连接句柄（独立于共识 Conn；匿名，无 peerId）。 */
 export interface CellLink {
   readonly lid: number; // 本地连接序号（仅本机调试/去重用）
+  readonly ip?: string; // 该连接的来源 IP（ws 升级请求的 remoteAddress）：仅用于每-IP 电路配额；出站/未知连接为 undefined
   send(m: CellMsg): void;
   close(): void;
   isOpen(): boolean;

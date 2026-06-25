@@ -1,8 +1,10 @@
-// 中继 DoS 加固自测（feat/onion-entry-guards）：用极小覆盖时序验证四道控制
+// 中继 DoS 加固自测（feat/onion-entry-guards）：用极小覆盖时序验证五道控制
 //   ① 空闲清扫 + TTL：僵尸电路被回收，活跃电路不被误伤
 //   ② EXTEND 连接超时：延伸到黑洞/拒连的下一跳不会永挂，按时拆电路、客户端 extend 被拒
 //   ③ 每连接电路上限：单连接 CREATE 超过 maxPerConn → 超出者收 DESTROY 'per-conn-limit'
 //   ④ 每电路 cell 限速：极小 CELL_RATE 下狂灌 → 超额被丢/洪泛销毁；正常速率不受影响
+//   ⑤ 每来源 IP 电路上限：同一 IP 多条连接合计 CREATE 超过 maxPerIp → 超出者收 DESTROY 'per-ip-limit'；
+//      关连接回收该 IP 配额（进程内所有连接共用 127.0.0.1，正好用来压这条 IP 配额）
 // 镜像 relay-stream-test 风格（check + flush-exit + void r.close() 收尾 + 每步 withTimeout）。
 // 跑：corepack pnpm exec tsx scripts/relay-dos-test.ts
 import { randomBytes } from 'node:crypto';
@@ -233,9 +235,82 @@ async function main() {
   slowClient.close();
   await sleep(150);
 
+  // ============ ⑤ 每来源 IP 电路上限 ============
+  // 用一台**专用**中继：maxPerConn 放高(100)使其不成约束、maxPerIp 设小(6) → 每-IP 配额成为唯一约束。
+  // 开 3 条裸 ws（进程内都来自 127.0.0.1 → 同一 IP），每条各发 3 个 CREATE（每条 < maxPerConn）= 合计 9 个 > maxPerIp(6)。
+  // 期望：跨连接合计恰好 6 个 CREATED，其余 3 个收 DESTROY 'per-ip-limit'；关掉连接后该 IP 配额回收、可再次建满。
+  const MAX_PER_IP = 6;
+  const ipNode = (() => {
+    const sk = randomBytes(32);
+    return { id: publicKeyToAddress(getPublicKey(sk)), onion: generateOnionKeypair(), port: 7754, host: '127.0.0.1' };
+  })();
+  const ipDos: RelayDosOpts = { ...DOS, maxPerConn: 100, maxPerIp: MAX_PER_IP, idleMs: 60_000 }; // idle 放大，避免测试期被空闲清扫干扰
+  const ipResolve: RelayResolver = (id) => (id === ipNode.id ? { host: ipNode.host, port: ipNode.port } : undefined);
+  const ipRelay = new RelayNode(ipNode.id, ipNode.onion, ipResolve, ipNode.port, ipNode.host, true, ipDos);
+  await sleep(150);
+
+  // 开一条裸 ws 并发 n 个 CREATE；回 {ws, created(累计), ipLimited(累计)}（监听全程累计，便于后续继续发）。
+  async function openConnFiring(n: number, tag: string): Promise<{ ws: any; counts: { created: number; ipLimited: number } }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${ipNode.port}`, { maxPayload: 1 << 16 });
+    await new Promise<void>((res, rej) => {
+      ws.once('open', () => res());
+      ws.once('error', rej);
+    });
+    const counts = { created: 0, ipLimited: 0 };
+    ws.on('message', (d: any) => {
+      try {
+        const mm = JSON.parse(String(d));
+        if (mm.t === 'CREATED') counts.created++;
+        else if (mm.t === 'DESTROY' && mm.r === 'per-ip-limit') counts.ipLimited++;
+      } catch {
+        /* ignore */
+      }
+    });
+    for (let i = 0; i < n; i++) {
+      const st = ntorClientStart();
+      ws.send(JSON.stringify({ t: 'CREATE', c: `${tag}-${i}`, x: bytesToHex(st.ephPublic) }));
+    }
+    return { ws, counts };
+  }
+
+  const conns = await Promise.all([openConnFiring(3, 'ipA'), openConnFiring(3, 'ipB'), openConnFiring(3, 'ipC')]);
+  const totalFired = 9;
+  // 等所有响应（CREATED 或 per-ip-limit）回齐。
+  await withTimeout(
+    (async () => {
+      while (conns.reduce((s, c) => s + c.counts.created + c.counts.ipLimited, 0) < totalFired) await sleep(20);
+    })(),
+    4000,
+    'per-ip responses',
+  );
+  const createdTotal = conns.reduce((s, c) => s + c.counts.created, 0);
+  const ipLimitedTotal = conns.reduce((s, c) => s + c.counts.ipLimited, 0);
+  check(`⑤ 同一 IP 跨连接合计恰好 maxPerIp(${MAX_PER_IP}) 个 CREATE 成功`, createdTotal === MAX_PER_IP);
+  check('⑤ 超出 maxPerIp 的 CREATE 全部收 DESTROY per-ip-limit', ipLimitedTotal === totalFired - MAX_PER_IP);
+  check('⑤ 中继实际电路数 = maxPerIp（超额未占用电路槽）', ipRelay.circuits === MAX_PER_IP);
+
+  // 关掉全部连接 → 该 IP 配额回收（per-ip 计数归零）。
+  for (const c of conns) c.ws.close();
+  await sleep(250);
+  check('⑤ 关连接后该 IP 电路全部回收（中继电路归零）', ipRelay.circuits === 0);
+
+  // 再开一条连接 CREATE maxPerIp 个应仍全部成功（证明上一批的 per-ip 计数没残留污染）。
+  const again = await openConnFiring(MAX_PER_IP, 'ipD');
+  await withTimeout(
+    (async () => {
+      while (again.counts.created + again.counts.ipLimited < MAX_PER_IP) await sleep(20);
+    })(),
+    4000,
+    'per-ip round2',
+  );
+  check('⑤ 配额回收后可重新建满 maxPerIp（计数无残留）', again.counts.created === MAX_PER_IP && again.counts.ipLimited === 0);
+  again.ws.close();
+  await sleep(150);
+
   // ---- 收尾 ----
   blackholeSock?.destroy();
   blackhole.close();
+  void ipRelay.close();
   for (const r of relays) void r.close(); // 不 await；出站/挂起连接交给 process.exit 收尾
   // 经 pipe 块缓冲 → 显式 flush 末行再退出。
   process.stdout.write(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}\n`, () => process.exit(failures === 0 ? 0 : 1));

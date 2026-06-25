@@ -59,6 +59,57 @@ async function main() {
     rmSync(tmp, { recursive: true, force: true });
   }
 
+  // ---- 4b. 失效切换（markUnreachable）：标记主守卫不可达 → currentGuard 自动改用钉住的备份；冷却到点主守卫自动恢复 ----
+  {
+    const tmp = mkdtempSync(join(tmpdir(), 'guards-'));
+    let clock = 5_000_000;
+    const COOLDOWN = 600_000; // 10 分钟
+    const gm = new GuardManager(tmp, { lifetimeMs: 60_000_000, cooldownMs: COOLDOWN, now: () => clock });
+    const primary = gm.currentGuard(dir8)!;
+    const pinned = new Set(gm.allGuards());
+    check('失效切换：初始有主守卫且钉住集 = sampleSize(3)', primary !== undefined && pinned.size === 3);
+
+    // 标记主守卫不可达 → 应返回**钉住集内**的另一个守卫（不是随机、不是 undefined）。
+    gm.markUnreachable(primary);
+    const failover = gm.currentGuard(dir8);
+    check('标记主守卫不可达 → 返回一个备份守卫（非 undefined）', failover !== undefined);
+    check('失效切换的目标 ≠ 不可达的主守卫', failover !== primary);
+    check('失效切换只在钉住集内选（不退化随机/集外）', failover !== undefined && pinned.has(failover));
+    // 钉住集本身不因一次标记而改变（瞬态不可达不等于轮换掉守卫）。
+    check('一次失效切换不改动持久守卫集（无永久轮换）', JSON.stringify(new Set(gm.allGuards())) === JSON.stringify(pinned));
+
+    // 反复调用仍稳定切到同一个备份（确定性：首个非冷却钉住守卫）。
+    let stableBackup = true;
+    for (let i = 0; i < 10; i++) if (gm.currentGuard(dir8) !== failover) stableBackup = false;
+    check('冷却期内反复 currentGuard 稳定返回同一备份', stableBackup);
+
+    // 冷却未到（推进 < cooldownMs）→ 仍切备份，主守卫尚未恢复。
+    clock += COOLDOWN - 1;
+    check('冷却未满 → 仍用备份（主守卫未恢复）', gm.currentGuard(dir8) === failover);
+    // 冷却到点（越过 cooldownMs）→ 主守卫自动恢复，重新被选为 hop0（不永久弃用主守卫）。
+    clock += 2;
+    check('冷却到点 → 主守卫自动恢复（重新被选）', gm.currentGuard(dir8) === primary);
+
+    rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // ---- 4c. 全部钉住守卫不可达 → currentGuard 返回 undefined（由调用方兜底，如随机回退）----
+  {
+    const tmp = mkdtempSync(join(tmpdir(), 'guards-'));
+    let clock = 6_000_000;
+    const gm = new GuardManager(tmp, { lifetimeMs: 60_000_000, cooldownMs: 600_000, now: () => clock });
+    gm.currentGuard(dir8); // 钉住 sampleSize 个
+    const pinned = gm.allGuards();
+    check('全不可达前：钉住集 = sampleSize(3)', pinned.length === 3);
+    for (const id of pinned) gm.markUnreachable(id); // 把整撮钉住守卫全标记不可达
+    const none = gm.currentGuard(dir8);
+    check('全部钉住守卫不可达 → currentGuard 返回 undefined（交调用方兜底）', none === undefined);
+    // 冷却到点后又能恢复（不是死局）。
+    clock += 600_001;
+    check('冷却到点后守卫集恢复可用（返回钉住集内某守卫）', pinned.includes(gm.currentGuard(dir8) ?? ''));
+    rmSync(tmp, { recursive: true, force: true });
+  }
+
   // ---- 3. 轮换：用可控时钟，把 now 推过 lifetimeMs → 守卫被重采样（sampledAt 刷新；id 可能变）----
   {
     const tmp = mkdtempSync(join(tmpdir(), 'guards-'));

@@ -47,6 +47,7 @@ export class SocksProxy {
     readonly port: number,
     readonly host = '127.0.0.1',
     private hsDeps?: HsDeps, // 注入则 <地址>.v0id 经 rendezvous 连隐藏服务；不注入则 .v0id 返回 SOCKS 失败
+    private onGuardFail?: (guard: HopSpec) => void, // 连守卫(hop0)失败时回调 → 调用方据此把该守卫标记不可达、下次切备份
   ) {
     this.server = createServer((s) => this.handle(s).catch(() => s.destroy()));
     this.server.listen(port, host);
@@ -96,7 +97,12 @@ export class SocksProxy {
       const hops = this.pickHops();
       const c = new CircuitClient();
       try {
-        await c.connect(hops[0]);
+        try {
+          await c.connect(hops[0]);
+        } catch (e) {
+          this.onGuardFail?.(hops[0]); // 仅当连守卫(hop0)失败才回报 → 下次 pickHops 自动切钉住备份（不误伤并发新连接的钉固）
+          throw e;
+        }
         await c.extend(hops[1]);
         await c.extend(hops[2]);
         const ok = await c.beginStream(target, port);

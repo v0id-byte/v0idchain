@@ -186,11 +186,11 @@ program
       }
       if (o.socks) {
         const socksPort = Number(o.socksPort);
+        // hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则回退随机，保证 SOCKS 不因守卫缺失而完全断网。
         const pickHops = (): HopSpec[] => {
           const all = node.relays();
           if (all.length < 3) throw new Error('链上中继不足 3 个，暂无法建路');
           const hop = (d: (typeof all)[number]): HopSpec => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port });
-          // hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则回退随机，保证 SOCKS 不因守卫缺失而完全断网。
           const gid = guardManager!.currentGuard(all);
           const guard = (gid && all.find((d) => d.address === gid)) || all[Math.floor(Math.random() * all.length)];
           // middle：≠ guard 的随机中继；exit：≠ guard、≠ middle 的随机中继。
@@ -200,7 +200,9 @@ program
           const exit = exitPool[Math.floor(Math.random() * exitPool.length)];
           return [hop(guard), hop(middle), hop(exit)];
         };
-        new SocksProxy(pickHops, socksPort, '127.0.0.1', hsDeps); // hsDeps 令 .v0id 地址可经 rendezvous 连隐藏服务
+        // 仅当**连守卫(hop0)失败**时才标记其不可达 → 下次 pickHops 经 currentGuard 自动切到钉住备份；
+        // 并发新连接照常复用同一主守卫（不再有时间窗口误标，钉固在正常浏览下稳定）。
+        new SocksProxy(pickHops, socksPort, '127.0.0.1', hsDeps, (g) => guardManager!.markUnreachable(g.id));
         console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
       }
       // ---- 托管 .v0id 隐藏服务：把进来的会合连接转发到本机 host:port ----

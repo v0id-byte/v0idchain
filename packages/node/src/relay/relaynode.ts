@@ -85,6 +85,12 @@ const CELL_FLOOD_KILL = 2000;
 const CONNECT_TIMEOUT_MS = 10 * 1000; // 10 s
 /** 单条 CellLink（=单个客户端连接）可承载的电路数上限（宽松——中继间链路天然多路复用大量电路）。全局 MAX_CIRCUITS 仍是兜底。 */
 const MAX_CIRCUITS_PER_CONN = 512;
+/**
+ * 单个来源 IP（跨该 IP 的所有连接合计）可承载的电路数上限。
+ * 动机：每连接上限(512)×全局(2048) 意味着一个 IP 仅开 4 条连接就能钉死整台中继。按 IP 聚合配额封住这条路。
+ * 生产默认须明显高于真实用量、且高到不误伤“多电路共用一个 IP”的合法重客户端 / 同机多电路（如本机自测全在 127.0.0.1）。
+ */
+const MAX_CIRCUITS_PER_IP = 256;
 
 /** 可经构造器覆盖的 DoS 加固时序/阈值（测试用极小值以求快与确定）。 */
 export interface RelayDosOpts {
@@ -97,6 +103,7 @@ export interface RelayDosOpts {
   floodKill?: number;
   connectTimeoutMs?: number;
   maxPerConn?: number;
+  maxPerIp?: number;
 }
 /** HSDir 存储的描述符条目硬上限（抗内存耗尽：插入前 prune 过期，仍满则拒新存）。 */
 const MAX_HSDESCS = 10000;
@@ -159,6 +166,7 @@ export class RelayNode {
   private splice = new Map<RelayCircuit, RelayCircuit>();
   // ---- DoS 加固状态 ----
   private perConn = new Map<CellLink, number>(); // 每客户端连接(prevConn)承载的电路计数（CREATE++ / destroy--）
+  private perIp = new Map<string, number>(); // 每来源 IP 承载的电路计数（聚合该 IP 全部连接；CREATE++ / destroy--）。无 ip 的连接不计入。
   private sweepTimer: ReturnType<typeof setInterval>; // 空闲/超龄电路清扫定时器
   private dos: Required<RelayDosOpts>; // 解析后的 DoS 时序/阈值（默认 = 上面常量）
 
@@ -182,9 +190,11 @@ export class RelayNode {
       floodKill: opts.floodKill ?? CELL_FLOOD_KILL,
       connectTimeoutMs: opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS,
       maxPerConn: opts.maxPerConn ?? MAX_CIRCUITS_PER_CONN,
+      maxPerIp: opts.maxPerIp ?? MAX_CIRCUITS_PER_IP,
     };
     this.wss = new WebSocketServer({ host, port, maxPayload: CELL_WS_MAX_PAYLOAD });
-    this.wss.on('connection', (ws) => this.wrap(ws));
+    // 取 ws 升级请求的 remoteAddress 作来源 IP，钉到 CellLink 上供每-IP 配额用（拿不到则 undefined → 该连接不计入 IP 配额）。
+    this.wss.on('connection', (ws, req) => this.wrap(ws, req?.socket?.remoteAddress));
     // 周期清扫：回收空闲 > idleMs 或寿命 > maxAgeMs 的电路。unref → 不阻止进程退出。
     this.sweepTimer = setInterval(() => this.sweep(), this.dos.sweepMs);
     this.sweepTimer.unref?.();
@@ -216,10 +226,12 @@ export class RelayNode {
   }
 
   // 把一条 ws 包成 CellLink 并挂消息分发。出站(CONNECTING)时先缓冲、open 后补发。
-  private wrap(ws: WebSocket): CellLink {
+  // ip：入站连接传 ws 升级请求的 remoteAddress（每-IP 配额用）；出站(EXTEND 拨下一跳)不传 → undefined，不计入 IP 配额。
+  private wrap(ws: WebSocket, ip?: string): CellLink {
     const outbox: CellMsg[] = [];
     const link: CellLink = {
       lid: LID++,
+      ip,
       send: (m) => {
         if (ws.readyState === WebSocket.OPEN) ws.send(encodeCell(m));
         else if (ws.readyState === WebSocket.CONNECTING) outbox.push(m);
@@ -255,6 +267,12 @@ export class RelayNode {
       const n = (this.perConn.get(circ.prevConn) ?? 1) - 1; // 该客户端连接的电路计数自减
       if (n <= 0) this.perConn.delete(circ.prevConn);
       else this.perConn.set(circ.prevConn, n);
+      const ip = circ.prevConn.ip; // 该 IP 的电路计数自减（与 CREATE 处递增对称；同一 live 守卫保证幂等不多减）
+      if (ip !== undefined) {
+        const m = (this.perIp.get(ip) ?? 1) - 1;
+        if (m <= 0) this.perIp.delete(ip);
+        else this.perIp.set(ip, m);
+      }
     }
     if (circ.extendTimer) {
       clearTimeout(circ.extendTimer); // EXTEND 连接超时计时器（若在途）随电路销毁清除
@@ -307,6 +325,12 @@ export class RelayNode {
           link.send({ t: 'DESTROY', c: m.c, r: 'per-conn-limit' });
           return;
         }
+        // 每来源 IP 电路上限（聚合该 IP 全部连接；封住“一个 IP 多开几条连接绕过每连接上限”）。
+        // 仅对带 ip 的入站连接生效；出站/未知 ip(undefined)的链路（如 EXTEND 拨下一跳）不计入、不受限。
+        if (link.ip !== undefined && (this.perIp.get(link.ip) ?? 0) >= this.dos.maxPerIp) {
+          link.send({ t: 'DESTROY', c: m.c, r: 'per-ip-limit' });
+          return;
+        }
         // 直接握手：建立“客户端↔本跳”的密钥（本跳是某客户端电路的这一跳）。
         const r = ntorServer(this.idPub, this.onion, hexToBytes(m.x));
         if (!r) {
@@ -333,6 +357,7 @@ export class RelayNode {
           return;
         }
         this.perConn.set(link, (this.perConn.get(link) ?? 0) + 1); // 记账：该连接 +1 条电路
+        if (link.ip !== undefined) this.perIp.set(link.ip, (this.perIp.get(link.ip) ?? 0) + 1); // 记账：该 IP +1 条电路
         link.send({ t: 'CREATED', c: m.c, y: bytesToHex(r.serverEph), a: bytesToHex(r.auth) });
         return;
       }
