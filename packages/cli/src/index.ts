@@ -3,7 +3,7 @@
 import { Command } from 'commander';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
-import { V0idNode, startHttpApi, RelayNode, SocksProxy, loadOrCreateOnionKey, makeHsDeps, serveHiddenService, type HopSpec } from '@v0idchain/node';
+import { V0idNode, startHttpApi, RelayNode, SocksProxy, loadOrCreateOnionKey, makeHsDeps, serveHiddenService, GuardManager, type HopSpec } from '@v0idchain/node';
 import {
   Wallet,
   loadWallet,
@@ -149,8 +149,11 @@ program
         const d = node.relays().find((r) => r.address === id);
         return d ? { host: d.host, port: d.port } : undefined;
       };
+      // 入口守卫：把所有电路的第一跳钉死在一小撮持久守卫上（抗多电路统计去匿名，见 guards.ts）。
+      // SOCKS 与 HS（makeHsDeps）共用**同一个** GuardManager → 两边电路用同一守卫，攻击面统一收窄。
+      const guardManager = o.socks || o.hsTarget ? new GuardManager(dataDir, { selfId: node.wallet.address }) : undefined;
       // 隐藏服务接线依赖（选路器 + 名录）：SOCKS 的 .v0id 出站与 --hs-target 托管共用一份（每次从链上重新快照）。
-      const hsDeps = o.socks || o.hsTarget ? makeHsDeps(() => node.relays()) : undefined;
+      const hsDeps = o.socks || o.hsTarget ? makeHsDeps(() => node.relays(), guardManager) : undefined;
       if (o.relay) {
         const relayPort = Number(o.relayPort || Number(o.p2pPort) + 10);
         const onion = loadOrCreateOnionKey(dataDir);
@@ -184,15 +187,24 @@ program
       }
       if (o.socks) {
         const socksPort = Number(o.socksPort);
+        // hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则失败/等待冷却恢复，绝不回退随机入口。
         const pickHops = (): HopSpec[] => {
           const all = node.relays();
           if (all.length < 3) throw new Error('链上中继不足 3 个，暂无法建路');
-          const pool = [...all];
-          const chosen = [] as typeof all;
-          for (let i = 0; i < 3; i++) chosen.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
-          return chosen.map((d) => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port }));
+          const hop = (d: (typeof all)[number]): HopSpec => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port });
+          const gid = guardManager!.currentGuard(all);
+          const guard = gid ? all.find((d) => d.address === gid) : undefined;
+          if (!guard) throw new Error('钉住守卫均不可用，暂无法建路');
+          // middle：≠ guard 的随机中继；exit：≠ guard、≠ middle 的随机中继。
+          const afterGuard = all.filter((d) => d.address !== guard.address);
+          const middle = afterGuard[Math.floor(Math.random() * afterGuard.length)];
+          const exitPool = afterGuard.filter((d) => d.address !== middle.address);
+          const exit = exitPool[Math.floor(Math.random() * exitPool.length)];
+          return [hop(guard), hop(middle), hop(exit)];
         };
-        new SocksProxy(pickHops, socksPort, '127.0.0.1', hsDeps); // hsDeps 令 .v0id 地址可经 rendezvous 连隐藏服务
+        // 仅当**连守卫(hop0)失败**时才标记其不可达 → 下次 pickHops 经 currentGuard 自动切到钉住备份；
+        // 并发新连接照常复用同一主守卫（不再有时间窗口误标，钉固在正常浏览下稳定）。
+        new SocksProxy(pickHops, socksPort, '127.0.0.1', hsDeps, (g) => guardManager!.markUnreachable(g.id));
         console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
       }
       // ---- 托管 .v0id 隐藏服务：把进来的会合连接转发到本机 host:port ----

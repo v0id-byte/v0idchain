@@ -22,6 +22,7 @@ import {
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
+import type { GuardManager } from './guards.js';
 
 // RdvChannel.send 是“单 cell”发送（不自动分片）：cell data ≤ CELL_DATA_LEN(485)，
 // rdvSeal 额外占 8(ctr)+16(tag)=24B，故净荷上限 ≈461B。取 400B 留足余量，与 hsclient 注释一致。
@@ -36,10 +37,12 @@ export interface HsDeps {
 /**
  * 由“链上中继目录快照”造出 hsclient/hsservice 想要的 { buildCircuit, directory }。
  * @param dir 取当前中继描述符列表（每次调用都重新快照，自然跟随链增长；通常传 node.relays）。
- * buildCircuit(exit)：从目录里随机挑两个**互不相同、且 ≠ exit**的中继做 guard/middle，连守卫 + 两次 EXTEND 到 exit。
+ * @param guardManager 可选入口守卫管理器：传入则 hop0 用持久守卫（所有电路复用同一守卫，抗统计去匿名，见 guards.ts）；
+ *                     不传则保持原行为（每条电路随机挑守卫）——既有 test/调用点不传 → 行为不变。
+ * buildCircuit(exit)：选 guard（守卫管理器 or 随机）作 hop0 + 一个**≠guard、≠exit**的随机 middle，连守卫 + 两次 EXTEND 到 exit。
  * 选不出独立 guard/middle（目录 < 3）时抛错——与 CLI pickHops “链上中继不足”同语义，调用方决定如何提示。
  */
-export function makeHsDeps(dir: () => RelayDescriptor[]): HsDeps {
+export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardManager): HsDeps {
   const hopOf = (d: RelayDescriptor): HopSpec => ({
     id: d.address,
     onionPub: hexToBytes(d.onionPubHex),
@@ -50,16 +53,47 @@ export function makeHsDeps(dir: () => RelayDescriptor[]): HsDeps {
     const all = dir();
     const exit = all.find((d) => d.address === exitRelayId);
     if (!exit) throw new Error(`目录里没有终点中继 ${exitRelayId}`);
-    // 候选 = 除终点外的中继，洗牌取前两个做 guard/middle（与 hs-rendezvous-test.buildCircuit 同形）。
-    const others = shuffle(all.filter((d) => d.address !== exitRelayId));
+    const others = all.filter((d) => d.address !== exitRelayId);
     if (others.length < 2) throw new Error('链上中继不足 3 个，暂无法建路');
-    const guard = others[0];
-    const middle = others[1];
-    const c = new CircuitClient();
-    await c.connect(hopOf(guard));
-    await c.extend(hopOf(middle));
-    await c.extend(hopOf(exit));
-    return c;
+
+    // 选一个守卫作 hop0：用守卫管理器时只允许从持久钉住集里选（exclude=exit ∪ 本次已试失败的守卫）。
+    // 若钉住守卫全在冷却/被排除/不在目录，返回 undefined 并失败；绝不退回目录随机入口。
+    const pickGuard = (failed: Set<string>): RelayDescriptor | undefined => {
+      if (!guardManager) return shuffle(others.filter((d) => !failed.has(d.address)))[0] ?? shuffle(others)[0];
+      const gid = guardManager.currentGuard(all, new Set([exitRelayId, ...failed]));
+      return gid ? all.find((d) => d.address === gid) : undefined;
+    };
+
+    // hop0（守卫）连接失败 → 标记不可达 + 换钉住的备份守卫重试。最多 sampleSize 次（把钉住集都试一遍）。
+    // 无守卫管理器时不重试（保持原“随机一次”语义）。中段/出口选择不变（仍随机）。
+    const maxGuardAttempts = guardManager ? guardManager.size : 1;
+    const failed = new Set<string>();
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxGuardAttempts; attempt++) {
+      const guard = pickGuard(failed);
+      if (!guard || failed.has(guard.address)) break; // 选不出钉住的新守卫（全失败/冷却/被排除）→ 停
+      const c = new CircuitClient();
+      try {
+        await c.connect(hopOf(guard)); // hop0：唯一可触发“守卫不可达 → 换备份”的步骤
+      } catch (e) {
+        lastErr = e;
+        guardManager?.markUnreachable(guard.address); // 冷却该守卫，下次 currentGuard 跳过它
+        failed.add(guard.address);
+        c.close();
+        continue; // 换守卫重试
+      }
+      // hop0 已通：middle = 除 guard、exit 外随机一个独立中继；再 EXTEND 到 middle、exit。
+      const middlePool = all.filter((d) => d.address !== guard.address && d.address !== exitRelayId);
+      if (middlePool.length < 1) {
+        c.close();
+        throw new Error('链上中继不足 3 个，暂无法建路');
+      }
+      const middle = middlePool[Math.floor(Math.random() * middlePool.length)];
+      await c.extend(hopOf(middle));
+      await c.extend(hopOf(exit));
+      return c;
+    }
+    throw lastErr ?? new Error('守卫均不可达，建路失败');
   };
   const directory: RelayDirectory = () => dir().map((d) => d.address);
   return { buildCircuit, directory };

@@ -100,7 +100,9 @@ const serviceOnionPubHex = '12'.repeat(32);
 {
   const A = identityPub(SEED);
   const addr = encodeV0idAddress(A);
-  const desc = buildDescriptor(SEED, TP, introPoints, serviceOnionPubHex);
+  const REV = 5;
+  const desc = buildDescriptor(SEED, TP, introPoints, serviceOnionPubHex, REV);
+  check('desc.rev == 传入的 rev', desc.rev === REV);
   const parsed = parseDescriptor(addr, desc);
   check('parseDescriptor 非 null', parsed !== null);
   check(
@@ -108,6 +110,25 @@ const serviceOnionPubHex = '12'.repeat(32);
     parsed !== null && JSON.stringify(parsed.introPoints) === JSON.stringify(introPoints),
   );
   check('parse 往返 serviceOnionPubHex 精确一致', parsed !== null && parsed.serviceOnionPubHex === serviceOnionPubHex);
+  check('parse 暴露被签名的 rev', parsed !== null && parsed.rev === REV);
+}
+
+// ---- 5b. rev 被签名覆盖：篡改 JSON 里的 rev → 签名失效 → parse/publishable 双双拒（防同周期回滚的根）----
+{
+  const A = identityPub(SEED);
+  const addr = encodeV0idAddress(A);
+  const desc = buildDescriptor(SEED, TP, introPoints, serviceOnionPubHex, 5);
+  // 只改 rev 字段（其余字节包括签名都不动）→ 因 rev 进 signBytes，验签必败。
+  const tamperedRev = { ...desc, rev: 6 };
+  check('篡改 rev（6≠签名时的 5）→ parseDescriptor null（签名覆盖 rev）', parseDescriptor(addr, tamperedRev) === null);
+  check('篡改 rev → verifyDescriptorPublishable false（签名覆盖 rev）', verifyDescriptorPublishable(tamperedRev) === false);
+  // 把 rev 改成更小值也一样败（不是“只防变大”，是签名逐字节绑定）。
+  const desc7 = buildDescriptor(SEED, TP, introPoints, serviceOnionPubHex, 7);
+  check('篡改 rev（降到 0）→ parseDescriptor null', parseDescriptor(addr, { ...desc7, rev: 0 }) === null);
+  // 畸形 rev（负数 / 非整数）→ 直接拒（不进验签）。
+  check('rev 为负 → verifyDescriptorPublishable false', verifyDescriptorPublishable({ ...desc, rev: -1 }) === false);
+  check('rev 非整数 → verifyDescriptorPublishable false', verifyDescriptorPublishable({ ...desc, rev: 1.5 }) === false);
+  check('rev 为负 → parseDescriptor null', parseDescriptor(addr, { ...desc, rev: -1 }) === null);
 }
 
 // ---- 6. parseDescriptor 用**不同身份**的 .v0id 地址 → null ----
