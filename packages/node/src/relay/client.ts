@@ -166,7 +166,8 @@ export class CircuitClient {
 
   /** 第 1 跳（守卫）：直接拨号 + ntor 握手。 */
   async connect(guard: HopSpec): Promise<void> {
-    const ws = new WebSocket(`ws://${guard.host}:${guard.port}`, { maxPayload: 1 << 16 });
+    // 守卫端口 443 = 经 CF 隧道暴露 → wss://（按主机名走 SNI）；否则明文 ws://。
+    const ws = new WebSocket(`${guard.port === 443 ? 'wss' : 'ws'}://${guard.host}:${guard.port}`, { maxPayload: 1 << 16 });
     this.ws = ws;
     await waitOpen(ws);
     ws.on('message', (d) => {

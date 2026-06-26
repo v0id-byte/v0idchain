@@ -132,6 +132,7 @@ program
   .option('--relay', '作为 .v0id 洋葱中继运行（独立 cell 端口 + 上链发布描述符）', false)
   .option('--relay-port <port>', '洋葱中继 cell 入口端口（默认 p2p-port+10）')
   .option('--relay-advertise <host>', '中继对外 host（公网/局域网才需要；默认 127.0.0.1）')
+  .option('--relay-advertise-port <port>', '中继描述符广播端口（默认=relay-port；经 Cloudflare 隧道暴露时设 443，本地仍监听 relay-port → 拨号方走 wss://）')
   .option('--exit-allow <list>', '作出口时允许连的 host:port（逗号分隔；默认空=纯中继/守卫，不作出口）', '')
   .option('--mixnet', 'Mixnet 模式(实验)：本中继逐跳混入随机延迟，抗全局被动观察者的时序相关（默认关；客户端 cover 暂需库级 startCover）', false)
   .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网；亦支持 curl --socks5-hostname … <地址>.v0id）', false)
@@ -165,6 +166,7 @@ program
       onion: loadOrCreateOnionKey(dataDir),
       relayPort: Number(o.relayPort || Number(o.p2pPort) + 10),
       relayAdvertiseHost: o.relayAdvertise || '127.0.0.1',
+      relayAdvertisePort: o.relayAdvertisePort ? Number(o.relayAdvertisePort) : undefined,
       exitAllow,
       mixnet: o.mixnet ? {} : undefined,
     });

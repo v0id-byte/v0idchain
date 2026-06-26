@@ -525,20 +525,26 @@ export class RelayNode {
   }
 
   private dialRelay(host: string, port: number, cb: (ws: WebSocket | null) => void): void {
+    // CF 隧道约定：广播端口 443 = 该中继经 Cloudflare 隧道暴露 → 用 wss:// 且**按主机名**连接
+    // （CF 边缘按 SNI/Host 路由，必须连主机名而非解析出的边缘 IP）。其余端口 = 直连明文 ws://。
+    const scheme = port === 443 ? 'wss' : 'ws';
+    const mk = (target: string) => new WebSocket(`${scheme}://${target}:${port}`, { maxPayload: CELL_WS_MAX_PAYLOAD });
     if (this.allowPrivateRelayTargets) {
-      cb(new WebSocket(`ws://${wsHost(host)}:${port}`, { maxPayload: CELL_WS_MAX_PAYLOAD }));
+      cb(mk(wsHost(host)));
       return;
     }
     if (isIP(host)) {
-      cb(isPublicIpAddress(host) ? new WebSocket(`ws://${wsHost(host)}:${port}`, { maxPayload: CELL_WS_MAX_PAYLOAD }) : null);
+      cb(isPublicIpAddress(host) ? mk(wsHost(host)) : null);
       return;
     }
+    // 主机名：解析并校验解析出的 IP 是公网（SSRF 守卫不变）；公网才放行。
     lookup(host, { all: false }, (err, address, family) => {
       if (err || !address || !isPublicIpAddress(address)) {
         cb(null);
         return;
       }
-      cb(new WebSocket(`ws://${family === 6 ? `[${address}]` : address}:${port}`, { maxPayload: CELL_WS_MAX_PAYLOAD }));
+      // wss（CF 隧道）必须按主机名连接以走对 SNI；明文 ws 直接连解析出的公网 IP。
+      cb(mk(scheme === 'wss' ? host : family === 6 ? `[${address}]` : address));
     });
   }
 
