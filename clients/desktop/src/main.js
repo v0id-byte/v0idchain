@@ -195,8 +195,10 @@ async function createWindow() {
   await wvSession.setProxy({ proxyRules: PROXY_RULES });
 
   win = new BrowserWindow({
-    width: 1100,
-    height: 760,
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
     backgroundColor: '#0a0a0f',
     title: 'v0id 浏览器',
     webPreferences: {
@@ -206,6 +208,7 @@ async function createWindow() {
       webviewTag: true, // 启用 <webview>
     },
   });
+  win.maximize();
 
   // 主窗口自身也走同一个代理并拒绝权限（保险：万一未来主窗口直接发请求/嵌入内容）。
   denyAllPermissions(win.webContents.session);
