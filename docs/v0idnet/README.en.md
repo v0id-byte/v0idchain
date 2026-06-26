@@ -56,7 +56,7 @@ Seed `ws://mc.void1211.com:6001` (chain + directory) + 6 relays (`mc.void1211.co
 
 - **Code**: onion protocol `packages/core/src/{onion,onioncell,hsdesc,hsrend,mixnet}.ts`; relay/client `packages/node/src/relay/*`; desktop app `clients/desktop/`.
 - **Architecture**: [ARCHITECTURE.md](ARCHITECTURE.md). **Protocol specs**: [HS-PROTOCOL.md](HS-PROTOCOL.md) (hidden services), [INCENTIVE-PROTOCOL.md](INCENTIVE-PROTOCOL.md) (incentives).
-- **Tests**: `scripts/{onion-selftest,onioncell-selftest,relay-integration,hs-*,guards-test,relay-dos-test,antireplay,staking-selftest,measurer-test}.ts`, with golden vectors locked for cross-implementation parity.
+- **Tests**: `scripts/{onion-selftest,onioncell-selftest,relay-integration,hs-*,guards-test,relay-dos-test,antireplay-test,staking-selftest,measurer-test}.ts`, with golden vectors locked for cross-implementation parity.
 
 ## Honest boundaries
 

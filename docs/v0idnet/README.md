@@ -56,7 +56,7 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --relay --relay-advertise
 
 - **代码**:洋葱协议 `packages/core/src/{onion,onioncell,hsdesc,hsrend,mixnet}.ts`;中继/客户端 `packages/node/src/relay/*`;桌面 app `clients/desktop/`。
 - **架构**:[ARCHITECTURE.md](ARCHITECTURE.md)。**协议规范**:[HS-PROTOCOL.md](HS-PROTOCOL.md)(隐藏服务 §0–20)、[INCENTIVE-PROTOCOL.md](INCENTIVE-PROTOCOL.md)(激励)。
-- **测试**:`scripts/{onion-selftest,onioncell-selftest,relay-integration,hs-*,guards-test,relay-dos-test,antireplay,staking-selftest,measurer-test}.ts`,黄金向量跨实现对齐。
+- **测试**:`scripts/{onion-selftest,onioncell-selftest,relay-integration,hs-*,guards-test,relay-dos-test,antireplay-test,staking-selftest,measurer-test}.ts`,黄金向量跨实现对齐。
 
 ## 诚实边界
 
