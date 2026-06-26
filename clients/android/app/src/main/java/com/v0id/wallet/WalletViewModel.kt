@@ -100,6 +100,11 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
     // ---- 种子失效 fallback：gossip 学到的备用地址 + 连续失败计数 ----
     private val backupPeers = mutableListOf<String>()
     private var failCount = 0
+    // gossip peer 的连续失败计数：TUN 代理下死 peer 表现为握手失败，连续 maxGossipFails 次后移除。
+    private val gossipFailCounts = mutableMapOf<String, Int>()
+    private val maxGossipFails = 3
+    // 最近一次 ws.connect() 的目标 URL（用于 onStatus(DISCONNECTED) 时判断是否 gossip peer）。
+    private var lastTargetUrl = ""
 
     private val ws = WsClient(
         onBlocks = { blocks -> viewModelScope.launch { onBlocks(blocks) } },
@@ -191,7 +196,9 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
     fun connect() {
         val w = wallet ?: return
         wantConnected = true
-        ws.connect(_ui.value.nodeUrl, w.address)
+        val url = _ui.value.nodeUrl
+        lastTargetUrl = url
+        ws.connect(url, w.address, isBootstrap = true)
     }
 
     fun disconnect() {
@@ -205,8 +212,22 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun onStatus(st: WsClient.Status) {
         _ui.update { it.copy(connection = st) }
-        if (st == WsClient.Status.CONNECTED) failCount = 0   // 连上后重置 fallback 计数
+        if (st == WsClient.Status.CONNECTED) {
+            failCount = 0   // 连上后重置 fallback 计数
+            gossipFailCounts.remove(lastTargetUrl)  // 连上了 → 该 peer 复活，重置失败计数
+        }
         if (st == WsClient.Status.DISCONNECTED && wantConnected && !ws.isUserClosed) {
+            // gossip peer 失败：更新其连续失败计数，达到上限则从备用池移除
+            val mainNode = _ui.value.nodeUrl
+            if (lastTargetUrl.isNotBlank() && lastTargetUrl != mainNode) {
+                val n = (gossipFailCounts[lastTargetUrl] ?: 0) + 1
+                gossipFailCounts[lastTargetUrl] = n
+                if (n >= maxGossipFails) {
+                    backupPeers.remove(lastTargetUrl)
+                    gossipFailCounts.remove(lastTargetUrl)
+                    viewModelScope.launch(Dispatchers.IO) { vault.knownPeers = backupPeers.joinToString(",") }
+                }
+            }
             scheduleReconnect()
         }
     }
@@ -263,8 +284,10 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 _ui.value.nodeUrl
             }
-            appendLog(if (targetUrl == _ui.value.nodeUrl) "正在重连…" else "种子不可达，尝试备用节点…")
-            ws.connect(targetUrl, w.address)
+            val isBootstrap = targetUrl == _ui.value.nodeUrl
+            appendLog(if (isBootstrap) "正在重连…" else "种子不可达，切换备用节点…")
+            lastTargetUrl = targetUrl
+            ws.connect(targetUrl, w.address, isBootstrap = isBootstrap)
         }
     }
 

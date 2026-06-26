@@ -8,7 +8,10 @@
 //
 // 裸 socket 的 connect() 直接进内核 TCP 栈，系统代理配置（SCDynamicStore）
 // 只被 CFNetwork / Network.framework 读取，管不到 socket 层 —— 因此能真正直连。
-// （TUN 模式是内核路由层，本就该透明转发到目标，不受影响。）
+// 注意 TUN 模式：TUN 在内核 IP 层路由所有流量，POSIX socket 也会经过 TUN。对可达目标是透明的；
+// 但 TUN 代理后端访问不到的目标，有些代理实现（如 Clash/mihomo HTTP 后端）会先完成 TCP 握手再
+// 返回 HTTP 502/504，而非 RST——于是 connect() 成功而握手在应用层失败。这是 TUN 代理的固有
+// 行为，NodeClient 以此区分 bootstrap 种子（失败→真错误）和 gossip peer（失败→正常 P2P 现象）。
 //
 // 仅支持 ws://（明文）。当前所有种子都是 ws://；wss:// 需 TLS，留待生产化。
 import Foundation

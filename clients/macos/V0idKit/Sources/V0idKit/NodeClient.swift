@@ -27,9 +27,14 @@ public actor NodeClient {
     private var mempool = [String: Transaction]()     // txid → 待打包交易（从节点 TX 广播 / 同步学到）
     private static let maxMempool = 5_000             // 兜底上限，防恶意节点灌爆内存
     private var known = Set<String>()                 // 已知可连地址（规范化 ws://host:port）
+    private var bootstrapSet = Set<String>()          // bootstrap 配置写死的种子地址（子集）
     private var conns = [String: Conn]()              // 当前连接（含在途）
     private var retryAfter = [String: Date]()         // 连不上的地址：此刻之前不重试
-    private var lastPeers = -1                         // 上次上报的“已建立”连接数（去重，杜绝闪烁）
+    // gossip 学来的 peer 连续失败计数：TUN 代理下死 peer 的 TCP connect 成功但 HTTP 握手失败，
+    // 与”连不上”都属正常 P2P 现象，不上报给用户；连续失败 maxGossipFails 次后从已知集删除（修剪死 peer）。
+    private var gossipFailCount = [String: Int]()
+    private static let maxGossipFails = 3
+    private var lastPeers = -1                         // 上次上报的”已建立”连接数（去重，杜绝闪烁）
     private var maintainTask: Task<Void, Never>?
 
     private let continuation: AsyncStream<NodeEvent>.Continuation
@@ -56,7 +61,12 @@ public actor NodeClient {
     public func start() {
         guard !running else { return }
         running = true
-        for b in bootstrap { if let n = Self.normalize(b) { known.insert(n) } }
+        for b in bootstrap {
+            if let n = Self.normalize(b) {
+                known.insert(n)
+                bootstrapSet.insert(n)
+            }
+        }
         // 加载上次保存的邻居——种子挂了重启也能找到已知节点（同 Bitcoin peers.dat）
         if let saved = UserDefaults.standard.stringArray(forKey: "v0id-known-peers") {
             for url in saved { if let n = Self.normalize(url) { known.insert(n) } }
@@ -168,6 +178,7 @@ public actor NodeClient {
         guard let c = conns[url] else { return }
         c.open = true
         retryAfter[url] = nil
+        gossipFailCount.removeValue(forKey: url)   // 连上了→重置失败计数（peer 复活）
         Self.rawSend(c.ws, .hello(address: myAddress, height: max(0, chain.count - 1), listen: c.listen))
         Self.rawSend(c.ws, .queryLatest)
         Self.rawSend(c.ws, .queryPeers)
@@ -182,7 +193,23 @@ public actor NodeClient {
 
     private func onClose(_ url: String, _ err: String?) {
         guard let c = conns[url] else { return }
-        if !c.open, let err { continuation.yield(.error(err)) }   // 从未连上 → 报具体原因
+        if !c.open, let err {
+            if bootstrapSet.contains(url) {
+                // bootstrap 种子连不上是真错误（配置写死的，必须可达）→ 上报给用户。
+                continuation.yield(.error(err))
+            } else {
+                // gossip 学来的 peer 连不上/握手失败属正常 P2P 现象：
+                // TUN 代理下死 peer 的 TCP connect 被代理接管→成功，随后代理返回 HTTP 502/504，
+                // 表现为"握手失败"而非"连不上"。不上报用户；连续失败 maxGossipFails 次后修剪出 known 集。
+                let n = (gossipFailCount[url] ?? 0) + 1
+                gossipFailCount[url] = n
+                if n >= Self.maxGossipFails {
+                    known.remove(url)
+                    gossipFailCount.removeValue(forKey: url)
+                    retryAfter.removeValue(forKey: url)
+                }
+            }
+        }
         disconnect(url)
     }
 
