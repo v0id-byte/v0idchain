@@ -47,10 +47,16 @@ export interface HsDeps {
  * @param dir 取当前中继描述符列表（每次调用都重新快照，自然跟随链增长；通常传 node.relays）。
  * @param guardManager 可选入口守卫管理器：传入则 hop0 用持久守卫（所有电路复用同一守卫，抗统计去匿名，见 guards.ts）；
  *                     不传则保持原行为（每条电路随机挑守卫）——既有 test/调用点不传 → 行为不变。
+ * @param opts.allowPrivateHosts 可达性探测是否放行私网/回环 host。默认 false（生产）：不探测链上目录里的私网/回环
+ *                     描述符（SSRF 守卫，见 RelayReachability）。仅本机绑回环的自测（relay/host 全 127.0.0.1）传 true。
  * buildCircuit(exit)：选 guard（守卫管理器 or 随机）作 hop0 + 一个**≠guard、≠exit**的随机 middle，连守卫 + 两次 EXTEND 到 exit。
  * 选不出独立 guard/middle（目录 < 3）时抛错——与 CLI pickHops “链上中继不足”同语义，调用方决定如何提示。
  */
-export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardManager): HsDeps {
+export function makeHsDeps(
+  dir: () => RelayDescriptor[],
+  guardManager?: GuardManager,
+  opts?: { allowPrivateHosts?: boolean },
+): HsDeps {
   const hopOf = (d: RelayDescriptor): HopSpec => ({
     id: d.address,
     onionPub: hexToBytes(d.onionPubHex),
@@ -58,7 +64,8 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
     port: d.port,
   });
   // 可达性探测缓存：把链上目录里“host 公网但端口实际连不通”的死中继也识别并缓存，选路只从已知可达集挑（暖缓存秒级建路）。
-  const reachability = new RelayReachability();
+  // allowPrivateHosts 默认 false：私网/回环 host 描述符不探测（SSRF 守卫——绝不从用户机器对内网/元数据地址发起探测）。
+  const reachability = new RelayReachability(opts?.allowPrivateHosts);
   // 后台周期预热：节点一起来就持续探测可达性，等用户托管/浏览时缓存已暖 → 选路直接命中可达集，
   // 免去冷启动“边建路边现探死中继”的数十秒。链未同步时 dir() 可能空/少，周期重探会随中继上链自然补全。
   const warm = () => reachability.refresh(dir()).catch(() => undefined);
@@ -80,12 +87,20 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
     // 若钉住守卫全在冷却/被排除/不在目录，返回 undefined 并失败；绝不退回目录随机入口。
     const pickGuard = (failed: Set<string>): RelayDescriptor | undefined => {
       if (!guardManager) return shuffle(all.filter((d) => d.address !== exitRelayId && !failed.has(d.address)))[0];
-      const gid = guardManager.currentGuard(all, new Set([exitRelayId, ...failed]));
-      return gid ? all.find((d) => d.address === gid) : undefined;
+      // 守卫的**持久化/采样**喂**全量目录** pool（不是可达性过滤后的 all）：currentGuard 会把“不在所传目录里”的
+      // 持久守卫当作已下线而永久剔除并重写 guards.json——若传 all，一次瞬时探测失败 / markBad 就会把稳定守卫永久
+      // 轮换掉，破坏入口守卫的稳定性（入口集被放大 → 削弱抗统计去匿名）。守卫“此刻是否可达”改由下面 hop0 的实际
+      // connect 判定：连不上即 markUnreachable 冷却 + 换下一个钉住守卫（既有逻辑），到点自动恢复，绝不动持久集。
+      const gid = guardManager.currentGuard(pool, new Set([exitRelayId, ...failed]));
+      return gid ? pool.find((d) => d.address === gid) : undefined;
     };
 
     const maxGuardAttempts = guardManager ? guardManager.size : all.length;
     const failed = new Set<string>();
+    // 本次建路（exit 固定）中“连得上 guard 却 EXTEND 不到 exit”的 middle：**先不判负**，因为这一步失败既可能是
+    // middle 转不动、也可能是 exit 本身死了（WS 开着但不转发）。等本次有别的 middle 把同一 exit 走通（证明 exit 好）
+    // 再回头判负这些（见下）；若整条 buildCircuit 没有任何 middle 能到 exit，共同嫌疑是 exit 而非 middle → 谁都不判负。
+    const exitExtendFailed = new Set<string>();
     let lastErr: unknown;
     for (let attempt = 0; attempt < maxGuardAttempts; attempt++) {
       const guard = pickGuard(failed);
@@ -116,10 +131,17 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
         try {
           await raceTimeout(c.extend(hopOf(exit)), HOP_TIMEOUT_MS, 'exit EXTEND 超时');
           reachability.markProvenForwarder(middle.address); // 这个 middle 实测能转发 → 列为骨干，永久免疫误判负
+          // 现已**实证此 exit 可达**：本次此前连得上 guard 却到不了同一 exit 的 middle 们 = 真转不动（已排除“exit 死”
+          // 的歧义）→ 此刻才安全判负它们（proven 骨干免疫；usableCount>3 保证判负不破下限）。
+          for (const bad of exitExtendFailed) {
+            if (reachability.usableCount(pool) > 3) reachability.markBad(bad);
+          }
           return c; // ✅ 三跳建成
         } catch (e) {
-          // middle 连得上但**转不动**到 exit（hairpin/旧版 link-closed）→ 判负此 middle（proven 骨干免疫，故只会剔除真坏的转发器）。
-          if (reachability.usableCount(pool) > 3) reachability.markBad(middle.address);
+          // middle 连得上但到不了 exit：**不立刻怪 middle**——可能是 exit 自己死了。先记下，待同一 exit 被别的 middle
+          // 走通再回头判负（见上）；整条建路都没走通则不冤枉任何 middle（避免一个坏 exit 把好 middle 逐个误剔，最终把
+          // 可达集压到只剩坏 exit、令到好 exit 的建路也失败）。
+          exitExtendFailed.add(middle.address);
           lastErr = e;
           c.close();
         }

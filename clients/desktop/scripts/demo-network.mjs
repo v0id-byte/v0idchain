@@ -79,7 +79,8 @@ async function main() {
     bandwidth: 'm',
     stakeTxid: '0',
   }));
-  const deps = makeHsDeps(() => descriptors);
+  // 本机自测：中继全在 127.0.0.1 → 放行私网 host 探测（生产默认 false 会拒探私网，见 RelayReachability 的 SSRF 守卫）。
+  const deps = makeHsDeps(() => descriptors, undefined, { allowPrivateHosts: true });
 
   // ---- 托管隐藏服务：进来的会合连接 → 桥到本机 HTTP 服务 ----
   // onError 是单个落地连接出错的可观察回调（默认会被吞），这里打到日志方便排错。
