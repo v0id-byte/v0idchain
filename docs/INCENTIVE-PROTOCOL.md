@@ -56,7 +56,7 @@
 把 target 放第 1 跳、prober 自控的 **sink 作出口**（生产中继默认 deny-all 无 exitHandler，直接探 target 会被静默丢 DATA → 误判掉线）。因 EXTEND 由转发方中继用自己的目录解析下一跳，**度量者须把其 sink 作为一个上链中继发布**，使被探中继能拨到它。这是中心化度量者的固有部署前提。
 
 ### §3.3 度量证明（attestation）
-`{epoch, relayId, uptime}` 由度量者 ed25519 私钥对**规范化 payload**（uptime 定点 6 位小数、不含本地时钟）签名 → 任何人可用 `MEASURER_ADDRESS` 公钥验签。
+`{epoch, relayId, uptime, online, probes, ok}` 由度量者 ed25519 私钥对**规范化 payload**签名：字段顺序固定，`uptime` 定点 6 位小数，`ts` 本地时钟**不进签名**。任何人可用 `MEASURER_ADDRESS` 公钥验签；`online`/`uptime` 是由 `ok`/`probes` 派生出的冗余字段，审计或更严格的消费方可复算 `online === (ok > 0)` 与 `uptime === ok / probes`（在定点容差内）。
 
 ### §3.4 密钥纪律
 `MEASURER_ADDRESS` 是固定常量，**其私钥不进仓库**（同国库 `GENESIS_PREMINE_ADDRESS` 纪律）。度量者从钱包文件加载签名密钥；只有加载到的钱包 `.address === MEASURER_ADDRESS`，链才接受其 SLASH。**部署前必须 rotate 到运营者本机生成的新地址。**
@@ -65,7 +65,7 @@
 
 ### §4.1 公式
 `weight_i = uptime_i × ROLE_REWARD_MULT[role_i] × bootstrapBonus(height)`；
-`amount_i = floor(REWARD_EPOCH_POOL × weight_i / Σ weights)`。`floor` 保证 `Σ amount ≤ REWARD_EPOCH_POOL`（**绝不超发**，余数留国库）。只有「有有效质押 + 本 epoch online + uptime>0」参与。`bootstrapBonus`：前 `BOOTSTRAP_BONUS_UNTIL_HEIGHT` 为 `BOOTSTRAP_BONUS_MULT`，之后 1（它是公因子，归一化后不改相对份额，仅文档意图）。
+`amount_i = floor(REWARD_EPOCH_POOL × weight_i / Σ weights)`。`floor` 保证 `Σ amount ≤ REWARD_EPOCH_POOL`（**绝不超发**，余数留国库）。只有「有有效质押 + 本 epoch online + uptime>0」参与。`bootstrapBonus`：当 `height < BOOTSTRAP_BONUS_UNTIL_HEIGHT` 时为 `BOOTSTRAP_BONUS_MULT`，到达/超过该高度后为 1。当前固定池公式里它是所有候选人的公因子，归一化后不改变相对份额或实发总池，主要保留为未来改成非固定池/外部会计时的显式钩子。
 
 ### §4.2 发放 = 普通国库转账（不改共识 · 任何高度可用）
 `v0id reward-epoch` 吃 attestation + 链上质押算分配。**默认只打印预览表、不发任何币**；`--send`（响亮警告）才从国库（`GENESIS_PREMINE_ADDRESS`，私钥运营者持有）发 `REWARD|<epoch>` 转账。
@@ -88,7 +88,7 @@
 | `ROLE_REWARD_MULT` | guard 3 / hsdir 2 / middle 1 | 角色奖励倍率 |
 | `EPOCH_BLOCKS` | 10 | 奖励/测量 epoch 长度 |
 | `REWARD_EPOCH_POOL` | 5 | 每 epoch 奖励池（$V0ID） |
-| `BOOTSTRAP_BONUS_UNTIL_HEIGHT` / `_MULT` | 50000 / 2× | 引导期加倍窗口 |
+| `BOOTSTRAP_BONUS_UNTIL_HEIGHT` / `_MULT` | 50000 / 2× | 引导期权重钩子（固定池下归一化抵消） |
 | `SLASH_AFTER_EPOCHS` | 3 | 连续掉线罚没阈值 |
 | `SLASH_FRACTION` | 0.1 | 单次罚没比例 |
 | `MEASURER_ADDRESS` | `0x7f2d…` | 度量者地址（私钥离线） |
