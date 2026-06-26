@@ -3,9 +3,9 @@
 一个 **Kotlin + Jetpack Compose** 的 Android 原生轻客户端，连接 [v0idChain](../../README.md)（手搓教学区块链，原生代币 `$V0ID`）。
 
 > 轻客户端 = **本地生成/保管私钥 + 本地 ed25519 签名 + 连一个节点收发**。不挖矿、不需要 Node 运行时。
-> 通过 WebSocket 连节点拉全链、按 [CLIENT-PROTOCOL.md](../../docs/CLIENT-PROTOCOL.md) §4 重放算余额、广播自己的交易、接收新块。
+> 通过 WebSocket 连节点拉全链、按 [CLIENT-PROTOCOL.md](../../docs/blockchain/CLIENT-PROTOCOL.md) §4 重放算余额、广播自己的交易、接收新块。
 
-本实现严格遵循权威规范 [`docs/CLIENT-PROTOCOL.md`](../../docs/CLIENT-PROTOCOL.md)，并通过其 **§9 金标准向量**逐字节自检（见下文）。
+本实现严格遵循权威规范 [`docs/blockchain/CLIENT-PROTOCOL.md`](../../docs/blockchain/CLIENT-PROTOCOL.md)，并通过其 **§9 金标准向量**逐字节自检（见下文）。
 
 ---
 

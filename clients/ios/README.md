@@ -5,7 +5,7 @@
 - **本地保管私钥**（Keychain，`ThisDeviceOnly`），**本地用 ed25519 签名**交易；
 - 通过 **WebSocket** 连一个节点（默认公网种子 `ws://mc.void1211.com:6001`），拉全链算余额、广播自己的交易、接收新块；
 - **不挖矿、不需要 Node 运行时**；
-- 完整对齐权威规范 [`docs/CLIENT-PROTOCOL.md`](../../docs/CLIENT-PROTOCOL.md) 与参考实现 `packages/core` —— **txid 与签名逐字节/可验签兼容**。
+- 完整对齐权威规范 [`docs/blockchain/CLIENT-PROTOCOL.md`](../../docs/blockchain/CLIENT-PROTOCOL.md) 与参考实现 `packages/core` —— **txid 与签名逐字节/可验签兼容**。
 
 > 这是教学/玩具链。**没有任何真钱/支付功能**，私钥与 $V0ID 都不代表现实资产。
 

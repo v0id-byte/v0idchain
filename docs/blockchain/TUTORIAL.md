@@ -23,7 +23,7 @@
 
 ## 1. 准备环境（5 分钟）
 
-需要 **Node.js ≥ v22.13**（pnpm@9 要求此版本，低了会报错）。安装/升级方法见 [docs/RUNNING-A-NODE.md §2](docs/RUNNING-A-NODE.md#2-安装--升级-nodejs)。
+需要 **Node.js ≥ v22.13**（pnpm@9 要求此版本，低了会报错）。安装/升级方法见 [docs/RUNNING-A-NODE.md §2](RUNNING-A-NODE.md#2-安装--升级-nodejs)。
 
 ```bash
 node -v                     # 确认 ≥ v22.13
