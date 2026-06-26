@@ -33,7 +33,6 @@
         "zip"
       ],
       "category": "public.app-category.utilities",
-      "identity": "liuhaoran qin (C58WLH687Z)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
