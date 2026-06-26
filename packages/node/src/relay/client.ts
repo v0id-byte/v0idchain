@@ -195,7 +195,8 @@ export class CircuitClient {
     const n = this.fwdN++;
     this.sendCell({ t: 'RELAY', c: this.c0, d: 'f', n, b: bytesToHex(wrapForward(this.keys(), t, CMD_EXTEND, data, n)) });
     const resp = await this.nextCell();
-    if (resp.t !== 'RELAY' || resp.d !== 'b') throw new Error(`EXTEND 未回后向 cell: ${resp.t}`);
+    if (resp.t !== 'RELAY' || resp.d !== 'b')
+      throw new Error(`EXTEND 未回后向 cell: ${resp.t}${resp.t === 'DESTROY' && resp.r ? `（原因 ${resp.r}）` : ''}`);
     const inner = unwrapBackward(this.keys(), t, hexToBytes(resp.b), resp.n);
     if (!inner || inner.cmd !== CMD_EXTENDED) throw new Error('EXTEND 应答非法/MAC 失败');
     const keys = ntorClientFinish(st, idPub, hop.onionPub, inner.data.subarray(0, 32), inner.data.subarray(32, 64));

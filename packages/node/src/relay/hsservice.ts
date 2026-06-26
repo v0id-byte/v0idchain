@@ -12,6 +12,7 @@ import {
   descriptorId,
   buildDescriptor,
   responsibleHsDirs,
+  HSDIR_REPLICAS,
   type OnionKeypair,
   type IntroPoint,
   ntorServer,
@@ -30,6 +31,7 @@ import { CircuitClient } from './client.js';
 import { RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 
 const MAX_RDV_CIRCS = 256; // 单服务并发会合电路上限（抗内存/FD 耗尽）
+const INTRO_BUILD_ROUNDS = 3; // 建引入点的最多扫描轮数：冷启动可达性缓存收敛期，前几轮判负死中继后，后几轮在干净集上稳建
 const INTRO_REPLAY_TTL = 5 * 60 * 1000; // INTRODUCE 防重放窗口(ms)
 const MAX_SEEN_INTROS = 4096; // 防重放表上限（超则逐出最旧）
 const HS_PERIOD_LEN_SEC = 24 * 60 * 60;
@@ -90,16 +92,25 @@ export class HiddenService {
     this.started = true;
     this.stopped = false;
     try {
-      const relays = this.dir();
-      // 1. 选 numIntros 个引入点中继，各建电路、登记引入点、挂 INTRODUCE2 监听。
-      const introCandidates = shuffle(relays).slice(0, this.numIntros);
-      for (const relayId of introCandidates) {
-        const authKey = randomBytes(32); // 仅作“在此 IP 寻址本服务”的句柄（不参与端到端认证）
-        const circ = await this.build(relayId);
-        circ.enterRdvMode();
-        circ.onRdv(CMD_INTRODUCE2, (data) => this.onIntroduce2(data));
-        await circ.sendAwaitRdv(CMD_ESTABLISH_INTRO, authKey, CMD_INTRO_ESTABLISHED);
-        this.intros.push({ relayId, authKey, circ });
+      // 1. 选引入点中继：在所有中继里**随机顺序逐个试**，建电路 + 登记，**跳过建路失败的候选**，直到攒够 numIntros 个。
+      //    链上目录含无法注销的死中继污染（见 hsbridge）→ 必须容忍单个候选失败，否则随机撞上一个死中继整个服务就起不来。
+      //    **多轮**：冷启动时选路可达性缓存尚在收敛（每次失败的 build 会判负坏转发器），单轮可能在收敛完成前就把好中继试废 →
+      //    再扫几轮，靠前几轮把死中继判负后，后几轮在干净的可达集上稳稳建成。健康网络下第一轮即满 numIntros，多余轮自然跳过。
+      for (let round = 0; round < INTRO_BUILD_ROUNDS && this.intros.length < this.numIntros; round++) {
+        for (const relayId of shuffle(this.dir())) {
+          if (this.intros.length >= this.numIntros) break;
+          if (this.intros.some((it) => it.relayId === relayId)) continue; // 已在此中继建过引入点 → 不重复
+          try {
+            const authKey = randomBytes(32); // 仅作“在此 IP 寻址本服务”的句柄（不参与端到端认证）
+            const circ = await this.build(relayId);
+            circ.enterRdvMode();
+            circ.onRdv(CMD_INTRODUCE2, (data) => this.onIntroduce2(data));
+            await circ.sendAwaitRdv(CMD_ESTABLISH_INTRO, authKey, CMD_INTRO_ESTABLISHED);
+            this.intros.push({ relayId, authKey, circ });
+          } catch {
+            // 这个候选中继建不了引入电路（死中继/被防火墙挡/瞬断）→ 跳过试下一个
+          }
+        }
       }
       if (this.intros.length === 0) throw new Error('未能建立任何引入点');
 
@@ -134,14 +145,18 @@ export class HiddenService {
     const desc = buildDescriptor(this.seed, TP, introPoints, bytesToHex(this.onion.pub), this.nextRev());
     const json = JSON.stringify(desc);
     const descId = descriptorId(blindPublic(this.A, TP), TP);
-    const hsdirs = responsibleHsDirs(descId, relays, 3);
+    const hsdirs = responsibleHsDirs(descId, relays, HSDIR_REPLICAS);
     let publishOk = 0;
     for (const hsdirId of hsdirs) {
-      const c = await this.build(hsdirId);
       try {
-        if (await c.hsPublish(descId, json)) publishOk++;
-      } finally {
-        c.close();
+        const c = await this.build(hsdirId); // 死 HSDir 建路会抛 → 跳过靠其余 HSDir（与引入点同款容错）
+        try {
+          if (await c.hsPublish(descId, json)) publishOk++;
+        } finally {
+          c.close();
+        }
+      } catch {
+        // 这个 HSDir 建不了电路 → 跳过
       }
     }
     return publishOk;

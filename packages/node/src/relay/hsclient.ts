@@ -19,6 +19,7 @@ import {
   descriptorId,
   parseDescriptor,
   responsibleHsDirs,
+  HSDIR_REPLICAS,
   type Descriptor,
   type IntroPoint,
   introduceSeal,
@@ -125,7 +126,7 @@ export async function connectHiddenService(
   const relays = dir();
 
   // 1. 从某个负责的 HSDir 取回并解析描述符。
-  const hsdirs = responsibleHsDirs(descId, relays, 3);
+  const hsdirs = responsibleHsDirs(descId, relays, HSDIR_REPLICAS);
   let desc: Descriptor | null = null;
   let inner: ReturnType<typeof parseDescriptor> | null = null;
   // CF 隧道下建路/取回会偶发抖动：每个 HSDir 单独 try（建路失败即跳下一个，不再让一条死路把整次取描述符带崩），
@@ -163,10 +164,22 @@ export async function connectHiddenService(
   if (!desc || !inner) throw new Error('取不到描述符（服务未发布 / 地址错误）');
   const serviceOnionPub = hexToBytes(inner.serviceOnionPubHex);
 
-  // 2. 建到 RP 的电路、占会合槽（cookie），await RENDEZVOUS_ESTABLISHED；电路常开。
-  const rpRelayId = pickRp(relays, inner.introPoints);
+  // 2. 选一个**能建通**的 RP（会合点）并占会合槽：优先非引入点中继（路径多样性），逐个试直到 build 成功。
+  //    小中继集 + 链上目录污染下，非引入点中继可能全是死的 → 回退到“引入点中继亦可当 RP”（不同电路、不同角色，功能无碍）。
+  //    死中继的 build 在客户端可达性缓存暖后会**秒失败**，故逐个试代价很小。
   const cookie = randomBytes(RDV_COOKIE_LEN);
-  const rpCirc = await build(rpRelayId);
+  let rpCirc: CircuitClient | null = null;
+  let rpRelayId = '';
+  for (const cand of rpOrder(relays, inner.introPoints)) {
+    try {
+      rpCirc = await build(cand);
+      rpRelayId = cand;
+      break;
+    } catch {
+      // 此 RP 建不通（死中继）→ 试下一个
+    }
+  }
+  if (!rpCirc) throw new Error('无可用会合点（RP 均不可达）');
   const introCircs: CircuitClient[] = [];
   try {
     rpCirc.enterRdvMode();
@@ -236,11 +249,23 @@ function withTimeout<T>(promise: Promise<T>, ms: number, timeoutValue?: T): Prom
 
 // 选 RP：从目录里挑一个**不是**任何引入点、也不是已知 HSDir 角色冲突的中继（简化：避开引入点 relayId）。
 // 选不到独立中继时退而求其次取第一个（小网测试容忍）。
-function pickRp(relays: string[], introPoints: IntroPoint[]): string {
+// RP 候选**顺序**：优先非引入点中继（路径多样性 / RP≠intro），其后引入点中继兜底（小中继集下非引入点可能全是死中继）。
+// 各组内洗牌打散；调用方逐个 build 直到通。绝不只返回一个——单点选中死中继就会让整次会合失败。
+function rpOrder(relays: string[], introPoints: IntroPoint[]): string[] {
   const introIds = new Set(introPoints.map((ip) => ip.relayId));
-  const candidates = relays.filter((id) => !introIds.has(id));
-  const pool = candidates.length > 0 ? candidates : relays;
-  return pool[Math.floor(Math.random() * pool.length)];
+  const nonIntro: string[] = [];
+  const intro: string[] = [];
+  for (const id of relays) (introIds.has(id) ? intro : nonIntro).push(id);
+  return [...shuffleIds(nonIntro), ...shuffleIds(intro)];
+}
+
+function shuffleIds(arr: string[]): string[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 export type { CircuitKeys };

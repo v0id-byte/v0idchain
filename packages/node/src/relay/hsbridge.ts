@@ -22,11 +22,19 @@ import {
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
+import { RelayReachability } from './reachability.js';
 import type { GuardManager } from './guards.js';
 
 // RdvChannel.send 是“单 cell”发送（不自动分片）：cell data ≤ CELL_DATA_LEN(485)，
 // rdvSeal 额外占 8(ctr)+16(tag)=24B，故净荷上限 ≈461B。取 400B 留足余量，与 hsclient 注释一致。
 const RDV_CHUNK = 400;
+
+// 选路鲁棒性（应对链上目录里**无法注销的死中继**污染）：
+// MIDDLE_TRIES = 单个守卫下最多试几个不同 middle 后才换守卫（活中继集内必有可行路径，几次内即命中）。
+// HOP_TIMEOUT_MS = 单跳 connect/EXTEND 的客户端封顶超时：死/被防火墙挡/hairpin 的中继会让该跳黑洞挂死，
+//   超时即放弃换路（取值须 > 正常一跳 RTT 的数倍、又 < 守卫侧 10s extend-timeout，让客户端先放弃、快速换路）。
+const MIDDLE_TRIES = 4;
+const HOP_TIMEOUT_MS = 6000;
 
 /** hsclient/hsservice 所需的一对接线依赖：选路器 + 中继名录。 */
 export interface HsDeps {
@@ -49,52 +57,82 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
     host: d.host,
     port: d.port,
   });
+  // 可达性探测缓存：把链上目录里“host 公网但端口实际连不通”的死中继也识别并缓存，选路只从已知可达集挑（暖缓存秒级建路）。
+  const reachability = new RelayReachability();
+  // 后台周期预热：节点一起来就持续探测可达性，等用户托管/浏览时缓存已暖 → 选路直接命中可达集，
+  // 免去冷启动“边建路边现探死中继”的数十秒。链未同步时 dir() 可能空/少，周期重探会随中继上链自然补全。
+  const warm = () => reachability.refresh(dir()).catch(() => undefined);
+  void warm();
+  setInterval(warm, 60_000).unref?.();
   const buildCircuit: BuildCircuit = async (exitRelayId: string) => {
-    const all = dir();
+    // 链上目录会**永久**累积历史中继注册（latest-wins，无法注销）：含本机自测发布的 127.0.0.1、早下线 / 被防火墙挡的
+    // 公网中继等纯污染。随机选路一旦撞上死中继，EXTEND 即被守卫秒拆(DESTROY)或拨号黑洞挂死 → 浏览失败。两道防线：
+    // ① 主动探测 + 实测转发判负，缓存出“真能转发”的可达集（reachability：WS 探测剔连不通的，建路失败回灌剔转不动的）；
+    // ② 可达集内仍可能有 hairpin/瞬断 → 逐个试 middle、坏的靠 HOP_TIMEOUT 快速放弃换下一个，直到拼出活电路。
+    const pool = dir();
+    await reachability.refresh(pool); // 探测可达性（暖缓存即时返回，冷缓存一次并行探测 ~5s）
+    const all = reachability.knownUsable(pool);
     const exit = all.find((d) => d.address === exitRelayId);
-    if (!exit) throw new Error(`目录里没有终点中继 ${exitRelayId}`);
-    const others = all.filter((d) => d.address !== exitRelayId);
-    if (others.length < 2) throw new Error('链上中继不足 3 个，暂无法建路');
+    if (!exit) throw new Error(`终点中继 ${exitRelayId} 不可达或不在目录`);
+    if (all.length < 3) throw new Error('链上可达中继不足 3 个，暂无法建路');
 
     // 选一个守卫作 hop0：用守卫管理器时只允许从持久钉住集里选（exclude=exit ∪ 本次已试失败的守卫）。
     // 若钉住守卫全在冷却/被排除/不在目录，返回 undefined 并失败；绝不退回目录随机入口。
     const pickGuard = (failed: Set<string>): RelayDescriptor | undefined => {
-      if (!guardManager) return shuffle(others.filter((d) => !failed.has(d.address)))[0] ?? shuffle(others)[0];
+      if (!guardManager) return shuffle(all.filter((d) => d.address !== exitRelayId && !failed.has(d.address)))[0];
       const gid = guardManager.currentGuard(all, new Set([exitRelayId, ...failed]));
       return gid ? all.find((d) => d.address === gid) : undefined;
     };
 
-    // hop0（守卫）连接失败 → 标记不可达 + 换钉住的备份守卫重试。最多 sampleSize 次（把钉住集都试一遍）。
-    // 无守卫管理器时不重试（保持原“随机一次”语义）。中段/出口选择不变（仍随机）。
-    const maxGuardAttempts = guardManager ? guardManager.size : 1;
+    const maxGuardAttempts = guardManager ? guardManager.size : all.length;
     const failed = new Set<string>();
     let lastErr: unknown;
     for (let attempt = 0; attempt < maxGuardAttempts; attempt++) {
       const guard = pickGuard(failed);
-      if (!guard || failed.has(guard.address)) break; // 选不出钉住的新守卫（全失败/冷却/被排除）→ 停
-      const c = new CircuitClient();
-      try {
-        await c.connect(hopOf(guard)); // hop0：唯一可触发“守卫不可达 → 换备份”的步骤
-      } catch (e) {
-        lastErr = e;
-        guardManager?.markUnreachable(guard.address); // 冷却该守卫，下次 currentGuard 跳过它
-        failed.add(guard.address);
-        c.close();
-        continue; // 换守卫重试
+      if (!guard || failed.has(guard.address)) break; // 选不出新守卫（全失败/冷却/被排除）→ 停
+      // 中段候选：除 guard、exit 外的可达中继，洗牌后逐个试。死/防火墙/hairpin 中继靠 HOP_TIMEOUT 快速放弃换下一个。
+      const middles = shuffle(all.filter((d) => d.address !== guard.address && d.address !== exitRelayId));
+      let guardDead = false;
+      for (const middle of middles.slice(0, MIDDLE_TRIES)) {
+        const c = new CircuitClient();
+        try {
+          await raceTimeout(c.connect(hopOf(guard)), HOP_TIMEOUT_MS, 'guard 连接超时'); // hop0：唯一能判定“守卫不可达”的步骤
+        } catch (e) {
+          lastErr = e;
+          guardManager?.markUnreachable(guard.address); // 冷却该守卫，下次 currentGuard 跳过它
+          failed.add(guard.address);
+          c.close();
+          guardDead = true;
+          break; // 守卫连不上 → 换守卫（不再试别的 middle）
+        }
+        try {
+          await raceTimeout(c.extend(hopOf(middle)), HOP_TIMEOUT_MS, 'middle EXTEND 超时');
+        } catch (e) {
+          if (reachability.usableCount(pool) > 3) reachability.markBad(middle.address); // 守卫连不到此 middle → 判负避开（实时计数保证留≥3）
+          lastErr = e;
+          c.close();
+          continue;
+        }
+        try {
+          await raceTimeout(c.extend(hopOf(exit)), HOP_TIMEOUT_MS, 'exit EXTEND 超时');
+          reachability.markProvenForwarder(middle.address); // 这个 middle 实测能转发 → 列为骨干，永久免疫误判负
+          return c; // ✅ 三跳建成
+        } catch (e) {
+          // middle 连得上但**转不动**到 exit（hairpin/旧版 link-closed）→ 判负此 middle（proven 骨干免疫，故只会剔除真坏的转发器）。
+          if (reachability.usableCount(pool) > 3) reachability.markBad(middle.address);
+          lastErr = e;
+          c.close();
+        }
       }
-      // hop0 已通：middle = 除 guard、exit 外随机一个独立中继；再 EXTEND 到 middle、exit。
-      const middlePool = all.filter((d) => d.address !== guard.address && d.address !== exitRelayId);
-      if (middlePool.length < 1) {
-        c.close();
-        throw new Error('链上中继不足 3 个，暂无法建路');
-      }
-      const middle = middlePool[Math.floor(Math.random() * middlePool.length)];
-      await c.extend(hopOf(middle));
-      await c.extend(hopOf(exit));
-      return c;
+      if (!guardDead) failed.add(guard.address); // 这个守卫把 middle 都试遍仍不成 → 换守卫
     }
-    throw lastErr ?? new Error('守卫均不可达，建路失败');
+    throw lastErr ?? new Error('可达中继间均未能建成电路');
   };
+  // 名录（供 HS 客户端挑 HSDir/intro/rdv 终点）：**必须返回链的稳定函数**——直接给整个链上目录，**绝不**按可达性过滤。
+  // 关键：HSDir 的选择 responsibleHsDirs(descId, relays, 3) 是一致性哈希环，发布方(服务)与取回方(客户端)必须算出**同一组** HSDir，
+  // 才能在同几台上发布/取回到描述符。可达性是**每节点/每时刻各异**的动态量，若用它过滤 directory()，两端算出的 HSDir 集就会错位
+  // → 客户端去服务从没发布过的 HSDir 取 → 永远取不到描述符。死 HSDir 由 buildCircuit 的“exit 不可达即快速失败”+ 发布/取回循环
+  // 的逐个跳过容错兜底（两端对同一组 HSDir 各自跳过其不可达者、在可达交集上汇合）。
   const directory: RelayDirectory = () => dir().map((d) => d.address);
   return { buildCircuit, directory };
 }
@@ -151,6 +189,19 @@ export async function connectHs(addr: string, deps: HsDeps): Promise<RdvChannel>
     }
   }
   throw lastErr ?? new Error('隐藏服务连接失败');
+}
+
+/**
+ * 给一个 Promise 套封顶超时：到点抛 msg。**关键**：给原 promise 挂一个吞错的 .catch，
+ * 这样 race 已超时落定后、那条慢 promise 稍后才 reject 时不会变成 unhandledRejection（建路时换路会留下被放弃的 connect/extend）。
+ */
+function raceTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  promise.catch(() => {}); // 吞掉“已放弃的慢 promise”的迟到 reject
+  const timeout = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error(msg)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function withAttemptTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
