@@ -79,7 +79,7 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             return json(200, roles?.status() ?? {
               socks: { on: false, port: null },
               relay: { on: false, port: null, address: null, circuits: 0, published: false },
-              hs: { on: false, address: null, target: null },
+              hsList: [],
               mine: { on: false, intervalMs: null },
             });
           case '/redpackets':
@@ -214,11 +214,24 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
               intros = Number(body.intros);
               if (!Number.isInteger(intros) || intros < 1) return json(400, { error: 'intros 必须是 ≥1 的整数' });
             }
-            try { return json(200, await roles.startHs({ host, port: hport }, intros)); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+            const hsName = typeof body.name === 'string' ? body.name : '';
+            try {
+              const { id, address } = await roles.startHs({ host, port: hport }, { name: hsName, intros });
+              return json(200, { id, address });
+            } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
           }
-          case '/hs/stop':
+          case '/hs/stop': {
             if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
-            try { return json(200, await roles.stopHs()); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+            const stopId = typeof body.id === 'string' && body.id ? body.id : undefined;
+            try { await roles.stopHs(stopId); return json(200, { ok: true }); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+          }
+          case '/wallet/import': {
+            const pk = String(body.privateKey ?? '');
+            try {
+              const address = node.importWallet(pk);
+              return json(200, { address });
+            } catch (e) { return json(400, { error: e instanceof Error ? e.message : String(e) }); }
+          }
           case '/mine/start': {
             if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
             const iv = body.intervalMs === undefined ? 0 : Number(body.intervalMs);

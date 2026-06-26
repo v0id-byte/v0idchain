@@ -328,8 +328,12 @@ ipcMain.handle('v0id:api:walletInfo', async () => {
 // ---- 写（POST，主进程带 Bearer）----
 ipcMain.handle('v0id:api:relayStart', () => nodeApi('POST', '/relay/start'));
 ipcMain.handle('v0id:api:relayStop', () => nodeApi('POST', '/relay/stop'));
-ipcMain.handle('v0id:api:hsStart', (_e, { host, port } = {}) => nodeApi('POST', '/hs/start', { host, port: Number(port) }));
-ipcMain.handle('v0id:api:hsStop', () => nodeApi('POST', '/hs/stop'));
+ipcMain.handle('v0id:api:hsStart', (_e, { host, port, name } = {}) =>
+  nodeApi('POST', '/hs/start', { host, port: Number(port), name: String(name ?? '') }));
+ipcMain.handle('v0id:api:hsStop', (_e, id) =>
+  nodeApi('POST', '/hs/stop', id ? { id: String(id) } : {}));
+ipcMain.handle('v0id:api:importWallet', (_e, privateKey) =>
+  nodeApi('POST', '/wallet/import', { privateKey: String(privateKey ?? '') }));
 ipcMain.handle('v0id:api:mineStart', (_e, intervalMs) => nodeApi('POST', '/mine/start', { intervalMs: Number(intervalMs) || 0 }));
 ipcMain.handle('v0id:api:mineStop', () => nodeApi('POST', '/mine/stop'));
 ipcMain.handle('v0id:api:stake', (_e, role) => nodeApi('POST', '/stake', { role: String(role ?? '') }));

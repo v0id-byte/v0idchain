@@ -1,6 +1,6 @@
 {
   "name": "v0id-browser",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "v0id 浏览器 —— 把 v0idchain 守护进程 + .v0id 隐藏服务网络包成 GUI 的 Electron 浏览器（React 多板块外壳 + 多标签 .v0id 浏览器）",
   "main": "src/main.js",
@@ -28,6 +28,7 @@
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -49,6 +50,7 @@
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.28.1",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vite": "^6.0.7"

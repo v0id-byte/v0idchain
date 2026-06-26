@@ -39,8 +39,9 @@ contextBridge.exposeInMainWorld('v0id', {
     // ---- 写（POST，主进程带 Bearer）----
     relayStart: () => ipcRenderer.invoke('v0id:api:relayStart'),
     relayStop: () => ipcRenderer.invoke('v0id:api:relayStop'),
-    hsStart: (host, port) => ipcRenderer.invoke('v0id:api:hsStart', { host, port }),
-    hsStop: () => ipcRenderer.invoke('v0id:api:hsStop'),
+    hsStart: (host, port, name) => ipcRenderer.invoke('v0id:api:hsStart', { host, port, name }),
+    hsStop: (id) => ipcRenderer.invoke('v0id:api:hsStop', id),
+    importWallet: (privateKey) => ipcRenderer.invoke('v0id:api:importWallet', privateKey),
     mineStart: (intervalMs) => ipcRenderer.invoke('v0id:api:mineStart', intervalMs),
     mineStop: () => ipcRenderer.invoke('v0id:api:mineStop'),
     stake: (role) => ipcRenderer.invoke('v0id:api:stake', role),

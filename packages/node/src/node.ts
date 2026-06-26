@@ -41,10 +41,13 @@ import {
   relaysToJSON,
   makeStake,
   computeStakeState,
+  computeStakeMin,
   STAKE_ESCROW_ADDRESS,
   UNSTAKE_PREFIX,
+  writeWalletFile,
   type StakeRole,
 } from '@v0idchain/core';
+import { join } from 'node:path';
 import { P2P } from './p2p.js';
 
 const short = (addr: string) => (addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr);
@@ -72,7 +75,7 @@ export interface NodeOptions {
 
 export class V0idNode {
   readonly bc: Blockchain;
-  readonly wallet: Wallet;
+  wallet: Wallet;
   readonly p2p: P2P;
   private readonly opts: NodeOptions;
 
@@ -217,12 +220,25 @@ export class V0idNode {
     return relaysToJSON(parseRelays(this.bc.chain));
   }
 
+  /**
+   * 热替换本节点钱包：验证私钥 hex → 写 wallet.json → 更新内存中的 this.wallet。
+   * 调用后所有新交易（质押/转账/发布中继/…）都用新地址签名。私钥始终在节点进程内，渲染层不接触。
+   */
+  importWallet(privateKeyHex: string): string {
+    if (!/^[0-9a-f]{64}$/i.test(privateKeyHex)) throw new Error('私钥须为 64 位十六进制字符串');
+    const w = Wallet.fromPrivateKeyHex(privateKeyHex.toLowerCase());
+    writeWalletFile(join(this.opts.dataDir, 'wallet.json'), w);
+    this.wallet = w;
+    return w.address;
+  }
+
   // ---- 中继质押托管（Phase 3A-1）----
-  /** 质押：转给质押托管地址 + memo `STAKE|<role>`，锁定该角色最低押金 STAKE_MIN[role]（需 ≥ 押金+手续费 余额）。 */
+  /** 质押：转给质押托管地址 + memo `STAKE|<role>`，锁定当前难度对应最低押金（需 ≥ 押金+手续费 余额）。 */
   stake(role: StakeRole): { ok: boolean; tx?: Transaction; error?: string } {
     const r = makeStake(role);
     if (!r.ok) return { ok: false, error: r.error };
-    return this.submit(this.wallet, STAKE_ESCROW_ADDRESS, r.amount!, r.memo!, minFeeFor(r.amount!));
+    const amount = computeStakeMin(role, this.bc.tipDifficulty());
+    return this.submit(this.wallet, STAKE_ESCROW_ADDRESS, amount, r.memo!, minFeeFor(amount));
   }
 
   /** 赎回：发 UNSTAKE 交易（amount=0），过锁定期后取回本金-已罚没。stakeId = STAKE 交易 txid。 */
@@ -560,6 +576,11 @@ export class V0idNode {
       peerList: this.p2p.peerList(),
       newcomers: this.newcomers.length, // 本次会话发现的新成员数
       syncing: this.syncing, // true = 正在等连接/同步，暂未挖矿
+      stakeMin: { // 当前难度下各角色最低质押额（动态，随链难度增长）
+        guard: computeStakeMin('guard', this.bc.tipDifficulty()),
+        hsdir: computeStakeMin('hsdir', this.bc.tipDifficulty()),
+        middle: computeStakeMin('middle', this.bc.tipDifficulty()),
+      },
     };
   }
 }
