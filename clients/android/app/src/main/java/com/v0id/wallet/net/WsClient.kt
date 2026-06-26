@@ -46,8 +46,12 @@ class WsClient(
         private set
 
     @Volatile private var userClosed = false
+    // true = 正在连接 bootstrap 种子；false = fallback gossip peer。
+    // gossip peer 失败是正常 P2P 现象（TUN 代理下死 peer 握手被代理接管 → HTTP 502/504），不上报日志。
+    @Volatile private var isBootstrap = true
 
-    fun connect(url: String, address: String) {
+    fun connect(url: String, address: String, isBootstrap: Boolean = true) {
+        this.isBootstrap = isBootstrap
         userClosed = false
         myAddress = address
         connToken = UUID.randomUUID().toString().take(8)   // 本次连接唯一，避免 listen 自我对撞
@@ -138,7 +142,9 @@ class WsClient(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             setStatus(Status.DISCONNECTED)
-            if (!userClosed) onLog("连接断开：${t.message ?: "未知错误"}")
+            // gossip peer 失败属正常 P2P 现象（TUN 下死 peer 握手被代理接管 → HTTP 502/504），不上报日志；
+            // bootstrap 种子失败才是真错误（配置写死的节点，必须可达）。
+            if (!userClosed && isBootstrap) onLog("连接断开：${t.message ?: "未知错误"}")
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

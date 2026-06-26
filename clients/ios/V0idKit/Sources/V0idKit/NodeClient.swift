@@ -42,6 +42,12 @@ public final class NodeClient: ObservableObject {
     private var failCount = 0
     private var connectURL: String   // 当次实际目标（正常=nodeURL；种子挂了=备用节点）
 
+    // ---- TUN 代理下 gossip peer 握手失败修剪 ----
+    // gossip 学来的 peer 在 TUN 模式下可能因代理后端返回 HTTP 502/504 导致"握手失败"，
+    // 这属于正常 P2P 现象，不应上报给用户。连续失败 maxGossipFails 次后从备用池中移除。
+    private var gossipFailCounts = [String: Int]()
+    private static let maxGossipFails = 3
+
     public init(nodeURL: String) {
         self.nodeURL = nodeURL
         self.connectURL = nodeURL
@@ -114,6 +120,8 @@ public final class NodeClient: ObservableObject {
         conn.onOpen = { [weak self] in
             Task { @MainActor in
                 guard let self, gen == self.generation else { return }
+                // 连上了 → 重置该 peer 的失败计数（peer 复活）
+                self.gossipFailCounts.removeValue(forKey: self.connectURL)
                 // 握手：HELLO（height=0，listen 唯一——我们不被回拨）→ 要整条链 + 问邻居
                 self.send(.hello(address: self.address ?? Crypto.nullAddress, height: 0, listen: listen))
                 self.send(.queryAll)
@@ -132,9 +140,17 @@ public final class NodeClient: ObservableObject {
             Task { @MainActor in
                 guard let self, gen == self.generation else { return }
                 let wasConnected = self.status == .connected
+                let isBootstrap = self.connectURL == self.nodeURL
                 if let err { self.lastError = err }
                 if !wasConnected, let err {
-                    self.connectionError = "连接 \(self.connectURL) 失败：\(err)"
+                    if isBootstrap {
+                        // bootstrap 种子（用户配置的节点）连不上 → 真错误，持久显示
+                        self.connectionError = "连接 \(self.connectURL) 失败：\(err)"
+                    } else {
+                        // gossip peer 连不上：TUN 代理下死 peer TCP 握手被代理接管 → HTTP 502/504
+                        // 表现为"握手失败"，属正常 P2P 现象，不上报用户，连续失败后修剪备用池。
+                        self.pruneGossipPeer(self.connectURL)
+                    }
                 }
                 self.status = .disconnected
                 self.scheduleReconnect()
@@ -304,6 +320,17 @@ public final class NodeClient: ObservableObject {
             added = true
         }
         if added { UserDefaults.standard.set(backupURLs, forKey: "v0id-peer-backup") }
+    }
+
+    /// gossip peer 连续失败 maxGossipFails 次后从备用池移除并持久化（TUN 代理固有行为）。
+    private func pruneGossipPeer(_ url: String) {
+        let n = (gossipFailCounts[url] ?? 0) + 1
+        gossipFailCounts[url] = n
+        if n >= Self.maxGossipFails {
+            backupURLs.removeAll { $0 == url }
+            gossipFailCounts.removeValue(forKey: url)
+            UserDefaults.standard.set(backupURLs, forKey: "v0id-peer-backup")
+        }
     }
 
     /// host 是否为环回/私网/链路本地/ULA（gossip 学来的命中则丢弃）。对齐节点端 isPublicWsUrl
