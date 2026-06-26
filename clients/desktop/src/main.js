@@ -16,6 +16,7 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
+const { isIP } = net;
 const path = require('node:path');
 const fs = require('node:fs');
 const { DEFAULT_PEERS } = require('./seeds');
@@ -27,14 +28,14 @@ const cliEntry = path.join(repoRoot, 'packages', 'cli', 'src', 'index.ts');
 // 外部 SOCKS 模式：设了 V0ID_SOCKS_EXTERNAL=<port> 就不拉守护进程，
 // 而是把 127.0.0.1:<port> 当成「已经在跑的 SOCKS5 代理」直接用（例如 demo-network.mjs 起的 :9050）。
 // 用途：手动验证浏览器时把它指到本地 demo 网络的 SOCKS，无需起真链。不设则保持原来「自起守护」的行为。
-const SOCKS_EXTERNAL = process.env.V0ID_SOCKS_EXTERNAL ? Number(process.env.V0ID_SOCKS_EXTERNAL) : null;
+const SOCKS_EXTERNAL = process.env.V0ID_SOCKS_EXTERNAL ? parsePortEnv('V0ID_SOCKS_EXTERNAL', process.env.V0ID_SOCKS_EXTERNAL) : null;
 // SOCKS 端口：外部模式用 V0ID_SOCKS_EXTERNAL；否则用 V0ID_SOCKS_PORT（默认 9050），即守护进程要监听的端口。
-const SOCKS_PORT = SOCKS_EXTERNAL ?? Number(process.env.V0ID_SOCKS_PORT || 9050);
+const SOCKS_PORT = SOCKS_EXTERNAL ?? parsePortEnv('V0ID_SOCKS_PORT', process.env.V0ID_SOCKS_PORT || '9050');
 // 守护进程要连的种子：显式 V0ID_PEERS 优先；否则用出厂默认（seeds.js），让应用开箱即用而非本地孤岛。
 // 注意：外部 SOCKS 模式不起守护，PEERS 不参与（demo 网络自带中继）。
 const PEERS = (process.env.V0ID_PEERS || '').trim() || DEFAULT_PEERS.join(',');
 // 本地 HTTP API 端口（守护进程 CLI start 的 --api-port 默认 7001）。/info 等只读状态从这里取。
-const API_PORT = Number(process.env.V0ID_API_PORT || 7001);
+const API_PORT = parsePortEnv('V0ID_API_PORT', process.env.V0ID_API_PORT || '7001');
 // 开发时若设了 V0ID_RENDERER_DEV_URL（Vite dev server，如 http://localhost:5173），主窗口加载它（热更新）；
 // 否则加载 Vite 构建产物 src/renderer/dist/index.html（生产/打包路径）。
 const RENDERER_DEV_URL = process.env.V0ID_RENDERER_DEV_URL || '';
@@ -45,6 +46,14 @@ const RENDERER_DEV_URL = process.env.V0ID_RENDERER_DEV_URL || '';
 // 必须与此完全一致（'v0id'，无 persist 前缀），否则代理/权限加固落不到它那个 session 上。
 const PARTITION = 'v0id';
 const PROXY_RULES = `socks5://127.0.0.1:${SOCKS_PORT}`;
+
+function parsePortEnv(name, value) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name} 必须是 1–65535 的整数端口（当前：${value}）`);
+  }
+  return port;
+}
 
 // Force Chromium WebRTC traffic through the configured proxy. Without this policy,
 // arbitrary hidden-service pages could use ICE/STUN over non-proxied UDP and leak
@@ -407,15 +416,32 @@ function normalizeTarget(raw) {
 function isLoopbackOrPrivateHost(host) {
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   const h = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host; // 去掉 IPv6 方括号
-  if (h === '::1' || h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true; // IPv6 环回/链路本地/ULA
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
-  if (a === 127 || a === 0) return true; // 环回 / 本网
+  const ipv4 = normalizedIPv4(h);
+  if (ipv4) return isPrivateIPv4(ipv4);
+  if (isIP(h) !== 6) return false;
+  const lower = h.toLowerCase();
+  if (lower === '::' || lower === '::1') return true; // unspecified / loopback
+  if (lower.startsWith('fe80:')) return true; // link-local
+  const first = Number.parseInt(lower.split(':', 1)[0] || '0', 16);
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+  const mapped = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  return mapped ? isPrivateIPv4(mapped[1]) : false;
+}
+
+function normalizedIPv4(host) {
+  if (isIP(host) !== 4) return null;
+  const parts = host.split('.').map(Number);
+  return parts.every((n) => Number.isInteger(n) && n >= 0 && n <= 255) ? parts.join('.') : null;
+}
+
+function isPrivateIPv4(ip) {
+  const [a, b] = ip.split('.').map(Number);
+  if (a === 127 || a === 0) return true; // loopback / this-network
   if (a === 10) return true; // 10/8
   if (a === 192 && b === 168) return true; // 192.168/16
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
-  if (a === 169 && b === 254) return true; // 链路本地
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
   return false;
 }
 

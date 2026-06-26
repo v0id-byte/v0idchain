@@ -30,10 +30,9 @@
 - App id：`com.v0idchain.browser`；产品名：`v0id Browser`。
 - 版本源：`clients/desktop/package.json` 的 `version`（当前 `0.2.0`）。
 - Developer Team ID：`C58WLH687Z`。
-- 签名身份：`Developer ID Application: liuhaoran qin (C58WLH687Z)`
-  （electron-builder 的 `build.mac.identity` 里**不要带 `Developer ID Application:` 前缀**，写
-  `liuhaoran qin (C58WLH687Z)` 即可——electron-builder 会自动挑对应的 Developer ID 证书；
-  下文 `codesign` / `xcrun` 仍用带前缀的全名。）
+- 签名身份：`Developer ID Application: liuhaoran qin (C58WLH687Z)`。
+  `package.json` 不再硬编码个人证书名；本机打包时请用 `CSC_NAME="Developer ID Application: liuhaoran qin (C58WLH687Z)"`
+  或让 electron-builder 自动选择钥匙串里的 Developer ID 证书。下文 `codesign` / `xcrun` 仍用带前缀的全名。
 - Keychain 里的公证 profile：`v0idchain-notary`。
 - `xcrun` 用 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`。
 - GitHub 仓库：`v0id-byte/v0idchain`。
@@ -78,7 +77,7 @@ cd <repo>/clients/desktop
 pnpm install --ignore-workspace      # 独立包；首装会下 Electron 二进制（~100MB，走 GitHub CDN）
 pnpm run build                        # Vite 构建 React 渲染层 → src/renderer/dist/
 pnpm run bundle:daemon                # esbuild 打守护进程 → resources/daemon/v0id-daemon.cjs
-pnpm run dist                         # electron-builder：签名 .app + 出 .dmg/.zip（notarize:false）
+CSC_NAME="Developer ID Application: liuhaoran qin (C58WLH687Z)" pnpm run dist  # electron-builder：签名 .app + 出 .dmg/.zip（notarize:false）
 ```
 
 > `bundle:daemon` 用 `<repo>` 根的 workspace 解析 `@v0idchain/*`（它们 link 在各自包的
