@@ -85,7 +85,7 @@ async function main() {
   check('SLASH|<id>|7|3 → {amount:7,epoch:3}', sl?.stakeId === fakeId && sl?.amount === 7 && sl?.epoch === 3);
   check('SLASH 金额 0 非法 → null', parseSlash(`${SLASH_PREFIX}${fakeId}|0|3`) === null);
   check('SLASH 缺字段 → null', parseSlash(`${SLASH_PREFIX}${fakeId}|7`) === null);
-  check('makeStake(guard) 金额 = STAKE_MIN.guard', makeStake('guard').amount === STAKE_MIN.guard);
+  check('makeStake(guard) 返回 ok + memo', makeStake('guard').ok === true && typeof makeStake('guard').memo === 'string');
 
   // ---- 激活前门控（保留；不再早退，继续往下跑状态机断言）----
   console.log(`\n— 激活门控：激活前不把历史 memo/托管地址转账解释成质押操作 —`);

@@ -226,6 +226,9 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             try { await roles.stopHs(stopId); return json(200, { ok: true }); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
           }
           case '/wallet/import': {
+            if (roles?.status().relay.on) {
+              return json(409, { error: '中继运行中，请先停止中继再导入钱包（避免描述符与新钱包地址不一致）' });
+            }
             const pk = String(body.privateKey ?? '');
             try {
               const address = node.importWallet(pk);

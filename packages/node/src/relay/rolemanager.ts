@@ -209,7 +209,12 @@ export class RoleManager {
     if (this.node.relays().length < MIN_RELAYS) {
       throw new Error('链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重试）');
     }
-    const id = crypto.randomUUID();
+    // 用 host:port 派生稳定 id，确保同一目标重启后复用同一身份文件（.v0id 地址不变）。
+    const id = `${target.host.replace(/[^a-zA-Z0-9]/g, '_')}_${target.port}`;
+    if (this.hsMap.has(id)) {
+      const existing = this.hsMap.get(id)!;
+      return { id: existing.id, address: existing.address };
+    }
     const { address, stop, getConnCount } = await serveHiddenService({
       dataDir: this.dataDir,
       identityKey: id,

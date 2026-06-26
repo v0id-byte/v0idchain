@@ -223,10 +223,10 @@ program
       } else {
         // 异步启动（建引入电路 + 发布描述符需几跳往返）；成功后打印 .v0id 地址，失败（含链上中继不足）给一行提示而非崩进程。
         roleManager
-          .startHs({ host: thost, port: tport }, Number(o.hsIntros))
+          .startHs({ host: thost, port: tport }, { intros: o.hsIntros ? Number(o.hsIntros) : undefined })
           .then((st) => {
-            console.log(`  ${c.dim('隐藏  ')} ${c.green(st.hs.address ?? '?')}  ${c.dim('→ ' + thost + ':' + tport)}`);
-            console.log(`  ${c.dim('      ')} ${c.dim('别人可 curl --socks5-hostname <某节点SOCKS> ' + (st.hs.address ?? '') + ' 访问（双方互不知 IP）')}`);
+            console.log(`  ${c.dim('隐藏  ')} ${c.green(st.address ?? '?')}  ${c.dim('→ ' + thost + ':' + tport)}`);
+            console.log(`  ${c.dim('      ')} ${c.dim('别人可 curl --socks5-hostname <某节点SOCKS> ' + (st.address ?? '') + ' 访问（双方互不知 IP）')}`);
           })
           .catch((e) => console.log(`  ${c.yellow('⚠ 隐藏服务托管失败：' + (e instanceof Error ? e.message : String(e)) + '（稍后重试 / 确认中继充足）')}`));
       }
