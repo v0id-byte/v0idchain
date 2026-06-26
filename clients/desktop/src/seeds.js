@@ -11,7 +11,8 @@
 // 注：这是 CommonJS（被 main.js / preload.js 这些「纯 Electron」文件 require），
 //     不是 React 渲染层的 ESM——所以用 module.exports。
 
-// 公网种子节点（p2p ws，默认端口 6001）。与 MEMORY/部署拓扑一致：6001 = v0idchain 主链种子。
-const DEFAULT_PEERS = ['ws://mc.void1211.com:6001'];
+// 公网种子节点。线上网络的种子与中继都经 Cloudflare 命名隧道暴露成稳定的 wss://（443 TLS，CF 边缘可达、
+// 绕过家宽/GFW 的 IP 封禁）。浏览器连此种子同步链；中继从链上目录取得，经各自隧道建洋葱电路 + .v0id rendezvous。
+const DEFAULT_PEERS = ['wss://v0id-seed.void1211.com:443'];
 
 module.exports = { DEFAULT_PEERS };

@@ -68,6 +68,9 @@ export class HiddenService {
   // 引入电路保活：CF 隧道等会把空闲的长寿 WebSocket 电路掐断，引入点遂摘除本服务的登记 → 客户端 INTRODUCE 无人接。
   // 定期向每条引入电路的终点发一个 CMD_DROP 掩护 cell（终点静默丢弃，零协议改动），保持电路 + 沿途 CF 隧道常活。
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  // 描述符修订号源：必须**严格递增**（HSDir 防回滚只收 rev 更高者）。否则服务重启后换了新引入点(authKey)、却用
+  // 同一 rev 重发 → HSDir 拒收、续供旧描述符(旧 authKey) → 客户端 INTRODUCE 投不到本服务。用墙钟 ms 作底（跨重启天然更高）。
+  private lastRev = 0;
 
   constructor(opts: HiddenServiceOptions) {
     this.seed = opts.seed;
@@ -128,7 +131,7 @@ export class HiddenService {
       relayOnionPubHex: onionPubOf(relays, it.relayId), // 见下：测试经 dirOnion 提供；缺省占位（IP 的 onion 公钥客户端无需用）
       authKeyHex: bytesToHex(it.authKey),
     }));
-    const desc = buildDescriptor(this.seed, TP, introPoints, bytesToHex(this.onion.pub));
+    const desc = buildDescriptor(this.seed, TP, introPoints, bytesToHex(this.onion.pub), this.nextRev());
     const json = JSON.stringify(desc);
     const descId = descriptorId(blindPublic(this.A, TP), TP);
     const hsdirs = responsibleHsDirs(descId, relays, 3);
@@ -142,6 +145,14 @@ export class HiddenService {
       }
     }
     return publishOk;
+  }
+
+  /** 严格递增的描述符修订号：以墙钟 ms 为底（跨重启天然更高 → 重启后换了新 authKey 的描述符必被 HSDir 接受、替换旧的），
+   *  同进程内多次发布也保证 +1 严格递增（同 ms 不撞）。 */
+  private nextRev(): number {
+    const r = Math.max(Date.now(), this.lastRev + 1);
+    this.lastRev = r;
+    return r;
   }
 
   private scheduleRepublish(): void {
