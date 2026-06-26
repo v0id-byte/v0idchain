@@ -353,6 +353,13 @@ function hexToBE(hex: string): bigint {
 }
 
 /**
+ * 生产用 HSDir 副本数（发布与取回**必须用同一值**才能落在同一组 HSDir 上）。链上目录会累积无法注销的死中继污染，
+ * 副本数太小时一致性哈希环可能恰好把某描述符的全部责任 HSDir 都落在死中继上 → 该地址永远发不出/取不到。取 6 个副本，
+ * 配合发布/取回各自跳过其不可达者的容错，使「至少命中一台两端都可达的 HSDir」的概率极高（不再靠地址运气）。
+ */
+export const HSDIR_REPLICAS = 6;
+
+/**
  * 负责某描述符的 HSDir 中继：按 |sha256(addr) XOR descId|（大端 bigint）升序，取前 n 个去重。确定性。
  * @param relayAddresses 候选中继的链上地址列表。
  */
