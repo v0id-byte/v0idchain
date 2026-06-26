@@ -1,6 +1,6 @@
 {
   "name": "v0id-browser",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "v0id 浏览器 —— 把 v0idchain 守护进程 + .v0id 隐藏服务网络包成 GUI 的 Electron 浏览器（React 多板块外壳 + 多标签 .v0id 浏览器）",
   "main": "src/main.js",
@@ -32,6 +32,7 @@
         "dmg",
         "zip"
       ],
+      "identity": "liuhaoran qin (C58WLH687Z)",
       "category": "public.app-category.utilities",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
