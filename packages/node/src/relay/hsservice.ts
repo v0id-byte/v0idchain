@@ -23,6 +23,7 @@ import {
   CMD_INTRO_ESTABLISHED,
   CMD_INTRODUCE2,
   CMD_RENDEZVOUS1,
+  CMD_DROP,
 } from '@v0idchain/core';
 import { randomBytes } from 'node:crypto';
 import { CircuitClient } from './client.js';
@@ -64,6 +65,9 @@ export class HiddenService {
   private started = false;
   private stopped = false;
   private republishTimer: ReturnType<typeof setTimeout> | null = null;
+  // 引入电路保活：CF 隧道等会把空闲的长寿 WebSocket 电路掐断，引入点遂摘除本服务的登记 → 客户端 INTRODUCE 无人接。
+  // 定期向每条引入电路的终点发一个 CMD_DROP 掩护 cell（终点静默丢弃，零协议改动），保持电路 + 沿途 CF 隧道常活。
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: HiddenServiceOptions) {
     this.seed = opts.seed;
@@ -99,6 +103,7 @@ export class HiddenService {
       // 2. 构造描述符（引入点 = 各引入电路的 {relayId, relayOnionPub, authKey}）+ 发布到负责的 HSDir。
       await this.publishDescriptors();
       this.scheduleRepublish();
+      this.startIntroKeepalive();
     } catch (err) {
       this.stop();
       this.started = false;
@@ -151,6 +156,23 @@ export class HiddenService {
           if (!this.stopped) this.scheduleRepublish();
         });
     }, delayMs);
+  }
+
+  /** 引入电路保活：每 25s 给每条引入电路终点发一个 CMD_DROP 掩护 cell（终点静默丢弃），保持长寿电路 + 沿途 CF 隧道常活，
+   *  防止 CF 等代理把空闲 WebSocket 掐断后引入点摘除登记、致 INTRODUCE 无人接收。 */
+  private startIntroKeepalive(): void {
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = setInterval(() => {
+      if (this.stopped) return;
+      for (const it of this.intros) {
+        try {
+          it.circ.sendToTerminus(CMD_DROP, new Uint8Array(0));
+        } catch {
+          // 单条电路发送失败不影响其它（电路或已死，靠下次 republish 重建）。
+        }
+      }
+    }, 25_000);
+    this.keepaliveTimer.unref?.();
   }
 
   // 收到 INTRODUCE2（沿某引入电路后向到达）：解开信封 → ntorServer → 建到 RP 的电路 → RENDEZVOUS1 报到 → 交付 channel。
@@ -211,6 +233,8 @@ export class HiddenService {
     this.stopped = true;
     if (this.republishTimer) clearTimeout(this.republishTimer);
     this.republishTimer = null;
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = null;
     for (const it of this.intros) it.circ.close();
     for (const c of this.rpCircs) c.close();
     this.intros = [];
