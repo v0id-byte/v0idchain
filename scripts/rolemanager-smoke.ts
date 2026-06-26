@@ -74,8 +74,8 @@ async function main() {
   // ---- 1) GET /roles 初始全 off（无需令牌）----
   const r0 = await hit('GET', '/roles', undefined, false);
   check('GET /roles 200（无需令牌）', r0.status === 200);
-  check('初始 relay/hs/mine 全 off', r0.body.relay.on === false && r0.body.hs.on === false && r0.body.mine.on === false);
-  check('初始 status 形状含 socks/relay/hs/mine', !!r0.body.socks && !!r0.body.relay && !!r0.body.hs && !!r0.body.mine);
+  check('初始 relay/mine 全 off，hsList 为空数组', r0.body.relay.on === false && Array.isArray(r0.body.hsList) && r0.body.hsList.length === 0 && r0.body.mine.on === false);
+  check('初始 status 形状含 socks/relay/hsList/mine', !!r0.body.socks && !!r0.body.relay && Array.isArray(r0.body.hsList) && !!r0.body.mine);
 
   // ---- 2) POST 令牌门控：无令牌 → 401 ----
   const noTok = await hit('POST', '/mine/start', { intervalMs: 30 }, false);
@@ -131,7 +131,7 @@ async function main() {
   const hsRes = await hit('POST', '/hs/start', { host: '127.0.0.1', port: 8080 });
   check('POST /hs/start 中继不足 → 409', hsRes.status === 409);
   check('409 带清晰中文 error（中继不足）', typeof hsRes.body.error === 'string' && hsRes.body.error.includes('中继不足'));
-  check('hs 仍 off（未半启动）', node.relays().length < 3 && (await hit('GET', '/roles', undefined, false)).body.hs.on === false);
+  check('hsList 仍为空（未半启动）', node.relays().length < 3 && (await hit('GET', '/roles', undefined, false)).body.hsList.length === 0);
 
   // ---- 7) HS 入参校验：缺/坏 port → 400 ----
   const hsBad = await hit('POST', '/hs/start', { host: '127.0.0.1', port: 0 });
