@@ -164,6 +164,42 @@ function wsHost(host: string): string {
   return isIP(host) === 6 ? `[${host}]` : host;
 }
 
+/**
+ * 把一个中继的 (host, port) 解析成可直接连接的 ws/wss URL，并施加 SSRF 守卫。返回 null = 拒连。
+ * - 端口 443 视作经 Cloudflare 隧道暴露 → 用 wss:// 且**按主机名**连接（CF 边缘按 SNI/Host 路由，
+ *   必须连主机名而非解析出的边缘 IP）；其余端口 = 明文 ws://。
+ * - allowPrivate=false（生产默认）：私网/回环 IP 字面量、以及**解析到私网的主机名**一律回 null；
+ *   allowPrivate=true（本机绑回环自测）：原样放行。
+ * 拨号下一跳（dialRelay）与可达性探测（RelayReachability.probe）**复用此函数** → SSRF 口径只有一处，绝不漂移。
+ * 异步：主机名需 DNS 解析后才能判定，故走回调（IP 字面量/放行私网分支为同步回调）。
+ */
+export function resolveRelayWsUrl(
+  host: string,
+  port: number,
+  allowPrivate: boolean,
+  cb: (url: string | null) => void,
+): void {
+  const scheme = port === 443 ? 'wss' : 'ws';
+  const url = (target: string) => `${scheme}://${target}:${port}`;
+  if (allowPrivate) {
+    cb(url(wsHost(host)));
+    return;
+  }
+  if (isIP(host)) {
+    cb(isPublicIpAddress(host) ? url(wsHost(host)) : null);
+    return;
+  }
+  // 主机名：解析并校验解析出的 IP 是公网才放行（挡住 host 解析到内网的 SSRF）。
+  lookup(host, { all: false }, (err, address, family) => {
+    if (err || !address || !isPublicIpAddress(address)) {
+      cb(null);
+      return;
+    }
+    // wss（CF 隧道）必须按主机名连接以走对 SNI；明文 ws 直接连解析出的公网 IP。
+    cb(url(scheme === 'wss' ? host : family === 6 ? `[${address}]` : address));
+  });
+}
+
 export class RelayNode {
   private wss: WebSocketServer;
   private table = new RelayCircuitTable();
@@ -525,26 +561,9 @@ export class RelayNode {
   }
 
   private dialRelay(host: string, port: number, cb: (ws: WebSocket | null) => void): void {
-    // CF 隧道约定：广播端口 443 = 该中继经 Cloudflare 隧道暴露 → 用 wss:// 且**按主机名**连接
-    // （CF 边缘按 SNI/Host 路由，必须连主机名而非解析出的边缘 IP）。其余端口 = 直连明文 ws://。
-    const scheme = port === 443 ? 'wss' : 'ws';
-    const mk = (target: string) => new WebSocket(`${scheme}://${target}:${port}`, { maxPayload: CELL_WS_MAX_PAYLOAD });
-    if (this.allowPrivateRelayTargets) {
-      cb(mk(wsHost(host)));
-      return;
-    }
-    if (isIP(host)) {
-      cb(isPublicIpAddress(host) ? mk(wsHost(host)) : null);
-      return;
-    }
-    // 主机名：解析并校验解析出的 IP 是公网（SSRF 守卫不变）；公网才放行。
-    lookup(host, { all: false }, (err, address, family) => {
-      if (err || !address || !isPublicIpAddress(address)) {
-        cb(null);
-        return;
-      }
-      // wss（CF 隧道）必须按主机名连接以走对 SNI；明文 ws 直接连解析出的公网 IP。
-      cb(mk(scheme === 'wss' ? host : family === 6 ? `[${address}]` : address));
+    // SSRF 守卫 + CF 隧道 wss/按主机名约定统一收在 resolveRelayWsUrl（与可达性探测 RelayReachability.probe 复用同一口径）。
+    resolveRelayWsUrl(host, port, this.allowPrivateRelayTargets, (target) => {
+      cb(target ? new WebSocket(target, { maxPayload: CELL_WS_MAX_PAYLOAD }) : null);
     });
   }
 

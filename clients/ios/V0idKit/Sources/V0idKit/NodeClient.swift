@@ -141,7 +141,10 @@ public final class NodeClient: ObservableObject {
                 guard let self, gen == self.generation else { return }
                 let wasConnected = self.status == .connected
                 let isBootstrap = self.connectURL == self.nodeURL
-                if let err { self.lastError = err }
+                // 仅 bootstrap（用户配置的种子）失败才记 lastError。gossip peer 失败是正常 P2P 现象（TUN 代理下死
+                // peer 的握手被代理接管成 502/504），若记了 lastError，WalletView 的 `connectionError ?? lastError`
+                // 兜底仍会把这条瞬时 peer 错误显示到钱包网络卡片上 → 误报（#31/#32 只清了 connectionError，漏了 lastError）。
+                if let err, isBootstrap { self.lastError = err }
                 if !wasConnected, let err {
                     if isBootstrap {
                         // bootstrap 种子（用户配置的节点）连不上 → 真错误，持久显示
