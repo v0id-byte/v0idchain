@@ -27,7 +27,7 @@ Hand-written blocks / hashing / PoW mining (adaptive difficulty + Bitcoin-style 
 - Transfers · on-chain **messages** (burn-to-void) · globally-unique **nicknames** · end-to-end **encrypted DMs** · **red packets** · **marketplace**
 - Every social/game/anonymity feature is layered on via **memo conventions**, mostly without consensus changes
 
-## 🎮 On-chain game — a pixel social world
+## 🎮 On-chain game — a pixel social world click game.void1211.com to have fun!
 
 > **[→ module docs: docs/game/](docs/game/README.en.md)**
 
