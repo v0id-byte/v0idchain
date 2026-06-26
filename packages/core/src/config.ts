@@ -180,7 +180,8 @@ export const MEASURER_ADDRESS = '0x7f2db296c7cbb50681531e2a04a99414f11f0d0ff5b03
  * 让 ~1000 币的小经济体也轻松付得起、又有真实的成本门槛与女巫成本。当前是教学/小算力网络的保守起点，
  * 主网算力上来后可按需调大（改它即软分叉，全网须一致）。
  */
-export const STAKE_MIN: { guard: number; middle: number; hsdir: number } = { guard: 12, hsdir: 8, middle: 4 };
+/** 质押基准值（创世难度 GENESIS_DIFFICULTY=16 时的最低押金）；实际门槛随难度线性增长，见 computeStakeMin。 */
+export const STAKE_MIN: { guard: number; middle: number; hsdir: number } = { guard: 500, hsdir: 300, middle: 100 };
 
 /**
  * 押金锁定块数：质押后再过这么多块才能 UNSTAKE 取回本金。取 12（约 96 秒 @ 8s 目标出块，与红包过期

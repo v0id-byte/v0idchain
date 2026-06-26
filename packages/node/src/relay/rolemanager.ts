@@ -49,11 +49,20 @@ export interface RoleManagerOptions {
   socksPort?: number;
 }
 
+/** 单个托管服务的状态（多服务场景）。 */
+export interface HsStatusEntry {
+  id: string;
+  address: string;
+  target: { host: string; port: number };
+  name: string;
+  connCount: number;
+}
+
 /** GET /roles 返回的形状（GUI 读它渲染开关状态）。字段填已知项，未启用角色给 off + 占位。 */
 export interface RoleStatus {
   socks: { on: boolean; port: number | null };
   relay: { on: boolean; port: number | null; address: string | null; circuits: number; published: boolean };
-  hs: { on: boolean; address: string | null; target: { host: string; port: number } | null };
+  hsList: HsStatusEntry[]; // 所有活动托管服务列表（空 = 无）
   mine: { on: boolean; intervalMs: number | null };
 }
 
@@ -84,8 +93,7 @@ export class RoleManager {
   private relay?: RelayNode;
   private relayPublished = false; // 中继描述符是否已上链（自动发布循环置位）
   private publishTimer?: ReturnType<typeof setInterval>;
-  private hs?: { address: string; stop: () => void };
-  private hsTarget?: { host: string; port: number };
+  private hsMap: Map<string, { id: string; address: string; stop: () => void; getConnCount: () => number; target: { host: string; port: number }; name: string }> = new Map();
   private socks?: SocksProxy;
   private socksPort: number | null = null;
   // 挖矿态：node 内部自己也有 mining 标志，但本类需对外报 on/intervalMs，故在此镜像一份。
@@ -187,34 +195,52 @@ export class RoleManager {
     return this.status();
   }
 
-  // ---- 隐藏服务 ----
+  // ---- 隐藏服务（多服务支持）----
 
   /**
-   * 托管一个 .v0id 隐藏服务，把进来的会合连接转发到本机 target host:port。需链上 ≥3 中继（建引入/会合电路）。
-   * 已在跑 → no-op 返回当前 status（不重复托管）。前置不满足 → 抛干净 Error（API 转 409，CLI 打一行通知）。
+   * 托管一个 .v0id 隐藏服务，把进来的会合连接转发到本机 target host:port。需链上 ≥3 中继。
+   * 每次调用启动一个独立服务（不同 .v0id 地址），返回 { id, address }。
+   * 前置不满足 → 抛干净 Error（API 转 409，CLI 打一行通知）。
    */
-  async startHs(target: { host: string; port: number }, numIntros = 3): Promise<RoleStatus> {
-    if (this.hs) return this.status(); // 幂等：已托管则不再起第二个
+  async startHs(target: { host: string; port: number }, opts?: { name?: string; intros?: number }): Promise<{ id: string; address: string }> {
     if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !target.host) {
       throw new Error('hs target 非法：需 host:port，例如 127.0.0.1:8080');
     }
     if (this.node.relays().length < MIN_RELAYS) {
       throw new Error('链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重试）');
     }
-    const { address, stop } = await serveHiddenService({ dataDir: this.dataDir, target, deps: this.hsDeps, numIntros });
-    this.hs = { address, stop };
-    this.hsTarget = { ...target };
-    return this.status();
+    const id = crypto.randomUUID();
+    const { address, stop, getConnCount } = await serveHiddenService({
+      dataDir: this.dataDir,
+      identityKey: id,
+      target,
+      deps: this.hsDeps,
+      numIntros: opts?.intros,
+    });
+    this.hsMap.set(id, { id, address, stop, getConnCount, target: { ...target }, name: opts?.name ?? '' });
+    return { id, address };
   }
 
-  /** 停止隐藏服务：销毁所有引入/会合电路（描述符在 HSDir 上靠 TTL 自然过期）。已停 → no-op。 */
-  async stopHs(): Promise<RoleStatus> {
-    if (this.hs) {
-      this.hs.stop();
-      this.hs = undefined;
-      this.hsTarget = undefined;
+  /** 停止指定 id 的隐藏服务（不传 id 则停止所有）。 */
+  async stopHs(id?: string): Promise<void> {
+    if (id) {
+      const entry = this.hsMap.get(id);
+      if (entry) { entry.stop(); this.hsMap.delete(id); }
+    } else {
+      for (const entry of this.hsMap.values()) entry.stop();
+      this.hsMap.clear();
     }
-    return this.status();
+  }
+
+  /** 当前活动隐藏服务列表（只读快照）。 */
+  hsList(): HsStatusEntry[] {
+    return [...this.hsMap.values()].map(e => ({
+      id: e.id,
+      address: e.address,
+      target: e.target,
+      name: e.name,
+      connCount: e.getConnCount(),
+    }));
   }
 
   // ---- 挖矿 ----
@@ -282,7 +308,7 @@ export class RoleManager {
         circuits: this.relay ? this.relay.circuits : 0,
         published: this.relayPublished,
       },
-      hs: { on: !!this.hs, address: this.hs ? this.hs.address : null, target: this.hsTarget ? { ...this.hsTarget } : null },
+      hsList: this.hsList(),
       mine: { on: this.mineOn, intervalMs: this.mineOn ? this.mineIntervalMs : null },
     };
   }

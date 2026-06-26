@@ -51,7 +51,7 @@ import {
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
 import { parseRedCreate, parseClaimId, parseRefundId, computeShare, redSeed, type RedMode } from './redpacket.js';
-import { parseStakeCreate, parseUnstakeId, parseSlash, type StakePool } from './staking.js';
+import { parseStakeCreate, parseUnstakeId, parseSlash, computeStakeMin, type StakePool } from './staking.js';
 
 /** 创世区块：不做 PoW，参数全固定 → 所有节点算出同一个 hash。 */
 export function genesisBlock(): Block {
@@ -174,6 +174,7 @@ function redOpError(
   pools: Map<string, RedPool>,
   stakes: Map<string, StakePool>,
   atHeight: number,
+  blockDifficulty = GENESIS_DIFFICULTY,
 ): string | null {
   const m = tx.memo;
   const stakingActive = atHeight >= STAKING_ACTIVATION_HEIGHT;
@@ -210,7 +211,8 @@ function redOpError(
     if ((tx.burn ?? 0) > 0) return '质押交易不能附带销毁';
     const meta = parseStakeCreate(m);
     if (!meta) return '发往质押托管地址的交易必须是合法质押（STAKE|guard或middle或hsdir）';
-    if (tx.amount < STAKE_MIN[meta.role]) return `质押额须 ≥ 该角色最低押金 ${STAKE_MIN[meta.role]}`;
+    const minStake = computeStakeMin(meta.role, blockDifficulty);
+    if (tx.amount < minStake) return `质押额须 ≥ 该角色最低押金 ${minStake}（当前难度动态值）`;
     return null;
   }
   // ---- 红包操作（RED/CLAIM/REFUND）----
@@ -254,7 +256,7 @@ function redOpError(
  * computeState 与 validateChain **共用此函数** → 矿工与校验方算出完全一致的派发额（杜绝分叉）。
  * blockHash 用于拼手气随机源（CLAIM）；atHeight 用于记录红包创建高度。
  */
-function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: number): void {
+function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: number, blockDifficulty = GENESIS_DIFFICULTY): void {
   const credit = (a: string, amt: number) => st.balances.set(a, (st.balances.get(a) ?? 0) + amt);
   const bump = () => st.nonces.set(tx.from, (st.nonces.get(tx.from) ?? 0) + 1);
   const m = tx.memo;
@@ -307,7 +309,7 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
   // 质押：转给托管地址 → 锁押金、开质押池。余额效果 = 普通转账到托管（旧节点也如此），额外开池。
   if (atHeight >= STAKING_ACTIVATION_HEIGHT && tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
     const meta = parseStakeCreate(m);
-    if (meta && tx.amount >= STAKE_MIN[meta.role]) {
+    if (meta && tx.amount >= computeStakeMin(meta.role, blockDifficulty)) {
       credit(tx.from, -(tx.amount + tx.fee));
       credit(STAKE_ESCROW_ADDRESS, tx.amount);
       st.stakes.set(tx.txid, {
@@ -360,7 +362,7 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
  * 但 CLAIM 的派发额依赖尚不存在的区块 hash，故只“占位扣 fee、占一份”，不结算 share。
  * 这不影响所选块能否通过 validateChain（合法性只看 remainingCount/claimants/refunded，派发额永远在范围内）。
  */
-function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
+function applySelect(tx: Transaction, st: ChainState, atHeight: number, blockDifficulty = GENESIS_DIFFICULTY): void {
   const credit = (a: string, amt: number) => st.balances.set(a, (st.balances.get(a) ?? 0) + amt);
   const bump = () => st.nonces.set(tx.from, (st.nonces.get(tx.from) ?? 0) + 1);
   const m = tx.memo;
@@ -404,7 +406,7 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number): void {
   // 质押操作在选包阶段与 applyTx 完全一致（无区块 hash 依赖 → 可原样推进，杜绝选包/校验分歧）
   if (atHeight >= STAKING_ACTIVATION_HEIGHT && tx.to === STAKE_ESCROW_ADDRESS && m.startsWith(STAKE_PREFIX)) {
     const meta = parseStakeCreate(m);
-    if (meta && tx.amount >= STAKE_MIN[meta.role]) {
+    if (meta && tx.amount >= computeStakeMin(meta.role, blockDifficulty)) {
       credit(tx.from, -(tx.amount + tx.fee));
       credit(STAKE_ESCROW_ADDRESS, tx.amount);
       st.stakes.set(tx.txid, {
@@ -479,7 +481,7 @@ export class Blockchain {
           st.balances.set(tx.to, (st.balances.get(tx.to) ?? 0) + tx.amount); // 矿工/预挖收款
           continue;
         }
-        applyTx(tx, st, block.hash, block.index); // 与 validateChain 同一套状态机
+        applyTx(tx, st, block.hash, block.index, block.difficulty); // 与 validateChain 同一套状态机
       }
     }
     return st;
@@ -521,7 +523,7 @@ export class Blockchain {
 
     const { balances, nonces, pools, stakes } = this.computeState();
     // 红包/质押操作合法性：池存在/未抢完/未重复领/已过期、质押锁定期/度量者权限等（按 height+1 估算）
-    const redErr = redOpError(tx, pools, stakes, this.height + 1);
+    const redErr = redOpError(tx, pools, stakes, this.height + 1, this.tipDifficulty());
     if (redErr) return { ok: false, error: redErr };
     const pending = this.mempool.filter((t) => t.from === tx.from);
     const expectedNonce = (nonces.get(tx.from) ?? 0) + pending.length;
@@ -563,12 +565,12 @@ export class Blockchain {
         // 同 validateChain 的接纳条件：nonce 对、红包操作合法、余额够付、自洽签名 → 必能通过整链校验
         if (
           tx.nonce === expected &&
-          !redOpError(tx, st.pools, st.stakes, atHeight) &&
+          !redOpError(tx, st.pools, st.stakes, atHeight, this.tipDifficulty()) &&
           cost <= (st.balances.get(tx.from) ?? 0) &&
           verifyTransaction(tx)
         ) {
           selected.push(tx);
-          applySelect(tx, st, atHeight); // 推进 nonce/池校验字段（CLAIM 仅占位、不结算 share）
+          applySelect(tx, st, atHeight, this.tipDifficulty()); // 推进 nonce/池校验字段（CLAIM 仅占位、不结算 share）
           queue[i] = undefined;
           progressed = true;
         }
@@ -727,14 +729,14 @@ export class Blockchain {
         // 普通交易不得打到空地址（销毁应走 burn 字段）；发往托管地址的合法性交给 redOpError 判
         if (tx.to === NULL_ADDRESS) return { ok: false, error: `#${i} 收款为空地址非法` };
         // 红包操作合法性（池存在/未抢完/未重复领/发起人退款且已过期…）；非红包返回 null
-        const redErr = redOpError(tx, st.pools, st.stakes, b.index);
+        const redErr = redOpError(tx, st.pools, st.stakes, b.index, b.difficulty);
         if (redErr) return { ok: false, error: `#${i} 红包/质押：${redErr}` };
         // 余额够付：发送方实付 = 金额 + 手续费 + 销毁额（RED=总额+费；CLAIM/REFUND=费；收到的 share 由 applyTx 入账）
         const cost = tx.amount + tx.fee + (tx.burn ?? 0);
         if (cost > (st.balances.get(tx.from) ?? 0)) {
           return { ok: false, error: `#${i} 余额不足（双花/超额，含手续费与销毁额）` };
         }
-        applyTx(tx, st, b.hash, b.index); // 与 computeState 同一套：扣款/派发/退款/开池 一致
+        applyTx(tx, st, b.hash, b.index, b.difficulty); // 与 computeState 同一套：扣款/派发/退款/开池 一致
       }
     }
     return { ok: true };

@@ -162,7 +162,8 @@ function withAttemptTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 export interface ServeHiddenServiceOptions {
-  dataDir: string; // hs 身份种子持久化目录（<dataDir>/hs.json）
+  dataDir: string; // hs 身份种子持久化目录
+  identityKey?: string; // 身份文件名后缀：undefined=hs.json，其它=hs-{identityKey}.json（多服务各用独立身份）
   target: { host: string; port: number }; // 隐藏服务背后的本机 TCP 落地（每个会合通道连一次它）
   deps: HsDeps; // 选路器 + 名录
   numIntros?: number; // 引入点数量（默认 3）
@@ -177,9 +178,12 @@ export interface ServeHiddenServiceOptions {
  */
 export async function serveHiddenService(
   opts: ServeHiddenServiceOptions,
-): Promise<{ address: string; stop: () => void }> {
-  const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir);
+): Promise<{ address: string; stop: () => void; getConnCount: () => number }> {
+  const identityFile = opts.identityKey ? `hs-${opts.identityKey}.json` : 'hs.json';
+  const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir, identityFile);
+  let connCount = 0;
   const handler: RendezvousHandler = (channel) => {
+    connCount++;
     // 每个成功会合 → 连一次本机落地；连不上就关通道（服务进程没在监听 target）。
     const sock = connect(opts.target.port, opts.target.host);
     sock.on('connect', () => bridgeChannelToSocket(channel, sock));
@@ -198,12 +202,12 @@ export async function serveHiddenService(
     numIntros: opts.numIntros,
   });
   await svc.start();
-  return { address: svc.address, stop: () => svc.stop() };
+  return { address: svc.address, stop: () => svc.stop(), getConnCount: () => connCount };
 }
 
-/** 从 <dataDir>/hs.json 读回 hs 身份（种子 + 服务 onion 私钥）；不存在则生成并落盘（0600）。 */
-function loadOrCreateHsIdentity(dataDir: string): { seed: Uint8Array; onion: OnionKeypair } {
-  const file = join(dataDir, 'hs.json');
+/** 从 <dataDir>/<filename> 读回 hs 身份（种子 + 服务 onion 私钥）；不存在则生成并落盘（0600）。 */
+function loadOrCreateHsIdentity(dataDir: string, filename = 'hs.json'): { seed: Uint8Array; onion: OnionKeypair } {
+  const file = join(dataDir, filename);
   if (existsSync(file)) {
     const { seed, onionSecret } = JSON.parse(readFileSync(file, 'utf8')) as { seed: string; onionSecret: string };
     return { seed: hexToBytes(seed), onion: onionKeypairFromSecret(hexToBytes(onionSecret)) };

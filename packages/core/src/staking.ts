@@ -8,7 +8,7 @@
 //                  不“静默分叉”；分叉只在 UNSTAKE/SLASH（amount=0，旧节点直接拒）处发生。
 //   赎回 UNSTAKE ：amount=0，memo `UNSTAKE|<stakeTxid>`。仅质押人、且过 STAKE_LOCK_BLOCKS 锁定期后，取回本金-已罚没。
 //   罚没 SLASH   ：amount=0，memo `SLASH|<stakeId>|<金额>|<epoch>`。仅 MEASURER_ADDRESS 签发，把失职押金移交国库。
-import type { Block } from './block.js';
+import { approxDifficultyBits, type Block } from './block.js';
 import {
   STAKE_PREFIX,
   UNSTAKE_PREFIX,
@@ -18,7 +18,20 @@ import {
   STAKE_MIN,
   STAKE_LOCK_BLOCKS,
   MEASURER_ADDRESS,
+  GENESIS_DIFFICULTY,
 } from './config.js';
+
+/**
+ * 动态最低质押额：随链难度线性扩展，防止门槛在高算力网络中变得微不足道。
+ * difficulty = block.difficulty（v1 bit难度 or v2 compact target，approxDifficultyBits 统一归一化为 bit 数）。
+ * 以 STAKE_MIN（genesis 时的基准）为起点，按 bitDiff/GENESIS_DIFFICULTY 线性缩放，上限 32×。
+ */
+export function computeStakeMin(role: 'guard' | 'middle' | 'hsdir', difficulty: number): number {
+  const base = STAKE_MIN[role];
+  const bits = approxDifficultyBits(difficulty); // ∈ [0, 256]，v1/v2 统一归一化
+  const scale = Math.max(1, bits / GENESIS_DIFFICULTY);
+  return Math.round(base * Math.min(scale, 32)); // 上限 32×，防极端值
+}
 
 /** 中继角色：guard 入口 / middle 中间 / hsdir 隐藏服务目录。v1 无 exit。 */
 export type StakeRole = 'guard' | 'middle' | 'hsdir';
@@ -72,10 +85,10 @@ export interface StakePool {
   withdrawn: boolean; // 是否已赎回（防重复赎回）
 }
 
-/** 校验“质押”入参；返回 memo 或错误（供 node 层调用，amount 取 STAKE_MIN[role]）。 */
-export function makeStake(role: StakeRole): { ok: boolean; memo?: string; amount?: number; error?: string } {
+/** 校验”质押”入参；返回 memo（amount 由调用方按当前难度动态计算，见 computeStakeMin）。 */
+export function makeStake(role: StakeRole): { ok: boolean; memo?: string; error?: string } {
   if (!ROLES.has(role)) return { ok: false, error: '角色只能是 guard/middle/hsdir' };
-  return { ok: true, memo: `${STAKE_PREFIX}${role}`, amount: STAKE_MIN[role] };
+  return { ok: true, memo: `${STAKE_PREFIX}${role}` };
 }
 
 /**
@@ -93,7 +106,7 @@ export function computeStakeState(chain: Block[]): Map<string, StakePool> {
       // 质押 = 转给托管地址 + STAKE| memo（旧节点也会把它当普通转账锁进托管 → 不静默分叉）
       if (tx.to === STAKE_ESCROW_ADDRESS) {
         const meta = parseStakeCreate(m);
-        if (meta && tx.amount >= STAKE_MIN[meta.role]) {
+        if (meta && tx.amount >= computeStakeMin(meta.role, b.difficulty)) {
           stakes.set(tx.txid, {
             staker: tx.from,
             role: meta.role,
