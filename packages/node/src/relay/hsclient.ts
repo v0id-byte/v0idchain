@@ -37,8 +37,9 @@ import { randomBytes } from 'node:crypto';
 import { CircuitClient } from './client.js';
 import { type AntiReplayState, newAntiReplay, accept } from './antireplay.js';
 
-const HS_FETCH_TIMEOUT_MS = 10_000;
-const RDV_TIMEOUT_MS = 30_000;
+const HS_FETCH_TIMEOUT_MS = 6_000; // 单个 HSDir 取描述符超时（短 → 失败快切下一个/重试；CF 抖动容错靠多 HSDir + 整轮重试）
+const RDV_TIMEOUT_MS = 12_000; // 单次会合 await RENDEZVOUS2 超时（短 → 失败快，由 connectHs 的顶层重试再来一次）
+const FETCH_ROUNDS = 1; // 单次尝试内扫一遍 HSDir 即可；整体取不到由 connectHs 顶层重试覆盖（换新电路重扫）
 
 /** 选路：给定“终点跳”的中继地址，建一条以它为终点的 3 跳电路（guard/middle 由实现挑）。 */
 export type BuildCircuit = (exitRelayId: string) => Promise<CircuitClient>;
@@ -127,25 +128,36 @@ export async function connectHiddenService(
   const hsdirs = responsibleHsDirs(descId, relays, 3);
   let desc: Descriptor | null = null;
   let inner: ReturnType<typeof parseDescriptor> | null = null;
-  for (const hsdirId of hsdirs) {
-    const c = await build(hsdirId);
-    let json: string | null = null;
-    try {
-      json = await withTimeout(c.hsFetch(descId), HS_FETCH_TIMEOUT_MS, null);
-    } finally {
-      c.close();
-    }
-    if (!json) continue;
-    try {
-      const candidate = JSON.parse(json) as Descriptor;
-      if (candidate.tp !== TP || descriptorId(hexToBytes(candidate.ap), candidate.tp) !== descId) continue;
-      const parsed = parseDescriptor(addr, candidate);
-      if (!parsed || parsed.introPoints.length === 0) continue;
-      desc = candidate;
-      inner = parsed;
-      break;
-    } catch {
-      continue;
+  // CF 隧道下建路/取回会偶发抖动：每个 HSDir 单独 try（建路失败即跳下一个，不再让一条死路把整次取描述符带崩），
+  // 且整轮重试 FETCH_ROUNDS 次（描述符确已发布，偶发取不到时多扫一轮即得）。
+  for (let round = 0; round < FETCH_ROUNDS && !desc; round++) {
+    for (const hsdirId of hsdirs) {
+      if (desc) break;
+      let c: CircuitClient;
+      try {
+        c = await build(hsdirId);
+      } catch {
+        continue; // 建路到此 HSDir 失败（CF 抖动）→ 试下一个
+      }
+      let json: string | null = null;
+      try {
+        json = await withTimeout(c.hsFetch(descId), HS_FETCH_TIMEOUT_MS, null);
+      } catch {
+        json = null;
+      } finally {
+        c.close();
+      }
+      if (!json) continue;
+      try {
+        const candidate = JSON.parse(json) as Descriptor;
+        if (candidate.tp !== TP || descriptorId(hexToBytes(candidate.ap), candidate.tp) !== descId) continue;
+        const parsed = parseDescriptor(addr, candidate);
+        if (!parsed || parsed.introPoints.length === 0) continue;
+        desc = candidate;
+        inner = parsed;
+      } catch {
+        continue;
+      }
     }
   }
   if (!desc || !inner) throw new Error('取不到描述符（服务未发布 / 地址错误）');
@@ -155,32 +167,42 @@ export async function connectHiddenService(
   const rpRelayId = pickRp(relays, inner.introPoints);
   const cookie = randomBytes(RDV_COOKIE_LEN);
   const rpCirc = await build(rpRelayId);
-  let ipCirc: CircuitClient | null = null;
+  const introCircs: CircuitClient[] = [];
   try {
     rpCirc.enterRdvMode();
     // 先挂好 RENDEZVOUS2 等待器（服务可能在我们发完 INTRODUCE1 后很快回来）。
     const rdv2Promise = new Promise<Uint8Array>((res) => rpCirc.onRdv(CMD_RENDEZVOUS2, (d) => res(d)));
     await rpCirc.sendAwaitRdv(CMD_ESTABLISH_RENDEZVOUS, cookie, CMD_RENDEZVOUS_ESTABLISHED);
 
-    // 3. ntor 客户端起手；密封 INTRODUCE 信封；经引入点发 INTRODUCE1。
+    // 3. ntor 起手 + 密封 INTRODUCE 信封（仅一次）；向**所有**引入点各发一份 INTRODUCE1。
+    //    同一 ntorEph → 服务侧按 clientNtorEph 去重，只处理一次（不会多建 RP 电路）；只要任一条引入路径活着即可把
+    //    INTRODUCE 投达服务 → 容某条引入电路经 CF 掉线。旧版只用 introPoints[0]，那条死了就整体超时失败。
     const ntor = ntorClientStart();
     const rpPubHex = rpRelayId.startsWith('0x') ? rpRelayId.slice(2) : rpRelayId;
     const introPlaintext = encodeIntroducePayload(rpPubHex, cookie, ntor.ephPublic);
-    const ip = inner.introPoints[0];
     const sealed = introduceSeal(serviceOnionPub, introPlaintext);
-    const authKey = hexToBytes(ip.authKeyHex);
-    // INTRODUCE1 data = authKey(32) ‖ ephPub(32) ‖ ct。引入点据 authKey 寻址服务、原样转 rest（看不懂信封）。
-    const intro1 = new Uint8Array(authKey.length + sealed.ephPub.length + sealed.ct.length);
-    intro1.set(authKey, 0);
-    intro1.set(sealed.ephPub, authKey.length);
-    intro1.set(sealed.ct, authKey.length + sealed.ephPub.length);
-    ipCirc = await build(ip.relayId);
-    ipCirc.enterRdvMode();
-    ipCirc.sendToTerminus(CMD_INTRODUCE1, intro1);
+    for (const ip of inner.introPoints) {
+      let ic: CircuitClient;
+      try {
+        ic = await build(ip.relayId);
+      } catch {
+        continue; // 此引入点不可达（CF 抖动）→ 试下一个
+      }
+      const authKey = hexToBytes(ip.authKeyHex);
+      // INTRODUCE1 data = authKey(32) ‖ ephPub(32) ‖ ct。引入点据 authKey 寻址服务、原样转 rest（看不懂信封）。
+      const intro1 = new Uint8Array(authKey.length + sealed.ephPub.length + sealed.ct.length);
+      intro1.set(authKey, 0);
+      intro1.set(sealed.ephPub, authKey.length);
+      intro1.set(sealed.ct, authKey.length + sealed.ephPub.length);
+      ic.enterRdvMode();
+      ic.sendToTerminus(CMD_INTRODUCE1, intro1);
+      introCircs.push(ic);
+    }
+    if (introCircs.length === 0) throw new Error('无可用引入点（均不可达）');
 
-    // 4. await RENDEZVOUS2(serverEph‖auth)，完成 ntor → 端到端密钥。引入点电路用完即弃。
+    // 4. await RENDEZVOUS2(serverEph‖auth)，完成 ntor → 端到端密钥。引入电路用完即弃。
     const r2 = await withTimeout(rdv2Promise, RDV_TIMEOUT_MS);
-    ipCirc.close(); // 引入只需投递一次，之后不再需要引入电路
+    for (const ic of introCircs) ic.close(); // 引入只需投递一次，之后不再需要引入电路
     if (r2.length < 64) throw new Error('RENDEZVOUS2 应答过短');
     const serverEph = r2.subarray(0, 32);
     const auth = r2.subarray(32, 64);
@@ -192,7 +214,7 @@ export async function connectHiddenService(
     // 客户端：发用 encForward，收用 encBackward（与中继侧 forward=客户端→服务 一致）。
     return new RdvChannel(rpCirc, keys.encForward, keys.encBackward);
   } catch (err) {
-    ipCirc?.close();
+    for (const ic of introCircs) ic.close();
     rpCirc.close();
     throw err;
   }

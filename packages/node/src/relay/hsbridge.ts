@@ -126,22 +126,39 @@ export function bridgeChannelToSocket(channel: RdvChannel, sock: Socket, leftove
   if (leftover && leftover.length) feed(leftover); // 残留必须在监听挂好后再灌，保证字节序
 }
 
-// 整个会合连接（取描述符 → 占 RP 槽 → INTRODUCE → 等 RENDEZVOUS2）的总超时。
-// connectHiddenService 内部不设超时（依赖调用方兜），守护场景必须封顶：否则一个“描述符在、但握手永不完成”的
-// 半死服务会让 SOCKS 连接无限挂起（既不回成功也不回失败）。30s 给多跳多电路握手留足，又保证 curl 终会收到拒绝。
-const HS_CONNECT_TIMEOUT_MS = 30000;
+// 单次 connectHiddenService 尝试的封顶超时（短 → 失败快、好重试；其内部 fetch/rdv 各自更短）。
+// 守护场景必须封顶：否则一个“描述符在、但握手永不完成”的半死服务会让 SOCKS 连接无限挂起。
+const HS_ATTEMPT_TIMEOUT_MS = 18000;
+// 整体尝试次数。CF 隧道下「取描述符 → 占 RP → INTRODUCE → 等 RENDEZVOUS2」这串多步、多电路操作单次成功率不高
+// （每步本身大多能成，但串起来累积失败率高）；换一组新电路重来几次能把总成功率拉得很高。
+const HS_CONNECT_ATTEMPTS = 4;
 
 /**
- * 经 SOCKS5 的 .v0id 分支调用：连一个隐藏服务并返回端到端通道（与 connectHiddenService 同语义，封顶总超时）。
- * 超时即抛错（上层回 SOCKS 失败）——杜绝半死服务把 SOCKS 连接吊死。
+ * 经 SOCKS5 的 .v0id 分支调用：连一个隐藏服务并返回端到端通道（与 connectHiddenService 同语义）。
+ * 单次尝试封顶 HS_ATTEMPT_TIMEOUT_MS（杜绝半死服务吊死 SOCKS 连接），失败则换新电路重试至多 HS_CONNECT_ATTEMPTS 次
+ * （多步会合经 CF 隧道偶发抖动 → 重来一次大概率即通）。全部失败才抛错（上层回 SOCKS 失败）。
  */
-export function connectHs(addr: string, deps: HsDeps): Promise<RdvChannel> {
-  const connect = connectHiddenService(addr, deps.buildCircuit, deps.directory);
+export async function connectHs(addr: string, deps: HsDeps): Promise<RdvChannel> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < HS_CONNECT_ATTEMPTS; attempt++) {
+    try {
+      return await withAttemptTimeout(
+        connectHiddenService(addr, deps.buildCircuit, deps.directory),
+        HS_ATTEMPT_TIMEOUT_MS,
+      );
+    } catch (e) {
+      lastErr = e; // 本次（新电路）失败 → 重试
+    }
+  }
+  throw lastErr ?? new Error('隐藏服务连接失败');
+}
+
+function withAttemptTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, rej) => {
-    timer = setTimeout(() => rej(new Error('隐藏服务连接超时')), HS_CONNECT_TIMEOUT_MS);
+    timer = setTimeout(() => rej(new Error('隐藏服务连接尝试超时')), ms);
   });
-  return Promise.race([connect, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 export interface ServeHiddenServiceOptions {
