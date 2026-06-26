@@ -32,6 +32,7 @@
         "dmg",
         "zip"
       ],
+      "identity": "liuhaoran qin (C58WLH687Z)",
       "category": "public.app-category.utilities",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
