@@ -231,7 +231,9 @@ body {
 .browser {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 /* 标签条 */
 .tabstrip {
