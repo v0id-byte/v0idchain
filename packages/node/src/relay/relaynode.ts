@@ -135,7 +135,7 @@ function isLocalListenHost(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1';
 }
 
-function isPublicIpAddress(address: string): boolean {
+export function isPublicIpAddress(address: string): boolean {
   const kind = isIP(address);
   if (kind === 4) {
     const [a, b, c] = address.split('.').map((x) => Number(x));
