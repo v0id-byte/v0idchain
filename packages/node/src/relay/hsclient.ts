@@ -170,13 +170,14 @@ export async function connectHiddenService(
   const cookie = randomBytes(RDV_COOKIE_LEN);
   let rpCirc: CircuitClient | null = null;
   let rpRelayId = '';
-  for (const cand of rpOrder(relays, inner.introPoints)) {
+  const rpCandidates = rpOrder(relays, inner.introPoints);
+  for (const cand of rpCandidates) {
     try {
       rpCirc = await build(cand);
       rpRelayId = cand;
       break;
     } catch {
-      // 此 RP 建不通（死中继）→ 试下一个
+      // dead relay → try next
     }
   }
   if (!rpCirc) throw new Error('无可用会合点（RP 均不可达）');
