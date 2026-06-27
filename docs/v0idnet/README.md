@@ -25,7 +25,7 @@
 
 ## 上手 · 桌面 app(最简)
 
-**下载**:[v0id Browser 0.2.0 (macOS / Apple Silicon)](https://github.com/v0id-byte/v0idchain/releases/tag/browser-v0.2.0) —— 已签名公证,双击装、无 Gatekeeper 拦截。Windows / Linux 版**敬请期待**。
+**下载**:[v0id Browser 0.2.5 (macOS / Apple Silicon)](https://github.com/v0id-byte/v0idchain/releases/tag/browser-v0.2.5) —— 已签名公证,双击装、无 Gatekeeper 拦截。Windows / Linux 版**敬请期待**。
 
 打开即自动拉起守护进程 + 连线上网络;地址栏输 `xxxxx.v0id` 浏览;侧栏 4 板块一键开 中继/托管/挖矿;钱包收发 $V0ID。
 
