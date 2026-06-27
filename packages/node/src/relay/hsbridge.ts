@@ -64,12 +64,21 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
   const warm = () => reachability.refresh(dir()).catch(() => undefined);
   void warm();
   setInterval(warm, 60_000).unref?.();
+  // 私有/回环 IP 的中继（如浏览器守护进程注册的 127.0.0.1）本机 WS 探测通过，但外部 AWS 中继无法拨通对方的
+  // localhost，进入 pool 会虚增 usableCount → markBad 误判良好中继。仅限电路构建过滤；directory() 仍返回全量。
+  const isRoutableHost = (host: string): boolean => {
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false;
+    const p = host.split('.');
+    if (p.length !== 4) return true; // IPv6 or hostname → keep
+    const [a, b] = p.map(Number);
+    return !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
+  };
   const buildCircuit: BuildCircuit = async (exitRelayId: string) => {
     // 链上目录会**永久**累积历史中继注册（latest-wins，无法注销）：含本机自测发布的 127.0.0.1、早下线 / 被防火墙挡的
     // 公网中继等纯污染。随机选路一旦撞上死中继，EXTEND 即被守卫秒拆(DESTROY)或拨号黑洞挂死 → 浏览失败。两道防线：
-    // ① 主动探测 + 实测转发判负，缓存出“真能转发”的可达集（reachability：WS 探测剔连不通的，建路失败回灌剔转不动的）；
+    // ① 主动探测 + 实测转发判负，缓存出”真能转发”的可达集（reachability：WS 探测剔连不通的，建路失败回灌剔转不动的）；
     // ② 可达集内仍可能有 hairpin/瞬断 → 逐个试 middle、坏的靠 HOP_TIMEOUT 快速放弃换下一个，直到拼出活电路。
-    const pool = dir();
+    const pool = dir().filter((d) => isRoutableHost(d.host));
     await reachability.refresh(pool); // 探测可达性（暖缓存即时返回，冷缓存一次并行探测 ~5s）
     const all = reachability.knownUsable(pool);
     const exit = all.find((d) => d.address === exitRelayId);

@@ -40,3 +40,41 @@ curl -s -o /dev/null -w '%{http_code}' http://<host>:<port>
 # 查看当前链上中继列表
 v0id status   # 看 relays 字段
 ```
+
+---
+
+## OD-2 回环/私有 IP 中继虚增 usableCount → 良好中继被误判负（Hidden Service 无法访问）
+
+**症状**  
+浏览 `.v0id` 隐藏服务返回 SOCKS5 错误（exit 97）或 ~30 s 超时；
+日志中大量 `DESTROY blocked-relay-target`，且该 error 不仅出现在死中继，也出现在 AWS 活中继上；
+之后连 HSDir 电路也开始失败。
+
+**根因**  
+v0id 浏览器守护进程会将自身在链上注册为中继（默认地址 `127.0.0.1:6011`）。  
+`buildCircuit` 从 `dir()` 取的 pool 包含此条目。本机 WS 探测 `ws://127.0.0.1:6011` 成功（守护进程就在本机），  
+`reachability.knownUsable()` 将其算入可达集 → `usableCount = 4`（r1 + r2 + r3 + localhost）。
+
+`usableCount > 3` 条件成立时，`buildCircuit` 允许对 middle 调用 `markBad`。当以 r1/r2/r3 为 middle  
+尝试 EXTEND 到 `127.0.0.1:6011`（exit）时，AWS 中继拨通的是自身 localhost（空端口）→ 返回  
+`DESTROY blocked-relay-target`。由于 `isProven(middle)` 为 false，`markBad(r2)` 被错误地调用，  
+可达集收缩至 3，之后所有电路只剩 1 个可用 middle，无法再凑出有效 3 跳。
+
+**修法**（已在 `packages/node/src/relay/hsbridge.ts` 修复）  
+`buildCircuit` 内部对 `pool` 过滤掉私有 / 回环 host，避免其进入 `usableCount` 统计：
+
+```typescript
+const pool = dir().filter((d) => isRoutableHost(d.host));
+// isRoutableHost 剔除 127.x.x.x / ::1 / 10.x / 172.16-31.x / 192.168.x
+```
+
+`directory()` 仍返回全量（HSDir 一致性哈希要求发布方与客户端用同一集合）。  
+过滤到 `127.0.0.1` 的 `buildCircuit` 调用会立即抛 "终点不可达"，由上层循环快速跳过。
+
+**验证**
+
+```bash
+# 用 curl SOCKS5 测试隐藏服务（需本地运行带 --socks 的节点）
+curl --socks5-hostname 127.0.0.1:1080 http://<addr>.v0id/ -v
+# 期望：HTTP 200；出问题时看 stderr 的 [hs-dbg] 行（已移除，需重加临时日志）
+```
