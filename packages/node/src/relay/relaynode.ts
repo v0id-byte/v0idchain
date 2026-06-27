@@ -242,8 +242,9 @@ export class RelayNode {
       // 而无法接入。因此 introByCirc 注册的电路不参与通用 DoS 清扫；它们仍会在链路关闭、显式 DESTROY、
       // shutdown 等正常路径中清理登记。
       if (this.introByCirc.has(c)) continue;
+      // 不做 max-age 清扫：HS 引入点保活每 25s 经过中间跳，lastSeen 始终新鲜——max-age 会误杀中间跳的
+      // 引入点转发电路，导致 introTable 登记被级联销毁、引入点失效；空闲检查（10 min）已足够回收真正废弃的电路。
       if (now - c.lastSeen > this.dos.idleMs) this.destroyCircuit(c, undefined, 'idle');
-      else if (now - c.createdAt > this.dos.maxAgeMs) this.destroyCircuit(c, undefined, 'max-age');
     }
   }
 
