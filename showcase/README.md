@@ -1,0 +1,3 @@
+# v0idnet showcase
+
+A single, fully self-contained `index.html` — an Apple-grade product page for the `.v0id` onion anonymity network. It inlines every byte (CSS in a `<style>` tag, all icons and the hero circuit diagram as hand-written SVG, no external fonts, no CDN, no JS libraries, zero external requests) precisely because it is meant to be **served as a `.v0id` hidden service over the project's own onion network** — visitors read it through a 3-hop anonymous circuit in the v0id browser, where any off-site request would simply fail. Open it directly in any browser to preview, or host it behind the daemon (`--hs-target`) so the page becomes its own best demo: the site you're reading is itself delivered over `.v0id`.
