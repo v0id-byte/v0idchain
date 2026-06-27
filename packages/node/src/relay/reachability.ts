@@ -80,6 +80,11 @@ export class RelayReachability {
     this.cache.set(addr, { ok: true, at: Date.now() });
   }
 
+  /** 是否**已证能转发**（成功当过 middle）。建路侧用它消歧：proven 的 middle 到不了 exit ⇒ 是 exit 死了，不该怪 middle。 */
+  isProven(addr: string): boolean {
+    return this.proven.has(addr);
+  }
+
   /** 当前已知可达中继数（建路侧判负前查它，保证判负不把可达集压到 < 下限 → 永远留得下一条可建之路）。 */
   usableCount(relays: RelayDescriptor[]): number {
     return this.knownUsable(relays).length;

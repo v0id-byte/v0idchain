@@ -93,6 +93,7 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
       // 中段候选：除 guard、exit 外的可达中继，洗牌后逐个试。死/防火墙/hairpin 中继靠 HOP_TIMEOUT 快速放弃换下一个。
       const middles = shuffle(all.filter((d) => d.address !== guard.address && d.address !== exitRelayId));
       let guardDead = false;
+      let exitFails = 0; // 「已证骨干」middle 仍到不了 exit 的次数 → 多次即判 exit 端点本身死（防火墙/下线），换守卫无益
       for (const middle of middles.slice(0, MIDDLE_TRIES)) {
         const c = new CircuitClient();
         try {
@@ -118,11 +119,18 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
           reachability.markProvenForwarder(middle.address); // 这个 middle 实测能转发 → 列为骨干，永久免疫误判负
           return c; // ✅ 三跳建成
         } catch (e) {
-          // middle 连得上但**转不动**到 exit（hairpin/旧版 link-closed）→ 判负此 middle（proven 骨干免疫，故只会剔除真坏的转发器）。
-          if (reachability.usableCount(pool) > 3) reachability.markBad(middle.address);
+          // middle 连得上但到不了 exit。**消歧**（关键修复）：若 middle 是**已证骨干**(能转发) → 问题在 exit 端点(死/被防火墙挡)，
+          // 计 exitFails 但**绝不**误判负这个好 middle；否则 middle 自身可疑(连得上但转不动 hairpin/旧版) → 判负它。
+          if (reachability.isProven(middle.address)) exitFails++;
+          else if (reachability.usableCount(pool) > 3) reachability.markBad(middle.address);
           lastErr = e;
           c.close();
         }
+      }
+      // ≥2 个已证骨干 middle 都到不了这个 exit → 基本是 exit 端点死了 → 判负 exit（让上层快速换 HSDir/intro/RP），换守卫无益。
+      if (exitFails >= 2) {
+        if (reachability.usableCount(pool) > 3) reachability.markBad(exit.address);
+        break;
       }
       if (!guardDead) failed.add(guard.address); // 这个守卫把 middle 都试遍仍不成 → 换守卫
     }
