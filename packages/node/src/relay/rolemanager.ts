@@ -15,8 +15,9 @@ import {
   hexToBytes,
   type OnionKeypair,
 } from '@v0idchain/core';
+import { isIP } from 'node:net';
 import type { V0idNode } from '../node.js';
-import { RelayNode, type RelayResolver } from './relaynode.js';
+import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js';
 import { SocksProxy, type HopPicker } from './socks.js';
 import { GuardManager } from './guards.js';
 import { makeHsDeps, serveHiddenService, type HsDeps } from './hsbridge.js';
@@ -27,6 +28,22 @@ import type { MixnetOpts } from './relaynode.js';
 const MIN_RELAYS = 3;
 /** 自动发布描述符的重试周期（ms）——与 CLI 原值一致：余额够且尚未发布时定期重试一次。 */
 const PUBLISH_RETRY_MS = 5000;
+
+/**
+ * 该中继广播 host 是否值得把 RELAY| 描述符上链。回环/私网 host 对任何远端客户端都不可达 → 上链只会污染
+ * 全网中继目录（latest-wins 注册一旦写入永久无法注销，正是 PR#32 不得不在消费侧加抗污染选路的根因）。
+ * 判定口径（与拨号方 dialRelay 的 SSRF 守卫**同款** isPublicIpAddress，避免两处漂移）：
+ *   - 私网/回环 **IP 字面量**（127.x / 10.x / 192.168.x / 169.254.x / ::1 / fc·fd… 全套）→ 不发；
+ *   - `localhost`（回环主机名，isIP 认不出）→ 不发；
+ *   - 公网 IP → 发；
+ *   - 其余**主机名**（含经 CF 隧道暴露的中继域名，可能解析到公网）→ 发：其真实可达性由拨号方在
+ *     dialRelay 里按 DNS 解析结果用同一个 isPublicIpAddress 把关，此处不做同步 DNS（保持纯函数 + 不阻塞）。
+ */
+function isPublishableAdvertiseHost(host: string): boolean {
+  if (host === 'localhost') return false;
+  if (isIP(host)) return isPublicIpAddress(host);
+  return true;
+}
 
 export interface RoleManagerOptions {
   node: V0idNode;
@@ -162,6 +179,15 @@ export class RoleManager {
     }
     this.relay = relay;
     this.relayPublished = false;
+    // 回环/私网广播 host（如浏览器默认的 127.0.0.1）对远端不可达：只起本地 cell 中继，**不**自动把描述符
+    // 上链。否则每个开了中继角色的浏览器都会往全网目录灌一条死的 127.0.0.1 中继，且 latest-wins 永久无法
+    // 注销 —— 正是 PR#32 消费侧抗污染选路要兜的那种污染。设 --relay-advertise 为公网地址/域名后即恢复上链。
+    if (!isPublishableAdvertiseHost(this.relayAdvertiseHost)) {
+      console.warn(
+        `  [中继] 广播地址 ${this.relayAdvertiseHost} 为回环/私网，跳过描述符上链（中继仅本地可用；设 --relay-advertise 为公网地址/域名后全网可发现）`,
+      );
+      return this.status();
+    }
     // 自动发布描述符（从 CLI tryPublish 抬过来）：余额够且尚未发布时发一次。
     const onionPubHex = bytesToHex(this.onion.pub);
     const tryPublish = () => {
