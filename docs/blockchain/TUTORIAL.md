@@ -41,7 +41,7 @@ cd packages/cli && corepack pnpm link --global && cd ../..
 v0id --help                                   # 现在全局可用，列出所有命令
 ```
 
-> 首次 `link` 若报 `Unable to find the global bin directory`，先跑一次 `corepack pnpm setup`（把 pnpm 全局 bin 目录写进 PATH，新开终端生效）再 link。改了 CLI 源码后重跑 `corepack pnpm build:cli` 刷新即可，link 不用重做。
+**首次 `link` 若报 `Unable to find the global bin directory`，先跑一次 `corepack pnpm setup`（把 pnpm 全局 bin 目录写进 PATH，新开终端生效）再 link。改了 CLI 源码后重跑 `corepack pnpm build:cli` 刷新即可，link 不用重做。**
 >
 > 不想装全局？定义一个**同名** shell 函数也行（带 ~1s 冷启动，需在仓库根目录运行）——下文的 `v0id <子命令>` 照样适用：
 > ```bash
