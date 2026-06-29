@@ -151,12 +151,19 @@ export class HiddenService {
       try {
         const c = await this.build(hsdirId); // 死 HSDir 建路会抛 → 跳过靠其余 HSDir（与引入点同款容错）
         try {
-          if (await c.hsPublish(descId, json)) publishOk++;
+          const ok = await c.hsPublish(descId, json);
+          if (ok) {
+            publishOk++;
+            console.log(`[hs-publish] OK hsdir=${hsdirId} descId=${descId}`);
+          } else {
+            console.error(`[hs-publish] REJECTED hsdir=${hsdirId} descId=${descId} (hsPublish returned false)`);
+          }
         } finally {
           c.close();
         }
-      } catch {
-        // 这个 HSDir 建不了电路 → 跳过
+      } catch (e) {
+        // DEBUG-C: 旧版 try-catch 全吞，加日志暴露失败原因
+        console.error(`[hs-publish] build-fail hsdir=${hsdirId} descId=${descId} err=${(e as Error).message ?? e}`);
       }
     }
     return publishOk;
