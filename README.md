@@ -29,6 +29,10 @@
 
 ✅经认证的公共节点：[节点列表](docs/blockchain/SEED-LIST.md)
 
+🤔**想看示范网址？**
+
+  http://n7gflua3d4zzwkmzzmwvonjtht7g34krrujzzn7w5nruu2q4cf7ipoab.v0id/
+
 ## 🎮 链上游戏 —— 像素社交世界 [game.void1211.com](game.void1211.com) 即可开玩！
 
 > **[→ 模块文档 docs/game/](docs/game/README.md)**
