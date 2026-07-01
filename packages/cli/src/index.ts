@@ -2,7 +2,7 @@
 // v0idChain CLI —— start / mine / send / balance / peers / info / wallet
 import { Command } from 'commander';
 import { join } from 'node:path';
-import { mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   V0idNode,
   startHttpApi,
@@ -13,8 +13,10 @@ import {
   makeProbeSink,
   computeReward,
   decideSlashes,
+  MintDaemon,
   type HopSpec,
   type ProbeTarget,
+  type MintToken,
 } from '@v0idchain/node';
 import {
   Wallet,
@@ -41,6 +43,10 @@ import {
   SLASH_AFTER_EPOCHS,
   SLASH_FRACTION,
   SLASH_PREFIX,
+  MINT_ESCROW_ADDRESS,
+  MINT_DEPOSIT_PREFIX,
+  MINT_ADDRESS,
+  MINT_ACTIVATION_HEIGHT,
   type RelayDescriptor,
 } from '@v0idchain/core';
 
@@ -777,6 +783,140 @@ apiOpt(program.command('slash-epoch'))
       }
     }
     console.log(c.green(`\n  已提交 ${sent}/${decisions.length} 笔 SLASH（待矿工打包；非 MEASURER_ADDRESS 签发会被拒）。\n`));
+  });
+
+// ---- 央行电子现金铸币厂（Phase A 透明清算所）：充值(token buy) → 发券(mint issue) → 兑现(mint redeem) ----
+/** 铸币厂钱包地址校验：只有 .address === MINT_ADDRESS 的钱包签的 REDEEM 才被链接受。不符则大声警告（占位密钥未 rotate = 兑现会被拒，属部署期）。 */
+function mintAddrWarn(w: Wallet): void {
+  if (w.address === MINT_ADDRESS) {
+    console.log(c.green('✓ 铸币厂钱包地址 == MINT_ADDRESS（其 REDEEM 可被共识接受）'));
+  } else {
+    console.log(c.yellow('⚠ 警告：本钱包地址 ≠ 共识固定的 MINT_ADDRESS。'));
+    console.log(c.dim(`    本钱包 ${short(w.address)}  共识需 ${short(MINT_ADDRESS)}`));
+    console.log(c.yellow('    → 发券/额度/防双花仍可跑，但本钱包签的 REDEEM 上链会被全网拒（掌钥即支配全部储备，部署前须 rotate 离线钱包）。'));
+  }
+}
+
+const mint = program.command('mint').description('央行电子现金铸币厂：充值→发券→兑现（Phase A 透明清算所；匿名盲签为 Phase B）');
+
+apiOpt(mint.command('reserve'))
+  .description('查铸币厂链上储备（累计充值 − 累计兑现面额 = 偿付能力证明，任何人可核）')
+  .action(async (o) => {
+    const r = await api(o, 'GET', '/mint/reserve');
+    console.log(c.bold(`\n铸币厂储备  托管地址=${short(MINT_ESCROW_ADDRESS)}`));
+    console.log(`  储备 reserve       ${r.reserve} ${SYMBOL}   ${c.dim('(= 累计充值 − 累计兑现，链上强制 ≥0 = 偿付可验证)')}`);
+    console.log(`  累计充值 deposited  ${r.deposited} ${SYMBOL}  ${c.dim(`(${r.deposits} 笔)`)}`);
+    console.log(`  累计兑现 redeemed   ${r.redeemed} ${SYMBOL}  ${c.dim(`(${r.redemptions} 笔)`)}`);
+    console.log(`  回流国库 fees       ${r.feesToTreasury} ${SYMBOL}  ${c.dim('(抽成 → reward-epoch 养中继)')}\n`);
+  });
+
+apiOpt(mint.command('issue'))
+  .description('运营者发券：按链上充值给用户的额度签发一张记名券，追加到券文件（Phase A；用户面向的带鉴权发券服务待 MINT-PROTOCOL 定稿）')
+  .requiredOption('--user <address>', '收券用户地址（= 其链上充值地址）')
+  .requiredOption('--denom <n>', '券面额（正整数，须 ≤ 该用户当前可发额度）')
+  .option('--mint-wallet <path>', '铸币厂签名钱包（默认 ./.data/mint/wallet.json）')
+  .option('--out <path>', '券输出文件（JSON 数组，追加；默认 ./.data/mint/tokens.json）')
+  .action(async (o) => {
+    const wPath = o.mintWallet || join(defaultDataDir('mint'), 'wallet.json');
+    const w = loadWalletFile(wPath);
+    if (!w) {
+      console.error(c.red(`找不到铸币厂钱包：${wPath}`));
+      console.error(c.dim('先 `v0id wallet new --name mint` 生成，或用 --mint-wallet 指向已有钱包。'));
+      process.exit(1);
+    }
+    mintAddrWarn(w);
+    const bc = await fetchChain(o);
+    const dataDir = join(wPath, '..');
+    const d = new MintDaemon({ dataDir, mintWallet: w });
+    d.syncDeposits(bc.chain);
+    const denom = Number(o.denom);
+    let tok: MintToken;
+    try {
+      tok = d.issue(String(o.user), denom);
+    } catch (e) {
+      console.error(c.red('发券失败：' + (e instanceof Error ? e.message : String(e))));
+      process.exit(1);
+    }
+    const outPath = o.out || join(defaultDataDir('mint'), 'tokens.json');
+    const existing: MintToken[] = existsSync(outPath) ? JSON.parse(readFileSync(outPath, 'utf8')) : [];
+    existing.push(tok!);
+    mkdirSync(join(outPath, '..'), { recursive: true });
+    writeFileSync(outPath, JSON.stringify(existing, null, 2), { mode: 0o600 });
+    console.log(c.green(`✅ 已发券 面额 ${denom} ${SYMBOL}`), c.dim(`serial=${tok!.serial.slice(0, 12)}…`));
+    console.log(c.dim(`  用户 ${short(String(o.user))} 剩余额度 ${d.allowanceOf(String(o.user))}；券已追加到 ${outPath}（0600）`));
+  });
+
+txCmd(mint.command('redeem'))
+  .description('兑现：验券 → 成形一笔 REDEEM 交易付给服务方（面额−抽成）。默认只预览；--send 才提交')
+  .requiredOption('--to <address>', '收款服务方地址（网站/中继）')
+  .option('--tokens <path>', '券文件（JSON 数组；默认 ./.data/mint/tokens.json）')
+  .option('--mint-wallet <path>', '铸币厂签名钱包（默认 ./.data/mint/wallet.json）')
+  .option('--send', '真的成形并提交 REDEEM 交易（默认关，只预览、不消耗券）', false)
+  .action(async (o) => {
+    const wPath = o.mintWallet || join(defaultDataDir('mint'), 'wallet.json');
+    const w = loadWalletFile(wPath);
+    if (!w) {
+      console.error(c.red(`找不到铸币厂钱包：${wPath}`));
+      process.exit(1);
+    }
+    mintAddrWarn(w);
+    const tPath = o.tokens || join(defaultDataDir('mint'), 'tokens.json');
+    if (!existsSync(tPath)) {
+      console.error(c.red(`找不到券文件：${tPath}（先 \`v0id mint issue\` 产出券）`));
+      process.exit(1);
+    }
+    const tokens = JSON.parse(readFileSync(tPath, 'utf8')) as MintToken[];
+    const d = new MintDaemon({ dataDir: join(wPath, '..'), mintWallet: w });
+    if (!o.send) {
+      let dry; // 预览只需券 + 本地已花集合（守护进程状态），无需拉链
+      try {
+        dry = d.dryRedeem(tokens, String(o.to)); // 验券+算拆分，不消耗券
+      } catch (e) {
+        console.error(c.red('兑现预览失败：' + (e instanceof Error ? e.message : String(e))));
+        process.exit(1);
+      }
+      console.log(c.bold(`\n兑现预览  收款=${short(String(o.to))}  ${tokens.length} 张券`));
+      console.log(`  面额合计 ${dry.gross} ${SYMBOL} → 服务方实得 ${dry.net}（抽成 ${dry.fee} 回国库）`);
+      console.log(c.cyan('\n  （预览：未提交、未消耗券。确认后加 --send 才成形并广播 REDEEM。）\n'));
+      return;
+    }
+    const bc = await fetchChain(o);
+    const nonce = bc.nonceOf(w.address);
+    let r;
+    try {
+      r = d.redeem(tokens, String(o.to), nonce); // 正式：标记已花 + 成形交易
+    } catch (e) {
+      console.error(c.red('兑现失败：' + (e instanceof Error ? e.message : String(e))));
+      process.exit(1);
+    }
+    console.log(c.bold(`\n兑现  收款=${short(String(o.to))}  面额 ${r.gross} → 实得 ${r.net}（抽成 ${r.fee}）`));
+    const res = await api(o, 'POST', '/tx/submit', { tx: r.tx }).catch((e) => ({ error: String(e) }));
+    if ((res as { ok?: boolean }).ok) {
+      console.log(c.green('✅ REDEEM 已广播'), c.dim('txid=' + r.tx.txid.slice(0, 12) + '…'));
+      if (o.wait) await waitConfirm(o, r.tx.txid);
+    } else {
+      console.log(c.red(`✖ 提交失败：${(res as { error?: string }).error}`));
+      console.log(c.dim('  （链上兑现需 mint 钱包地址 === MINT_ADDRESS；占位密钥未 rotate 会被拒，属部署期。券已本地标记已花以防重兑。）'));
+    }
+  });
+
+const token = program.command('token').description('铸币厂代金券：充值换额度（token buy）；发券/兑现见 `v0id mint`');
+
+txCmd(token.command('buy'))
+  .argument('<amount>', '充值额（$V0ID）：转进铸币厂托管，等额度给你发券')
+  .option('--fee <n>', `手续费（gas；省略则自动算 max(${MIN_FEE}, 额×0.1%)）`)
+  .description('充值：把 $V0ID 转进铸币厂托管地址（memo=MINT|DEPOSIT），换取等额「可发券额度」')
+  .action(async (amount, o) => {
+    const amt = Number(amount);
+    const fee = o.fee !== undefined ? Number(o.fee) : minFeeFor(amt);
+    const info = await api(o, 'GET', '/info').catch(() => null);
+    if (info && typeof info.height === 'number' && info.height < MINT_ACTIVATION_HEIGHT) {
+      console.log(c.yellow(`⚠ 当前链高 ${info.height} < 铸币激活高度 ${MINT_ACTIVATION_HEIGHT}：此充值暂按普通转账进托管，激活后才计入铸币储备/额度。`));
+    }
+    const r = await api(o, 'POST', '/send', { to: MINT_ESCROW_ADDRESS, amount: amt, memo: MINT_DEPOSIT_PREFIX, fee });
+    console.log(c.green('✅ 充值已广播'), c.dim('txid='), r.txid, c.dim(`额=${amt} 手续费=${fee}`));
+    console.log(c.dim('（打包确认后，运营者 `v0id mint issue --user <你的地址> --denom N` 即可给你发券）'));
+    if (o.wait) await waitConfirm(o, r.txid);
   });
 
 // ---- wallet（直接读数据目录，不需要节点在跑） ----

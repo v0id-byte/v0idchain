@@ -138,14 +138,8 @@ export class MintDaemon {
     return tok;
   }
 
-  /**
-   * 服务方兑现一批券：验签 + 防双花（已花/批内重复）→ 记 serial 已花 → 成形一笔 REDEEM 交易付给服务方。
-   * @param tokens 待兑现券
-   * @param providerAddress 收款服务方（不得为系统/托管地址）
-   * @param mintNonce 铸币厂钱包当前链上 nonce（调用方从链获取）
-   * @returns 待广播的 REDEEM 交易 + 拆分明细（广播成功且被种子接受后，链上储备减少、抽成落国库）
-   */
-  redeem(tokens: MintToken[], providerAddress: string, mintNonce: number): RedeemResult {
+  /** 验一批券（验签 + 防双花：已花/批内重复 + 收款校验）→ 返回面额合计与去重 serial。不改状态（预览与正式兑现共用）。 */
+  private verifyBatch(tokens: MintToken[], providerAddress: string): { gross: number; serials: string[] } {
     if (!Array.isArray(tokens) || tokens.length === 0) throw new Error('无券可兑现');
     if (SYSTEM_ADDRESSES.has(providerAddress)) throw new Error('兑现收款不能是系统/托管地址');
     const seen = new Set<string>();
@@ -157,8 +151,25 @@ export class MintDaemon {
       seen.add(t.serial);
       gross += t.denom;
     }
-    // 先扣双花再成形交易：即便后续广播失败，serial 也已标记（宁可拒兑也不重兑；重发交易用相同 serial 会被再拦）。
-    for (const s of seen) this.spent.add(s);
+    return { gross, serials: [...seen] };
+  }
+
+  /** 只验券 + 算拆分，**不**标记已花、**不**成形交易（供 CLI 预览，不消耗券）。 */
+  dryRedeem(tokens: MintToken[], providerAddress: string): { gross: number; net: number; fee: number } {
+    const { gross } = this.verifyBatch(tokens, providerAddress);
+    return { gross, ...redeemSplit(gross) };
+  }
+
+  /**
+   * 服务方兑现一批券：验签 + 防双花 → 记 serial 已花 → 成形一笔 REDEEM 交易付给服务方（面额−抽成）。
+   * @param mintNonce 铸币厂钱包当前链上 nonce（调用方从链获取）
+   * @returns 待广播的 REDEEM 交易 + 拆分明细（广播成功且被种子接受后，链上储备减少、抽成落国库）
+   */
+  redeem(tokens: MintToken[], providerAddress: string, mintNonce: number): RedeemResult {
+    const { gross, serials } = this.verifyBatch(tokens, providerAddress);
+    // 先扣双花再成形交易：链不追踪 serial，若不先标记可能对同一券成形两笔 REDEEM 造成超兑（超付储备）；
+    // 故宁可「广播失败也已标记」（重发用相同 serial 会被再拦），不冒超兑风险。
+    for (const s of serials) this.spent.add(s);
     const { net, fee } = redeemSplit(gross);
     const tx = createTransaction(this.wallet, providerAddress, 0, mintNonce, `${REDEEM_PREFIX}${gross}`, MIN_FEE);
     this.persist();

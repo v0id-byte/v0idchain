@@ -1,7 +1,7 @@
 // 本地 HTTP 控制接口：CLI 子命令（send/balance/mine…）通过它和运行中的节点对话。
 // 用 node:http，零额外依赖。只监听 127.0.0.1。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor } from '@v0idchain/core';
+import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor, computeMintState } from '@v0idchain/core';
 import type { V0idNode } from './node.js';
 import type { RoleManager } from './relay/rolemanager.js';
 
@@ -133,6 +133,9 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           }
           case '/redpackets':
             return json(200, node.redPackets());
+          case '/mint/reserve':
+            // 铸币厂链上储备（只读、无需令牌）：累计充值 − 累计兑现 = 偿付能力证明，任何人可核（见 MINT-PROTOCOL）。
+            return json(200, computeMintState(node.bc.chain));
           case '/balance': {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });

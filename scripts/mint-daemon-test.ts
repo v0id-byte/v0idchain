@@ -90,6 +90,9 @@ function main() {
 
   console.log(`\n— 兑现：验券 + REDEEM 交易成形（拆分/回环/自洽签名）—`);
   const provider = Wallet.generate();
+  const dry1 = d.dryRedeem([tA1, tA2], provider.address);
+  const dry2 = d.dryRedeem([tA1, tA2], provider.address);
+  check('dryRedeem 预览不消耗券（两次 gross 均 1000，未标记已花）', dry1.gross === 1000 && dry2.gross === 1000);
   const r = d.redeem([tA1, tA2], provider.address, 0);
   check('gross = 面额之和 1000', r.gross === 1000);
   check('拆分 net/fee 与 redeemSplit 一致（950/50）', r.net === redeemSplit(1000).net && r.fee === redeemSplit(1000).fee);
