@@ -5,13 +5,17 @@
 // 本脚本在 devnet 用一个我掌钥的运营者把整条资金流跑通并被共识接受：**充值(上链) → 发券(链下) → 兑现(上链被接受)
 // → 储备减少 / 抽成回国库 / 偿付强制**。
 //
-// ⚠️ 一次性 deploy-readiness 检查，不进 CI（默认 config 下会 SKIP）。devnet 跑法：
-//   1) 生成运营者钱包，拿到私钥 hex 与地址：
-//        corepack pnpm exec tsx -e "import {Wallet} from './packages/core/src/index.js'; const w=Wallet.generate(); console.log(w.privateKey, w.address)"
-//   2) **临时**改 packages/core/src/config.ts：MINT_ADDRESS = 该地址；MINT_ACTIVATION_HEIGHT = 50（forge 快）。
-//   3) V0ID_DEVNET_OPERATOR_SK=<私钥hex> corepack pnpm exec tsx scripts/mint-devnet-e2e.ts
+// ⚠️ 一次性 deploy-readiness 检查，不进 CI。语义：**未提供运营者密钥 → SKIP(exit 0，CI 安全)**；
+//    **提供了密钥但 config 不符 → FAIL(exit 1)**（防 pre-deploy gate 只看退出码把"配置没改对"误报成功）。
+// devnet 跑法（改 config 绝不 commit，运营者私钥绝不入库 —— 同 MINT_ADDRESS 掌钥即支配储备的纪律）：
+//   1) 生成运营者钱包（脚本自带，避免 tsx -e 解析问题 / 打印 Uint8Array 而非 hex）：
+//        V0ID_DEVNET_GEN=1 corepack pnpm exec tsx scripts/mint-devnet-e2e.ts   →  打印 SK=<私钥hex> / ADDR=<地址>
+//      （真·上线前请改用运营者**已有的 0600 钱包**，不要新生成一把。）
+//   2) **临时**改 packages/core/src/config.ts：MINT_ADDRESS = 该 ADDR；MINT_ACTIVATION_HEIGHT = 50（forge 快）。
+//   3) 跑验证 —— **优先用 0600 钱包文件传密钥**（不落 shell 历史/进程环境）：
+//        V0ID_DEVNET_OPERATOR_KEYFILE=/path/to/wallet.json corepack pnpm exec tsx scripts/mint-devnet-e2e.ts
+//      （devnet 便利也可 V0ID_DEVNET_OPERATOR_SK=<hex>，但会落 shell history + 进程环境；真·上线务必用文件。）
 //   4) 还原 config：git checkout packages/core/src/config.ts
-// 绝不 commit 改过的 config；运营者私钥绝不入库（同 MINT_ADDRESS 掌钥即支配储备的纪律）。
 import {
   Blockchain,
   Wallet,
@@ -31,9 +35,25 @@ import {
 } from '../packages/core/src/index.js';
 import { MintDaemon } from '../packages/node/src/mint/mintd.js';
 import { forgeTo, clearCheckpointsForTest } from './forge-chain.js';
-import { rmSync, existsSync } from 'node:fs';
+import { rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+/** 运营者密钥来源：优先 0600 钱包文件（不落 shell 历史），回退环境变量（devnet 便利）。返回 hex 私钥或 null。 */
+function loadOperatorSk(): string | null {
+  const kf = process.env.V0ID_DEVNET_OPERATOR_KEYFILE;
+  if (kf) {
+    const raw = readFileSync(kf, 'utf8').trim();
+    try {
+      const j = JSON.parse(raw); // 支持 wallet.json（{privateKey: hex}）
+      if (j && typeof j.privateKey === 'string') return j.privateKey;
+    } catch {
+      /* 非 JSON → 当作裸 hex */
+    }
+    return raw;
+  }
+  return process.env.V0ID_DEVNET_OPERATOR_SK ?? null;
+}
 
 let failed = 0;
 function check(label: string, cond: boolean) {
@@ -52,21 +72,31 @@ async function fund(bc: Blockchain, to: string, amount: number): Promise<void> {
 }
 
 async function main() {
-  // ---- 前置门槛：必须有一个 地址===MINT_ADDRESS 的运营者，且激活高度已临时调小 ----
-  const skHex = process.env.V0ID_DEVNET_OPERATOR_SK;
-  if (!skHex) {
-    console.log('⏭  SKIP: 未设 V0ID_DEVNET_OPERATOR_SK（这是 devnet deploy-readiness 检查，见文件头跑法）。');
+  // ---- 生成运营者钱包（自带，避免 tsx -e 解析问题 / 打印 Uint8Array）→ 打印 hex 私钥 + 地址后退出 ----
+  if (process.env.V0ID_DEVNET_GEN) {
+    const w = Wallet.generate();
+    process.stdout.write(`SK=${w.toJSON().privateKey}\nADDR=${w.address}\n`);
     process.exit(0);
   }
+
+  // ---- 前置门槛 ----
+  // 未提供密钥 = 没打算跑 → SKIP(0)，CI 安全。
+  const skHex = loadOperatorSk();
+  if (!skHex) {
+    console.log('⏭  SKIP: 未提供运营者密钥（V0ID_DEVNET_OPERATOR_KEYFILE / _SK）——这是 devnet deploy-readiness 检查，见文件头跑法。');
+    process.exit(0);
+  }
+  // 一旦**显式提供**了运营者密钥 = 打算跑全程 → config 不符即 **FAIL(exit 1)**，不再 SKIP。
+  // 否则 pre-deploy gate 只看退出码，会把"config 里 MINT_ADDRESS/激活高度没改对"这种恰恰阻断链上接受的错配误报成功。
   const operator = Wallet.fromPrivateKeyHex(skHex);
   if (operator.address !== MINT_ADDRESS) {
-    console.log(`⏭  SKIP: 运营者地址 ${operator.address} ≠ config.MINT_ADDRESS ${MINT_ADDRESS}。`);
-    console.log('   需临时把 config 的 MINT_ADDRESS 改成运营者地址（见文件头第 2 步），否则链不接受其 REDEEM。');
-    process.exit(0);
+    console.error(`❌ FAIL: 运营者地址 ${operator.address} ≠ config.MINT_ADDRESS ${MINT_ADDRESS}。`);
+    console.error('   已显式提供运营者密钥却地址不符 → 链不会接受其 REDEEM。请临时把 config 的 MINT_ADDRESS 改成运营者地址（文件头第 2 步）后重跑。');
+    process.exit(1);
   }
   if (MINT_ACTIVATION_HEIGHT > 2_000) {
-    console.log(`⏭  SKIP: MINT_ACTIVATION_HEIGHT=${MINT_ACTIVATION_HEIGHT} 太高、forge 慢。devnet 请临时改小（如 50）。`);
-    process.exit(0);
+    console.error(`❌ FAIL: MINT_ACTIVATION_HEIGHT=${MINT_ACTIVATION_HEIGHT} 太高、forge 极慢。请临时改小（如 50）后重跑。`);
+    process.exit(1);
   }
 
   clearCheckpointsForTest(); // devnet forge 链非真 PoW/非主网 hash → 关闭 checkpoint 强制
