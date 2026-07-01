@@ -28,6 +28,8 @@ import type { MixnetOpts } from './relaynode.js';
 const MIN_RELAYS = 3;
 /** 自动发布描述符的重试周期（ms）——与 CLI 原值一致：余额够且尚未发布时定期重试一次。 */
 const PUBLISH_RETRY_MS = 5000;
+/** 最近 .v0id 连接失败原因缓存上限（瞬态、不落盘，同 GuardManager.unreachable 的取舍）——超则逐出最旧。 */
+const MAX_HS_ERRORS = 128;
 
 /**
  * 该中继广播 host 是否值得把 RELAY| 描述符上链。回环/私网 host 对任何远端客户端都不可达 → 上链只会污染
@@ -113,6 +115,8 @@ export class RoleManager {
   private hsMap: Map<string, { id: string; address: string; stop: () => void; getConnCount: () => number; target: { host: string; port: number }; name: string }> = new Map();
   private socks?: SocksProxy;
   private socksPort: number | null = null;
+  /** 最近一次 SOCKS .v0id 连接失败原因，按目标地址存（GET /hs/lasterror 供 GUI 展示具体原因用）。 */
+  private hsErrors: Map<string, { ts: number; reason: string }> = new Map();
   // 挖矿态：node 内部自己也有 mining 标志，但本类需对外报 on/intervalMs，故在此镜像一份。
   private mineOn = false;
   private mineIntervalMs: number | null = null;
@@ -306,13 +310,29 @@ export class RoleManager {
     this.socksPort = port;
   }
 
-  /** 供调用方在启动时构造 SocksProxy 用的两件依赖（pickHops + 共享 hsDeps + guard 失败回调）。 */
-  socksWiring(): { pickHops: HopPicker; hsDeps: HsDeps; onGuardFail: (g: HopSpec) => void } {
+  /** 供调用方在启动时构造 SocksProxy 用的依赖（pickHops + 共享 hsDeps + guard/hs 失败回调）。 */
+  socksWiring(): { pickHops: HopPicker; hsDeps: HsDeps; onGuardFail: (g: HopSpec) => void; onHsFail: (addr: string, reason: string) => void } {
     return {
       pickHops: this.pickHops,
       hsDeps: this.hsDeps,
       onGuardFail: (g) => this.guard.markUnreachable(g.id),
+      onHsFail: (addr, reason) => this.recordHsError(addr, reason),
     };
+  }
+
+  /** 记一条 .v0id 连接失败原因（同地址覆盖旧值；超容量逐出最旧）。 */
+  private recordHsError(addr: string, reason: string): void {
+    this.hsErrors.delete(addr); // 先删后插 = 顶到 Map 迭代顺序末尾，配合下面 FIFO 逐出
+    this.hsErrors.set(addr, { ts: Date.now(), reason });
+    if (this.hsErrors.size > MAX_HS_ERRORS) {
+      const oldest = this.hsErrors.keys().next().value;
+      if (oldest !== undefined) this.hsErrors.delete(oldest);
+    }
+  }
+
+  /** 查最近一次某 .v0id 地址的连接失败原因（GET /hs/lasterror 用）。无记录 → undefined。 */
+  hsError(addr: string): { ts: number; reason: string } | undefined {
+    return this.hsErrors.get(addr);
   }
 
   // ---- 只读元信息（CLI 启动打印用；不暴露可变内部句柄）----

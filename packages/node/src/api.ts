@@ -117,6 +117,13 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
               hsList: [],
               mine: { on: false, intervalMs: null },
             });
+          case '/hs/lasterror': {
+            // 最近一次 .v0id SOCKS 连接失败的具体原因（只读、无需令牌，与 /roles 同级）：GUI 拿 ERR_SOCKS_CONNECTION_FAILED
+            // 后查它、把 Chromium 通用错误页换成中文原因。未接 RoleManager 或无记录 → 404。
+            const addr = url.searchParams.get('addr') || '';
+            const err = roles?.hsError(addr);
+            return err ? json(200, err) : json(404, { error: 'not found' });
+          }
           case '/redpackets':
             return json(200, node.redPackets());
           case '/balance': {

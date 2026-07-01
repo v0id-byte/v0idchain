@@ -48,6 +48,7 @@ export class SocksProxy {
     readonly host = '127.0.0.1',
     private hsDeps?: HsDeps, // 注入则 <地址>.v0id 经 rendezvous 连隐藏服务；不注入则 .v0id 返回 SOCKS 失败
     private onGuardFail?: (guard: HopSpec) => void, // 连守卫(hop0)失败时回调 → 调用方据此把该守卫标记不可达、下次切备份
+    private onHsFail?: (addr: string, reason: string) => void, // .v0id 连接失败时回调 → 调用方记下具体原因，供 GET /hs/lasterror 查询
   ) {
     this.server = createServer((s) => this.handle(s).catch(() => s.destroy()));
     this.server.listen(port, host);
@@ -148,7 +149,10 @@ export class SocksProxy {
     let channel;
     try {
       channel = await connectHs(addr, this.hsDeps);
-    } catch {
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`[hs-connect] ${addr} 失败: ${reason}`);
+      this.onHsFail?.(addr, reason);
       sock.write(reply(0x04)); // 主机不可达（服务未发布 / 取不到描述符 / 握手失败）
       return void sock.destroy();
     }
