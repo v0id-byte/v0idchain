@@ -149,7 +149,7 @@ v0idchain/packages/
 └── web/    Vite + React dashboard + block explorer
 ```
 
-The CLI is a **thin client**: `start` runs a node; the other subcommands drive a running node through its **local HTTP API** (`127.0.0.1` only; mutating endpoints require a Bearer token `api.token`, `0600`). Full-chain sync rides WebSocket (`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`, single frame ≤ 64MB).
+The CLI is a **thin client**: `start` runs a node; the other subcommands drive a running node through its **local HTTP API** (`127.0.0.1` only; mutating endpoints require a Bearer token `api.token`, `0600`). Full nodes still sync full chains over WebSocket (`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`, single frame ≤ 64MB); wallets/indexers can use `QUERY_HEADERS`, `QUERY_RECENT`, `QUERY_TX_PROOF`, and `QUERY_ADDRESS_PROOFS` for non-consensus light sync and on-demand historical backfill.
 
 ### Further reading
 

@@ -12,8 +12,8 @@
 
 - 私钥永远只在本机（Keychain / Keystore）。
 - 交易在本地用 ed25519 签名。
-- 通过 WebSocket 连到任意节点（如公网种子 `ws://mc.void1211.com:6001`）：拉全链算余额、广播自己的交易、持续接收新块。
-- 当前协议**没有 SPV / 轻同步**：客户端需拉**全链**（现 ~700KB，可接受）自行重放算状态。
+- 通过 WebSocket 连到任意节点（如公网种子 `ws://mc.void1211.com:6001`）：可拉全链算余额，也可先拉 headers + 最近区块，再按需请求历史证明。
+- 当前协议已有**轻同步基础**：headers 可验证 PoW/header hash/prevHash，交易可用 Merkle proof 证明“确实在某个 PoW 区块里”。但账户余额仍来自重放状态；没有 `stateRoot`/地址 accumulator 前，地址历史证明只能证明“返回的交易存在”，不能单节点证明“没有漏掉旧交易”。
 
 ---
 
@@ -125,6 +125,14 @@ merkleRoot(txids): 两两 sha256Hex(a+b) 逐层归并，奇数复制末尾；空
 {type:'QUERY_LATEST'}                      // 要最新块
 {type:'QUERY_ALL'}                         // 要整条链
 {type:'BLOCKS', blocks:[...]}              // 区块（整链同步走这条）
+{type:'QUERY_HEADERS', from?, to?}          // 要 header 范围
+{type:'HEADERS', headers:[...], from?, total?}
+{type:'QUERY_BLOCK_RANGE', from, to}        // 要完整区块范围（节点会限量）
+{type:'QUERY_RECENT', maxBlocks?, minTimestamp?} // 最近窗口：块数与时间同时满足
+{type:'QUERY_TX_PROOF', txid}               // 要单笔交易 Merkle inclusion proof
+{type:'TX_PROOF', txid, proof?, error?}
+{type:'QUERY_ADDRESS_PROOFS', address, from?, to?} // 要地址相关交易的 inclusion proofs
+{type:'ADDRESS_PROOFS', address, proofs:[...], from?, to?}
 {type:'TX', tx:{...}}                       // 广播一笔交易
 {type:'QUERY_PEERS'} / {type:'PEERS', peers:[...]}
 ```
@@ -138,6 +146,15 @@ merkleRoot(txids): 两两 sha256Hex(a+b) 逐层归并，奇数复制末尾；空
 5. 保持监听 `BLOCKS` 增量更新（或定期 `QUERY_LATEST`/`QUERY_ALL` 重拉）。
 
 单条 WS 消息上限 64MB（整链单帧发送）。
+
+**轻同步流程（推荐新钱包/索引器逐步迁移）：**
+
+1. 发 `QUERY_HEADERS` 拉 header 链；本地验证 `calcBlockHash`、PoW、`prevHash` 连续、checkpoint 与累计工作量。
+2. 发 `QUERY_RECENT`，例如 `{maxBlocks:10000,minTimestamp:Date.now()-3*24*3600*1000}`，只缓存同时满足“最近 10000 块”和“三天内”的完整块。
+3. 用户导入老地址或打开历史页时，发 `QUERY_ADDRESS_PROOFS` 回填该地址历史；每条 proof 用区块 header 的 `merkleRoot` 验证交易存在。
+4. 若要查单笔交易，发 `QUERY_TX_PROOF`；若要浏览旧区块，发 `QUERY_BLOCK_RANGE` 按高度段拉取。
+
+安全边界：Merkle proof 是**存在证明**，不是“无遗漏证明”。如果钱包不拉全链，最好向多个节点交叉请求同一地址历史；真正的单节点余额证明需要未来共识层加入状态承诺。
 
 ---
 

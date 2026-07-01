@@ -1,7 +1,18 @@
 // P2P 网络：WebSocket 全双工，区块/交易广播，peer gossip 自动发现，断线自动重连。
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
-import { verify, addressToPublicKeyHex, type Block, type Transaction } from '@v0idchain/core';
+import {
+  verify,
+  addressToPublicKeyHex,
+  blockHeaders,
+  recentBlockWindow,
+  findTxInclusionProof,
+  addressInclusionProofs,
+  type Block,
+  type BlockHeader,
+  type Transaction,
+  type TxInclusionProof,
+} from '@v0idchain/core';
 import { type Conn, WsConn } from './transport.js';
 import { RtcTransport, signalPayloadHex, type SignalMsg } from './rtc.js';
 
@@ -14,6 +25,14 @@ export type P2PMessage =
   | { type: 'QUERY_LATEST' }
   | { type: 'QUERY_ALL' }
   | { type: 'BLOCKS'; blocks: Block[]; from?: number; total?: number }
+  | { type: 'QUERY_HEADERS'; from?: number; to?: number }
+  | { type: 'HEADERS'; headers: BlockHeader[]; from?: number; total?: number }
+  | { type: 'QUERY_BLOCK_RANGE'; from: number; to: number }
+  | { type: 'QUERY_RECENT'; maxBlocks?: number; minTimestamp?: number }
+  | { type: 'QUERY_TX_PROOF'; txid: string }
+  | { type: 'TX_PROOF'; txid: string; proof?: TxInclusionProof; error?: string }
+  | { type: 'QUERY_ADDRESS_PROOFS'; address: string; from?: number; to?: number }
+  | { type: 'ADDRESS_PROOFS'; address: string; proofs: TxInclusionProof[]; from?: number; to?: number }
   | { type: 'TX'; tx: Transaction }
   | { type: 'QUERY_PEERS' }
   | { type: 'PEERS'; peers: string[] }
@@ -114,6 +133,12 @@ export class P2P {
    * 整机所有分片缓冲合计封顶在此值（~1.2GB 量级），合法同步（几个 peer × 现链 ~数千块 = 几十 MB）绝不触顶。
    */
   private static readonly MAX_SYNC_BLOCKS_GLOBAL = 1_200_000;
+
+  /** 单次轻客户端范围查询最多返回多少个完整块，避免把 QUERY_BLOCK_RANGE 变成无界整链下载。 */
+  private static readonly MAX_LIGHT_BLOCK_RANGE = 10_000;
+
+  /** 单次地址历史证明最多扫多少个高度。证明只是“返回项的存在证明”，不是全局无遗漏证明。 */
+  private static readonly MAX_ADDRESS_PROOF_SPAN = 100_000;
 
   /**
    * WebRTC DataChannel 整链同步的分片大小（块数）。SCTP DataChannel 安全互操作上限 16 KiB、
@@ -308,6 +333,13 @@ export class P2P {
     this.send(conn, { type: 'QUERY_PEERS' });
   }
 
+  private clampRange(chain: Block[], from: number, to: number, max: number): { from: number; to: number } | null {
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) return null;
+    if (chain.length === 0 || from >= chain.length) return null;
+    const end = Math.min(to, chain.length - 1, from + max - 1);
+    return { from, to: end };
+  }
+
   /** 把当前交易池补给一个 peer。用于新 peer 追链后也能看到已广播但未打包的交易。 */
   private sendMempool(conn: Conn): void {
     for (const tx of this.handlers.getMempool()) this.send(conn, { type: 'TX', tx });
@@ -385,6 +417,69 @@ export class P2P {
             }
           }
           this.sendMempool(conn);
+          break;
+        }
+        case 'QUERY_HEADERS': {
+          if (!this.serveChain) break;
+          const chain = this.handlers.getChain();
+          const range = this.clampRange(
+            chain,
+            typeof msg.from === 'number' ? msg.from : 0,
+            typeof msg.to === 'number' ? msg.to : chain.length - 1,
+            P2P.MAX_SYNC_BLOCKS,
+          );
+          if (!range) break;
+          this.send(conn, {
+            type: 'HEADERS',
+            headers: blockHeaders(chain.slice(range.from, range.to + 1)),
+            from: range.from,
+            total: chain.length,
+          });
+          break;
+        }
+        case 'QUERY_BLOCK_RANGE': {
+          if (!this.serveChain) break;
+          const chain = this.handlers.getChain();
+          const range = this.clampRange(chain, msg.from, msg.to, P2P.MAX_LIGHT_BLOCK_RANGE);
+          if (!range) break;
+          this.send(conn, { type: 'BLOCKS', blocks: chain.slice(range.from, range.to + 1), from: range.from, total: chain.length });
+          this.sendMempool(conn);
+          break;
+        }
+        case 'QUERY_RECENT': {
+          if (!this.serveChain) break;
+          const maxBlocks =
+            Number.isInteger(msg.maxBlocks) && msg.maxBlocks > 0
+              ? Math.min(msg.maxBlocks, P2P.MAX_LIGHT_BLOCK_RANGE)
+              : P2P.MAX_LIGHT_BLOCK_RANGE;
+          const minTimestamp = Number.isFinite(msg.minTimestamp) ? Number(msg.minTimestamp) : 0;
+          this.send(conn, { type: 'BLOCKS', blocks: recentBlockWindow(this.handlers.getChain(), maxBlocks, minTimestamp) });
+          this.sendMempool(conn);
+          break;
+        }
+        case 'QUERY_TX_PROOF': {
+          if (!this.serveChain || typeof msg.txid !== 'string') break;
+          const proof = findTxInclusionProof(this.handlers.getChain(), msg.txid);
+          this.send(conn, proof ? { type: 'TX_PROOF', txid: msg.txid, proof } : { type: 'TX_PROOF', txid: msg.txid, error: 'not found' });
+          break;
+        }
+        case 'QUERY_ADDRESS_PROOFS': {
+          if (!this.serveChain || typeof msg.address !== 'string') break;
+          const chain = this.handlers.getChain();
+          const range = this.clampRange(
+            chain,
+            typeof msg.from === 'number' ? msg.from : 0,
+            typeof msg.to === 'number' ? msg.to : chain.length - 1,
+            P2P.MAX_ADDRESS_PROOF_SPAN,
+          );
+          if (!range) break;
+          this.send(conn, {
+            type: 'ADDRESS_PROOFS',
+            address: msg.address,
+            proofs: addressInclusionProofs(chain, msg.address, range.from, range.to),
+            from: range.from,
+            to: range.to,
+          });
           break;
         }
         case 'BLOCKS': {

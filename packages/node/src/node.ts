@@ -45,6 +45,10 @@ import {
   STAKE_ESCROW_ADDRESS,
   UNSTAKE_PREFIX,
   writeWalletFile,
+  blockHeaders,
+  recentBlockWindow,
+  findTxInclusionProof,
+  addressInclusionProofs,
   type StakeRole,
 } from '@v0idchain/core';
 import { join } from 'node:path';
@@ -546,6 +550,32 @@ export class V0idNode {
     }
     if (this.bc.mempool.some((t) => t.txid === txid)) return { txid, status: 'pending' };
     return { txid, status: 'unknown' };
+  }
+
+  headers(from = 0, to = this.bc.height) {
+    const start = Math.max(0, Math.floor(from));
+    const end = Math.min(this.bc.height, Math.floor(to));
+    if (end < start) return [];
+    return blockHeaders(this.bc.chain.slice(start, end + 1));
+  }
+
+  blockRange(from: number, to: number) {
+    const start = Math.max(0, Math.floor(from));
+    const end = Math.min(this.bc.height, Math.floor(to));
+    if (end < start) return [];
+    return this.bc.chain.slice(start, end + 1);
+  }
+
+  recentBlocks(maxBlocks = 10_000, minTimestamp = 0) {
+    return recentBlockWindow(this.bc.chain, maxBlocks, minTimestamp);
+  }
+
+  txProof(txid: string) {
+    return findTxInclusionProof(this.bc.chain, txid);
+  }
+
+  addressProofs(address: string, from = 0, to = this.bc.height) {
+    return addressInclusionProofs(this.bc.chain, address, from, to);
   }
 
   // ---- 杂项 ----

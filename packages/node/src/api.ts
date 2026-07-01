@@ -5,6 +5,10 @@ import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor } from '@v0idchain
 import type { V0idNode } from './node.js';
 import type { RoleManager } from './relay/rolemanager.js';
 
+const MAX_LIGHT_BLOCK_RANGE = 10_000;
+const MAX_HEADER_RANGE = 100_000;
+const MAX_ADDRESS_PROOF_SPAN = 100_000;
+
 function readBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve) => {
     let data = '';
@@ -57,6 +61,37 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             return json(200, node.info());
           case '/chain':
             return json(200, node.bc.chain);
+          case '/headers': {
+            const from = Number(url.searchParams.get('from') ?? 0);
+            const requestedTo = url.searchParams.has('to') ? Number(url.searchParams.get('to')) : node.bc.height;
+            if (!Number.isInteger(from) || !Number.isInteger(requestedTo) || from < 0 || requestedTo < from) {
+              return json(400, { error: 'from/to 必须是合法高度范围' });
+            }
+            const to = Math.min(requestedTo, from + MAX_HEADER_RANGE - 1);
+            return json(200, { from, to, total: node.bc.chain.length, headers: node.headers(from, to) });
+          }
+          case '/blocks': {
+            const from = Number(url.searchParams.get('from'));
+            const to = Number(url.searchParams.get('to'));
+            if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) {
+              return json(400, { error: 'from/to 必须是合法高度范围' });
+            }
+            const cappedTo = Math.min(to, from + MAX_LIGHT_BLOCK_RANGE - 1);
+            return json(200, { from, to: cappedTo, total: node.bc.chain.length, blocks: node.blockRange(from, cappedTo) });
+          }
+          case '/recent': {
+            const maxBlocks = Number(url.searchParams.get('maxBlocks') ?? 10_000);
+            const minTimestamp = Number(url.searchParams.get('minTimestamp') ?? 0);
+            if (!Number.isInteger(maxBlocks) || maxBlocks < 1 || !Number.isFinite(minTimestamp)) {
+              return json(400, { error: 'maxBlocks 必须是正整数，minTimestamp 必须是数字' });
+            }
+            return json(200, {
+              maxBlocks: Math.min(maxBlocks, MAX_LIGHT_BLOCK_RANGE),
+              minTimestamp,
+              total: node.bc.chain.length,
+              blocks: node.recentBlocks(Math.min(maxBlocks, MAX_LIGHT_BLOCK_RANGE), minTimestamp),
+            });
+          }
           case '/mempool':
             return json(200, node.bc.mempool);
           case '/peers':
@@ -99,6 +134,23 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             const txid = url.searchParams.get('txid') || '';
             if (!txid) return json(400, { error: '缺少 txid 参数' });
             return json(200, node.txStatus(txid));
+          }
+          case '/tx-proof': {
+            const txid = url.searchParams.get('txid') || '';
+            if (!/^[0-9a-f]{64}$/.test(txid)) return json(400, { error: 'txid 必须是 64 位 hex' });
+            const proof = node.txProof(txid);
+            return proof ? json(200, proof) : json(404, { error: 'not found' });
+          }
+          case '/address-proofs': {
+            const address = url.searchParams.get('address') || '';
+            if (!isValidAddress(address)) return json(400, { error: 'address 必须是合法地址' });
+            const from = Number(url.searchParams.get('from') ?? 0);
+            const requestedTo = url.searchParams.has('to') ? Number(url.searchParams.get('to')) : node.bc.height;
+            if (!Number.isInteger(from) || !Number.isInteger(requestedTo) || from < 0 || requestedTo < from) {
+              return json(400, { error: 'from/to 必须是合法高度范围' });
+            }
+            const to = Math.min(requestedTo, from + MAX_ADDRESS_PROOF_SPAN - 1);
+            return json(200, { address, from, to, proofs: node.addressProofs(address, from, to) });
           }
         }
       }

@@ -9,6 +9,7 @@ export * from './hsrend.js';
 export * from './wallet.js';
 export * from './transaction.js';
 export * from './block.js';
+export * from './light.js';
 export * from './blockchain.js';
 export * from './storage.js';
 export * from './market.js';

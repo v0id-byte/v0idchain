@@ -9,6 +9,7 @@ export * from './onioncell.js';
 export * from './wallet.js';
 export * from './transaction.js';
 export * from './block.js';
+export * from './light.js';
 export * from './blockchain.js';
 export * from './market.js';
 export * from './messages.js';

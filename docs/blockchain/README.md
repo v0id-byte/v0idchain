@@ -149,7 +149,7 @@ v0idchain/packages/
 └── web/    Vite + React 仪表盘 + 区块浏览器
 ```
 
-CLI 是**瘦客户端**：`start` 把节点跑起来，其余子命令通过节点的**本地 HTTP API**（仅 `127.0.0.1`，写接口需 Bearer 令牌 `api.token`，`0600`）操作运行中的节点。整链同步走 WebSocket（`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`，单帧 ≤ 64MB）。
+CLI 是**瘦客户端**：`start` 把节点跑起来，其余子命令通过节点的**本地 HTTP API**（仅 `127.0.0.1`，写接口需 Bearer 令牌 `api.token`，`0600`）操作运行中的节点。全节点整链同步仍走 WebSocket（`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`，单帧 ≤ 64MB）；钱包/索引器可用 `QUERY_HEADERS`、`QUERY_RECENT`、`QUERY_TX_PROOF`、`QUERY_ADDRESS_PROOFS` 做非共识的轻同步与按需历史回填。
 
 ### 延伸阅读
 
