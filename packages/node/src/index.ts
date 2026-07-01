@@ -14,3 +14,6 @@ export * from './relay/hsbridge.js';
 export * from './relay/measurer.js';
 // 角色管理器（Phase 2F-1：运行时切换中继/隐藏服务/挖矿，供 GUI 经 HTTP API 控制）
 export * from './relay/rolemanager.js';
+// 央行电子现金铸币厂守护（Phase A：发券/验券/兑现的链下逻辑 + 记名券密码学）
+export * from './mint/token.js';
+export * from './mint/mintd.js';
