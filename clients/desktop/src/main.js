@@ -349,9 +349,19 @@ ipcMain.handle('v0id:settings:getRelayAdvertise', () => {
   return { host: s.relayAdvertiseHost || '', port: s.relayAdvertisePort || null };
 });
 ipcMain.handle('v0id:settings:setRelayAdvertise', (_e, { host, port } = {}) => {
+  let portNum = null;
+  if (port !== null && port !== undefined && port !== '') {
+    portNum = Number(port);
+    // 端口非法（如误输入 0 / 超 65535）却照样落盘的话，下次重启会把它原样传给 --relay-advertise-port，
+    // RoleManager 会把它当广播端口报出来，但 publishRelay 校验描述符时会拒绝，导致「广播地址已生效」
+    // 界面却怎么也发布不出去、原因还不明显——不如现在就把错误的输入挡在保存这一步。
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      return { ok: false, error: '端口须为 1–65535 的整数' };
+    }
+  }
   writeSettings({
     relayAdvertiseHost: typeof host === 'string' ? host.trim() : '',
-    relayAdvertisePort: port ? Number(port) : null,
+    relayAdvertisePort: portNum,
   });
   return { ok: true };
 });
@@ -515,18 +525,36 @@ function killDaemon() {
 
 // ---- 重启守护进程（改中继广播地址等启动时常量后生效用）----
 // 等旧进程真正退出（而非发完信号就立刻重拉）再 spawn，避免抢占同一批端口（socks/api/中继 cell）导致 EADDRINUSE。
+// 直到新进程的 SOCKS 端口真正就绪才 resolve：调用方（保存广播地址的 UI）据此知道什么时候才能安全地
+// 再调 /relay/start 之类的 API——太早调用会打到还没起来的新进程上，白白失败。
 function restartDaemon() {
+  // 外部 SOCKS 验证模式（V0ID_SOCKS_EXTERNAL）本就不拉内部守护进程（用的是外面已经在跑的 demo SOCKS），
+  // 这里如果照常 spawnDaemon() 会在同一个 SOCKS 端口上再起一个真守护进程，跟 demo 服务打架，
+  // 其余主进程逻辑（nodeApi 等）仍以为节点 API 不可用，导致状态分裂。这类改动在该模式下没有意义，直接拒绝。
+  if (SOCKS_EXTERNAL != null) {
+    return Promise.resolve({ ok: false, error: '外部 SOCKS 验证模式下没有内部守护进程，无法重启（该模式仅用于本地联调）' });
+  }
   return new Promise((resolve) => {
+    const afterExit = () => {
+      socksReady = false;
+      spawnDaemon();
+      waitSocksReady(SOCKS_PORT)
+        .then(() => {
+          socksReady = true;
+          pushStatus({ phase: 'socks-ready', socksPort: SOCKS_PORT });
+          resolve({ ok: true });
+        })
+        .catch((err) => {
+          pushStatus({ phase: 'error', error: `SOCKS 未就绪：${err.message}` });
+          resolve({ ok: false, error: err.message });
+        });
+    };
     const child = daemon;
     if (!child) {
-      spawnDaemon();
-      resolve({ ok: true });
+      afterExit();
       return;
     }
-    child.once('exit', () => {
-      spawnDaemon();
-      resolve({ ok: true });
-    });
+    child.once('exit', afterExit);
     killDaemon();
   });
 }

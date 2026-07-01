@@ -22,7 +22,7 @@ import type { V0idNode } from '../node.js';
 import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js';
 import { SocksProxy, type HopPicker } from './socks.js';
 import { GuardManager } from './guards.js';
-import { makeHsDeps, serveHiddenService, type HsDeps } from './hsbridge.js';
+import { makeHsDeps, serveHiddenService, isRoutableHost, type HsDeps } from './hsbridge.js';
 import { serveStaticDir } from './staticserve.js';
 import { RelayReachability } from './reachability.js';
 import type { HopSpec } from './client.js';
@@ -190,11 +190,28 @@ export class RoleManager {
   private pickHops: HopPicker = (): HopSpec[] => {
     const raw = this.node.relays();
     if (raw.length < MIN_RELAYS) throw new Error('链上中继不足 3 个，暂无法建路');
-    const all = this.reachability.knownUsable(raw);
+    // 先剔除不可路由的 host（回环/私网，如浏览器自己注册的 127.0.0.1）再做可达性过滤：否则本机若碰巧有
+    // 服务监听在同一端口，WS 自探测会“连得通”而把这条死中继误判为可用，选中后却是在拨自己、根本连不到
+    // 真正的对方——与 hsbridge.buildCircuit 同一口径（见 isRoutableHost）。
+    const routable = raw.filter((d) => isRoutableHost(d.host));
+    const all = this.reachability.knownUsable(routable);
     if (all.length < MIN_RELAYS) throw new Error('链上可达中继不足 3 个，暂无法建路（其余为已知死中继，等待后台探测淘汰或稍后重试）');
     const hop = (d: (typeof all)[number]): HopSpec => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port });
-    const gid = this.guard.currentGuard(all);
-    const guard = gid ? all.find((d) => d.address === gid) : undefined;
+    // 守卫钉住/落盘判定必须传 raw（未经可达性过滤的全量目录），不能传 all：GuardManager.currentGuard 把
+    // “不在传入目录里”等同于“中继已下线”并从 guards.json 里永久删除该守卫。若传经 reachability 过滤过的
+    // all，一次瞬时探测失败就会被误判成“下线”，导致钉住的入口守卫被迫频繁轮换——这正好违背守卫钉住本意
+    // （抗多电路统计去匿名，见 guards.ts 顶部注释），反而扩大了入口暴露面。真正“当前不可达”只应影响
+    // “这次建路用不用它”，绝不该影响“它还算不算钉住的守卫”。
+    // 于是这里在钉住集内部（最多 guard.size 次）跳过当前不可达的守卫，同时保持 guards.json 不受影响。
+    const excluded = new Set<string>();
+    let guard: (typeof all)[number] | undefined;
+    for (let i = 0; i < this.guard.size; i++) {
+      const gid = this.guard.currentGuard(raw, excluded);
+      if (!gid) break;
+      const candidate = all.find((d) => d.address === gid);
+      if (candidate) { guard = candidate; break; }
+      excluded.add(gid); // 该守卫当前不可达（探测判负）：本次建路跳过，不触碰其在 guards.json 里的钉住状态
+    }
     if (!guard) throw new Error('钉住守卫均不可用，暂无法建路');
     const afterGuard = all.filter((d) => d.address !== guard.address);
     const middle = afterGuard[Math.floor(Math.random() * afterGuard.length)];

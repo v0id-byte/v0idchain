@@ -43,6 +43,19 @@ export interface HsDeps {
 }
 
 /**
+ * 私有/回环 IP 的中继（如浏览器守护进程注册的 127.0.0.1）本机 WS 探测通过，但外部 AWS 中继无法拨通对方的
+ * localhost，进入 pool 会虚增 usableCount → markBad 误判良好中继。仅限电路构建过滤；directory() 仍返回全量。
+ * 导出供 rolemanager.ts 的 SOCKS pickHops 复用同一份过滤逻辑（两处选路必须同款口径，避免各判各的漂移）。
+ */
+export function isRoutableHost(host: string): boolean {
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false;
+  const p = host.split('.');
+  if (p.length !== 4) return true; // IPv6 or hostname → keep
+  const [a, b] = p.map(Number);
+  return !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
+}
+
+/**
  * 由“链上中继目录快照”造出 hsclient/hsservice 想要的 { buildCircuit, directory }。
  * @param dir 取当前中继描述符列表（每次调用都重新快照，自然跟随链增长；通常传 node.relays）。
  * @param guardManager 可选入口守卫管理器：传入则 hop0 用持久守卫（所有电路复用同一守卫，抗统计去匿名，见 guards.ts）；
@@ -64,15 +77,6 @@ export function makeHsDeps(dir: () => RelayDescriptor[], guardManager?: GuardMan
   const warm = () => reachability.refresh(dir()).catch(() => undefined);
   void warm();
   setInterval(warm, 60_000).unref?.();
-  // 私有/回环 IP 的中继（如浏览器守护进程注册的 127.0.0.1）本机 WS 探测通过，但外部 AWS 中继无法拨通对方的
-  // localhost，进入 pool 会虚增 usableCount → markBad 误判良好中继。仅限电路构建过滤；directory() 仍返回全量。
-  const isRoutableHost = (host: string): boolean => {
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false;
-    const p = host.split('.');
-    if (p.length !== 4) return true; // IPv6 or hostname → keep
-    const [a, b] = p.map(Number);
-    return !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
-  };
   const buildCircuit: BuildCircuit = async (exitRelayId: string) => {
     // 链上目录会**永久**累积历史中继注册（latest-wins，无法注销）：含本机自测发布的 127.0.0.1、早下线 / 被防火墙挡的
     // 公网中继等纯污染。随机选路一旦撞上死中继，EXTEND 即被守卫秒拆(DESTROY)或拨号黑洞挂死 → 浏览失败。两道防线：

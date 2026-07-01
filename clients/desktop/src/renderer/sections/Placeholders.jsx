@@ -209,13 +209,36 @@ export function RelayPanel() {
     });
   }, []);
   const saveAdvertise = useCallback(async () => {
+    const wasOn = on; // 重启会把 RoleManager 状态一起清空，重启后若原先中继是开的，得手动把它接回去
     setAdvBusy(true);
-    setMsg({ kind: '', text: '正在保存并重启守护进程……（会短暂断开当前浏览/托管/中继连接）' });
-    await window.v0id.settings.setRelayAdvertise(advHost, advPort ? Number(advPort) : null);
-    await window.v0id.restartDaemon();
+    setMsg({ kind: '', text: '正在保存……' });
+    const sr = await window.v0id.settings.setRelayAdvertise(advHost, advPort ? Number(advPort) : null);
+    if (!sr.ok) {
+      setAdvBusy(false);
+      setMsg({ kind: 'err', text: sr.error });
+      return;
+    }
+    setMsg({ kind: '', text: '正在重启守护进程……（会短暂断开当前浏览/托管/中继连接）' });
+    const rr = await window.v0id.restartDaemon();
+    if (!rr.ok) {
+      setAdvBusy(false);
+      setMsg({ kind: 'err', text: rr.error });
+      return;
+    }
+    if (wasOn) {
+      setMsg({ kind: '', text: '守护进程已重启，正在恢复中继上线状态……' });
+      const rs = await window.v0id.api.relayStart();
+      setAdvBusy(false);
+      setMsg(
+        rs.ok
+          ? { kind: 'ok', text: '已重启守护进程，新的广播地址已生效，中继已恢复上线' }
+          : { kind: 'err', text: `新的广播地址已生效，但重新上线中继失败：${rs.error}` },
+      );
+      return;
+    }
     setAdvBusy(false);
     setMsg({ kind: 'ok', text: '已重启守护进程，新的广播地址已生效' });
-  }, [advHost, advPort]);
+  }, [advHost, advPort, on]);
 
   return (
     <div className="panel">
