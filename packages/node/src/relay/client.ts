@@ -66,6 +66,9 @@ export class CircuitClient {
   private rdvMode = false;
   private rdvHandlers = new Map<number, (data: Uint8Array) => void>();
   private rdvDestroyCb: (() => void) | null = null;
+  // 在途 sendAwaitRdv 的 reject 句柄集合：电路断（传输层 close / DESTROY cell）时逐一 reject，
+  // 让等 *_ESTABLISHED / RENDEZVOUS2 的 await 快速失败（否则回调永留 rdvHandlers、promise 永挂 → 上层吃满外层超时）。
+  private rdvAwaitRejecters = new Set<(e: Error) => void>();
   // 后向 cell 解封前的去重：客户端用**滑动窗口防重放**记忆已见 n，重放（已见/太老）即丢，但接受窗口内乱序 n。
   // 适用于建路后的全部三种后向消费模式（streaming / hsing / rdvMode）——它们各自的后向 cell 都由**终点跳**
   // originateBackward 发出（共用单一近连续 n 命名空间）。Mixnet 逐跳延迟同样会重排后向 cell → 必须用窗口而非
@@ -79,6 +82,7 @@ export class CircuitClient {
     if (this.rdvMode) {
       if (m.t === 'DESTROY') {
         this.ended = true;
+        this.failRdvAwaiters(new Error('电路被 DESTROY')); // 下游跳死 → 反向 DESTROY：在途 sendAwaitRdv 也快速失败
         const cb = this.rdvDestroyCb;
         this.rdvDestroyCb = null;
         cb?.();
@@ -163,6 +167,7 @@ export class CircuitClient {
     const cw = this.connectWaiter;
     this.connectWaiter = null;
     cw?.(false); // 在途流建连 → 失败
+    this.failRdvAwaiters(new Error('电路传输层断开')); // 在途 sendAwaitRdv 快速失败（会合建立/RENDEZVOUS2 等）
     const rc = this.rdvDestroyCb;
     this.rdvDestroyCb = null;
     rc?.(); // 会合平面收尾（隐藏服务据此剔除死引入电路）
@@ -362,13 +367,28 @@ export class CircuitClient {
    * 须先 enterRdvMode()。命中 awaitCmd → resolve(data)；超时由调用方 withTimeout 兜。
    */
   sendAwaitRdv(sendCmd: number, sendData: Uint8Array, awaitCmd: number): Promise<Uint8Array> {
-    return new Promise<Uint8Array>((res) => {
+    return new Promise<Uint8Array>((res, rej) => {
+      // 若电路已断，立刻失败（不再发 cell、不留悬挂回调）。
+      if (this.ended) return rej(new Error('电路已断，无法发起会合请求'));
+      const reject = (e: Error) => {
+        this.rdvHandlers.delete(awaitCmd);
+        this.rdvAwaitRejecters.delete(reject);
+        rej(e);
+      };
+      this.rdvAwaitRejecters.add(reject);
       this.rdvHandlers.set(awaitCmd, (data) => {
         this.rdvHandlers.delete(awaitCmd);
+        this.rdvAwaitRejecters.delete(reject);
         res(data);
       });
       this.sendToTerminus(sendCmd, sendData);
     });
+  }
+
+  /** 电路断时逐一 reject 在途 sendAwaitRdv（传输层 close 与 DESTROY cell 两路共用），避免 await *_ESTABLISHED 永挂。 */
+  private failRdvAwaiters(err: Error): void {
+    for (const reject of [...this.rdvAwaitRejecters]) reject(err);
+    this.rdvAwaitRejecters.clear();
   }
 
   // ---- Mixnet 客户端环路 cover（Phase 2C）：掩护流量，让电路在“没有真数据”时也恒有 cell 流过 ----

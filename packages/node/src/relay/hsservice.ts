@@ -89,6 +89,7 @@ export class HiddenService {
   // 引入点维护定时器：周期性剔除死引入电路、补齐、重推描述符（见 INTRO_MAINT_INTERVAL_MS）。maintaining 串行化，防并发重入。
   private maintTimer: ReturnType<typeof setInterval> | null = null;
   private maintaining = false;
+  private maintainRerun = false; // 维护进行中又有引入点死亡时置位 → 本轮收尾再补一轮（不丢死亡事件）
   // 描述符修订号源：必须**严格递增**（HSDir 防回滚只收 rev 更高者）。否则服务重启后换了新引入点(authKey)、却用
   // 同一 rev 重发 → HSDir 拒收、续供旧描述符(旧 authKey) → 客户端 INTRODUCE 投不到本服务。用墙钟 ms 作底（跨重启天然更高）。
   private lastRev = 0;
@@ -139,7 +140,7 @@ export class HiddenService {
    * 仅对 ESTABLISH 成功、入册 this.intros 的引入电路挂 onRdvDestroy（死亡即触发维护重建），避免失败候选误触发。
    */
   private async ensureIntros(): Promise<void> {
-    this.intros = this.intros.filter((it) => !it.circ.isClosed); // 剔除已断（僵尸）引入电路
+    this.pruneDeadIntros(); // 剔除已断（僵尸）引入电路（先 close 释放 ws/FD）
     for (let round = 0; round < INTRO_BUILD_ROUNDS && this.intros.length < this.numIntros; round++) {
       for (const relayId of shuffle(this.dir())) {
         if (this.stopped) return;
@@ -165,21 +166,37 @@ export class HiddenService {
     }
   }
 
+  /** 剔除已断（僵尸）引入电路：应用层 DESTROY 只置 ended、**不关 ws**（见 relaynode.ts destroyCircuit 对 prevConn），
+   *  故先 close 释放 ws/FD 再从册中移除，避免反复重建后在服务/守卫两端积累空闲连接。 */
+  private pruneDeadIntros(): void {
+    for (const it of this.intros) if (it.circ.isClosed) it.circ.close();
+    this.intros = this.intros.filter((it) => !it.circ.isClosed);
+  }
+
   /** 某已登记引入电路断开 → 立即剔除并触发一轮维护（补齐 + 重推描述符）。 */
   private onIntroDown(): void {
     if (this.stopped) return;
-    this.intros = this.intros.filter((it) => !it.circ.isClosed);
+    this.pruneDeadIntros();
     void this.runMaintenance();
   }
 
-  /** 一轮维护：补齐引入点 + 重推描述符。串行（maintaining 防重入）、不抛（尽力而为，不打断定时器）。 */
+  /** 一轮维护：补齐引入点 + 重推描述符。串行（maintaining 防重入）、不抛（尽力而为，不打断定时器）。
+   *  维护中若又有引入点死亡（onIntroDown 命中 maintaining 守卫），置 maintainRerun → 本轮收尾再补一轮，
+   *  不把这次死亡拖到下个 5 分钟定时器（单引入点服务否则会空窗）。 */
   private async runMaintenance(): Promise<void> {
-    if (this.stopped || this.maintaining) return;
+    if (this.stopped) return;
+    if (this.maintaining) {
+      this.maintainRerun = true; // 已有一轮在跑 → 记一个待补轮，别丢掉这次死亡事件
+      return;
+    }
     this.maintaining = true;
     try {
-      await this.ensureIntros();
-      // 无条件重推：既反映引入点变化，也刷新可能重启过、内存里丢了描述符的 HSDir。失败（无 HSDir 收）不抛，下轮再来。
-      if (this.intros.length > 0 && !this.stopped) await this.publishDescriptors().catch(() => undefined);
+      do {
+        this.maintainRerun = false;
+        await this.ensureIntros();
+        // 无条件重推：既反映引入点变化，也刷新可能重启过、内存里丢了描述符的 HSDir。失败（无 HSDir 收）不抛，下轮再来。
+        if (this.intros.length > 0 && !this.stopped) await this.publishDescriptors().catch(() => undefined);
+      } while (this.maintainRerun && !this.stopped);
     } catch {
       // 维护尽力而为
     } finally {
