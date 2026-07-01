@@ -150,6 +150,29 @@ export class CircuitClient {
       this.endCb?.();
     }
   }
+  /**
+   * 传输层断开兜底：ws close/error（无 DESTROY cell）时置 ended 并触发所有在途消费者的收尾。幂等——
+   * 已 ended（DESTROY cell 先到）则不重复触发；先到者置 ended 后本回调与各 DESTROY 分支互不二次触发。
+   */
+  private onTransportDown(): void {
+    if (this.ended) return;
+    this.ended = true;
+    const pw = this.pending;
+    this.pending = null;
+    pw?.({ t: 'DESTROY', c: this.c0 }); // 在途 nextCell（建路/延伸）→ 喂 DESTROY 使其快速失败，不再吊死
+    const cw = this.connectWaiter;
+    this.connectWaiter = null;
+    cw?.(false); // 在途流建连 → 失败
+    const rc = this.rdvDestroyCb;
+    this.rdvDestroyCb = null;
+    rc?.(); // 会合平面收尾（隐藏服务据此剔除死引入电路）
+    const hr = this.hsReq;
+    this.hsReq = null;
+    hr?.onEnd(); // HS 请求（描述符取/发）收尾 → 上层得到失败/null
+    const ec = this.endCb;
+    this.endCb = null;
+    ec?.(); // 流平面收尾
+  }
   private nextCell(): Promise<CellMsg> {
     return new Promise((res) => {
       const b = this.buffered.shift();
@@ -174,6 +197,11 @@ export class CircuitClient {
       const m = decodeCell(String(d));
       if (m) this.onMsg(m);
     });
+    // 传输层断开兜底：CF 隧道 idle-kill / 中继重启 / 网络断会关掉 ws 却**不发**应用层 DESTROY cell。
+    // 若不监听 close/error，ended 永不置位、send 静默 no-op、消费者回调不触发 → 电路成"僵尸"（看着活、实则断）：
+    // 隐藏服务的引入电路就此半死而描述符仍挂着它 → 客户端 INTRODUCE 石沉大海。故在此收尾（幂等，见 onTransportDown）。
+    ws.on('close', () => this.onTransportDown());
+    ws.on('error', () => this.onTransportDown());
     const st = ntorClientStart();
     this.sendCell({ t: 'CREATE', c: this.c0, x: bytesToHex(st.ephPublic) });
     const created = await this.nextCell();
@@ -390,6 +418,10 @@ export class CircuitClient {
 
   get hopCount(): number {
     return this.hops.length;
+  }
+  /** 电路是否已断（收到 DESTROY / 传输层 close）。供隐藏服务维护剔除死引入电路。 */
+  get isClosed(): boolean {
+    return this.ended;
   }
   close(): void {
     this.stopCover(); // 关电路时自动停 cover（不再发掩护 cell）

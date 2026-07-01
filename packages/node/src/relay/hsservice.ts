@@ -36,6 +36,22 @@ const INTRO_REPLAY_TTL = 5 * 60 * 1000; // INTRODUCE 防重放窗口(ms)
 const MAX_SEEN_INTROS = 4096; // 防重放表上限（超则逐出最旧）
 const HS_PERIOD_LEN_SEC = 24 * 60 * 60;
 const REPUBLISH_SLOP_MS = 1_000;
+// 引入点维护 + 描述符续发周期。原实现只在 24h TP 边界续发、中途既不重建死引入电路也不重推描述符 →
+// 引入电路经 CF 隧道/中继重启衰亡后服务半死（描述符仍挂着死引入点，客户端 INTRODUCE 无人接）。
+// 每 5 分钟：剔除死引入电路 → 补齐 → 重推描述符（顺带刷新可能重启过、丢了描述符的 HSDir）。远小于观察到的 ~12h 衰亡期。
+const INTRO_MAINT_INTERVAL_MS = 5 * 60 * 1000;
+const ESTABLISH_INTRO_TIMEOUT_MS = 8_000; // 单个引入点 ESTABLISH 应答封顶（防某中继接了电路却不回 ESTABLISHED 吊死维护轮）
+
+/** Promise 超时包装（超时 reject）；用于给"接了电路却不应答"的引入点建立加封顶，避免吊死维护循环。 */
+function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, rej) => {
+      const t = setTimeout(() => rej(new Error('establish-intro 超时')), ms);
+      t.unref?.();
+    }),
+  ]);
+}
 
 /** 业务回调：与某客户端的端到端通道就绪时调用一次（每个成功会合一个 channel）。 */
 export type RendezvousHandler = (channel: RdvChannel) => void;
@@ -70,6 +86,9 @@ export class HiddenService {
   // 引入电路保活：CF 隧道等会把空闲的长寿 WebSocket 电路掐断，引入点遂摘除本服务的登记 → 客户端 INTRODUCE 无人接。
   // 定期向每条引入电路的终点发一个 CMD_DROP 掩护 cell（终点静默丢弃，零协议改动），保持电路 + 沿途 CF 隧道常活。
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  // 引入点维护定时器：周期性剔除死引入电路、补齐、重推描述符（见 INTRO_MAINT_INTERVAL_MS）。maintaining 串行化，防并发重入。
+  private maintTimer: ReturnType<typeof setInterval> | null = null;
+  private maintaining = false;
   // 描述符修订号源：必须**严格递增**（HSDir 防回滚只收 rev 更高者）。否则服务重启后换了新引入点(authKey)、却用
   // 同一 rev 重发 → HSDir 拒收、续供旧描述符(旧 authKey) → 客户端 INTRODUCE 投不到本服务。用墙钟 ms 作底（跨重启天然更高）。
   private lastRev = 0;
@@ -86,43 +105,93 @@ export class HiddenService {
     this.address = encodeV0idAddress(this.A);
   }
 
+  /** 当前活跃引入点的中继地址（只读；供维护自检 / 运维排障 / 回归测试观察死引入点被重建）。 */
+  get introRelayIds(): string[] {
+    return this.intros.map((it) => it.relayId);
+  }
+
   /** 启动：建引入点电路 + 发布描述符。返回时服务已可被连接（至少 1 个引入点 + 1 个 HSDir 成功）。 */
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
     this.stopped = false;
     try {
-      // 1. 选引入点中继：在所有中继里**随机顺序逐个试**，建电路 + 登记，**跳过建路失败的候选**，直到攒够 numIntros 个。
-      //    链上目录含无法注销的死中继污染（见 hsbridge）→ 必须容忍单个候选失败，否则随机撞上一个死中继整个服务就起不来。
-      //    **多轮**：冷启动时选路可达性缓存尚在收敛（每次失败的 build 会判负坏转发器），单轮可能在收敛完成前就把好中继试废 →
-      //    再扫几轮，靠前几轮把死中继判负后，后几轮在干净的可达集上稳稳建成。健康网络下第一轮即满 numIntros，多余轮自然跳过。
-      for (let round = 0; round < INTRO_BUILD_ROUNDS && this.intros.length < this.numIntros; round++) {
-        for (const relayId of shuffle(this.dir())) {
-          if (this.intros.length >= this.numIntros) break;
-          if (this.intros.some((it) => it.relayId === relayId)) continue; // 已在此中继建过引入点 → 不重复
-          try {
-            const authKey = randomBytes(32); // 仅作“在此 IP 寻址本服务”的句柄（不参与端到端认证）
-            const circ = await this.build(relayId);
-            circ.enterRdvMode();
-            circ.onRdv(CMD_INTRODUCE2, (data) => this.onIntroduce2(data));
-            await circ.sendAwaitRdv(CMD_ESTABLISH_INTRO, authKey, CMD_INTRO_ESTABLISHED);
-            this.intros.push({ relayId, authKey, circ });
-          } catch {
-            // 这个候选中继建不了引入电路（死中继/被防火墙挡/瞬断）→ 跳过试下一个
-          }
-        }
-      }
+      // 1. 建引入点（见 ensureIntros：随机逐个试、跳过死中继、多轮收敛）。
+      await this.ensureIntros();
       if (this.intros.length === 0) throw new Error('未能建立任何引入点');
 
       // 2. 构造描述符（引入点 = 各引入电路的 {relayId, relayOnionPub, authKey}）+ 发布到负责的 HSDir。
       await this.publishDescriptors();
       this.scheduleRepublish();
       this.startIntroKeepalive();
+      this.startMaintenance();
     } catch (err) {
       this.stop();
       this.started = false;
       throw err;
     }
+  }
+
+  /**
+   * 补齐引入点到 numIntros：先剔除已断电路（Layer1 使 isClosed 可靠），再在所有中继里**随机顺序逐个试**建电路 + 登记，
+   * **跳过建路/ESTABLISH 失败的候选**。链上目录含无法注销的死中继污染（见 hsbridge）→ 必须容忍单候选失败。
+   * **多轮**：冷启动选路可达性缓存收敛期，单轮可能把好中继试废 → 再扫几轮，靠前几轮判负死中继、后几轮在干净集上稳建。
+   * 仅对 ESTABLISH 成功、入册 this.intros 的引入电路挂 onRdvDestroy（死亡即触发维护重建），避免失败候选误触发。
+   */
+  private async ensureIntros(): Promise<void> {
+    this.intros = this.intros.filter((it) => !it.circ.isClosed); // 剔除已断（僵尸）引入电路
+    for (let round = 0; round < INTRO_BUILD_ROUNDS && this.intros.length < this.numIntros; round++) {
+      for (const relayId of shuffle(this.dir())) {
+        if (this.stopped) return;
+        if (this.intros.length >= this.numIntros) break;
+        if (this.intros.some((it) => it.relayId === relayId)) continue; // 已在此中继建过 → 不重复
+        let circ: CircuitClient;
+        try {
+          circ = await this.build(relayId);
+        } catch {
+          continue; // 死中继/被防火墙挡/瞬断 → 试下一个
+        }
+        try {
+          const authKey = randomBytes(32); // 仅作“在此 IP 寻址本服务”的句柄（不参与端到端认证）
+          circ.enterRdvMode();
+          circ.onRdv(CMD_INTRODUCE2, (data) => this.onIntroduce2(data));
+          await raceTimeout(circ.sendAwaitRdv(CMD_ESTABLISH_INTRO, authKey, CMD_INTRO_ESTABLISHED), ESTABLISH_INTRO_TIMEOUT_MS);
+          circ.onRdvDestroy(() => this.onIntroDown()); // 仅对已登记成功者挂死亡钩子
+          this.intros.push({ relayId, authKey, circ });
+        } catch {
+          circ.close(); // 建了电路但 ESTABLISH 超时/失败 → 弃之（不入册、不挂钩子），试下一个
+        }
+      }
+    }
+  }
+
+  /** 某已登记引入电路断开 → 立即剔除并触发一轮维护（补齐 + 重推描述符）。 */
+  private onIntroDown(): void {
+    if (this.stopped) return;
+    this.intros = this.intros.filter((it) => !it.circ.isClosed);
+    void this.runMaintenance();
+  }
+
+  /** 一轮维护：补齐引入点 + 重推描述符。串行（maintaining 防重入）、不抛（尽力而为，不打断定时器）。 */
+  private async runMaintenance(): Promise<void> {
+    if (this.stopped || this.maintaining) return;
+    this.maintaining = true;
+    try {
+      await this.ensureIntros();
+      // 无条件重推：既反映引入点变化，也刷新可能重启过、内存里丢了描述符的 HSDir。失败（无 HSDir 收）不抛，下轮再来。
+      if (this.intros.length > 0 && !this.stopped) await this.publishDescriptors().catch(() => undefined);
+    } catch {
+      // 维护尽力而为
+    } finally {
+      this.maintaining = false;
+    }
+  }
+
+  /** 启动周期维护定时器（每 INTRO_MAINT_INTERVAL_MS 一轮）。unref → 不阻止进程退出。 */
+  private startMaintenance(): void {
+    if (this.maintTimer) clearInterval(this.maintTimer);
+    this.maintTimer = setInterval(() => void this.runMaintenance(), INTRO_MAINT_INTERVAL_MS);
+    this.maintTimer.unref?.();
   }
 
   private async publishDescriptors(): Promise<void> {
@@ -268,6 +337,8 @@ export class HiddenService {
     this.republishTimer = null;
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     this.keepaliveTimer = null;
+    if (this.maintTimer) clearInterval(this.maintTimer);
+    this.maintTimer = null;
     for (const it of this.intros) it.circ.close();
     for (const c of this.rpCircs) c.close();
     this.intros = [];
