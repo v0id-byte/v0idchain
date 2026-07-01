@@ -30,8 +30,11 @@ export class RelayReachability {
   // 而从没成功转发过的死中继（hairpin/旧版）照常被判负剔除 → 选路稳稳收敛到能转发的骨干。
   private proven = new Set<string>();
 
-  /** 探测一个中继的 cell 端点：开一个 WS（443→wss，与拨号同款），open=可达，error/超时=不可达。即开即关，不收发任何 cell。 */
-  private probe(d: RelayDescriptor): Promise<boolean> {
+  /**
+   * 探测一个 cell 端点：开一个 WS（443→wss，与拨号同款），open=可达，error/超时=不可达。即开即关，不收发任何 cell。
+   * 只读 host/port（不需要完整 RelayDescriptor），供中继自检（探自己的广播地址）复用同一套探测逻辑。
+   */
+  probeOne(d: { host: string; port: number }): Promise<boolean> {
     const url = `${d.port === 443 ? 'wss' : 'ws'}://${wsHost(d.host)}:${d.port}`;
     return new Promise<boolean>((resolve) => {
       let done = false;
@@ -98,7 +101,7 @@ export class RelayReachability {
         if (this.fresh(d.address, now)) return;
         let p = this.inflight.get(d.address);
         if (!p) {
-          p = this.probe(d).finally(() => this.inflight.delete(d.address));
+          p = this.probeOne(d).finally(() => this.inflight.delete(d.address));
           this.inflight.set(d.address, p);
         }
         const ok = await p;

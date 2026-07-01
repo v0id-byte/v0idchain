@@ -13,7 +13,7 @@
 //   所以这里统一用 'socks5://'。守护进程的 SOCKS5 收到 ATYP=domain 的 .v0id 主机名后走 rendezvous。
 //   （详见 README 的“远程 DNS”一节。）
 
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const { isIP } = net;
@@ -315,6 +315,8 @@ async function nodeApi(method, pathname, body) {
 
 // ---- 只读（GET，无需令牌）----
 ipcMain.handle('v0id:api:roles', () => nodeApi('GET', '/roles'));
+// 中继数量：{ registered, reachable }——reachable 为 null 表示节点未启用角色控制（探测缓存不可用）。
+ipcMain.handle('v0id:api:relayCount', () => nodeApi('GET', '/relays/count'));
 ipcMain.handle('v0id:api:stakeStatus', () => nodeApi('GET', '/stake'));
 ipcMain.handle('v0id:api:txStatus', (_e, txid) => nodeApi('GET', `/tx?txid=${encodeURIComponent(String(txid ?? ''))}`));
 // .v0id 页面加载失败时查最近一次真实失败原因（取不到描述符/无可用引入点/超时/ntor 认证失败……），供错误页展示中文原因而非通用错误码。
@@ -330,8 +332,22 @@ ipcMain.handle('v0id:api:walletInfo', async () => {
 // ---- 写（POST，主进程带 Bearer）----
 ipcMain.handle('v0id:api:relayStart', () => nodeApi('POST', '/relay/start'));
 ipcMain.handle('v0id:api:relayStop', () => nodeApi('POST', '/relay/stop'));
-ipcMain.handle('v0id:api:hsStart', (_e, { host, port, name } = {}) =>
-  nodeApi('POST', '/hs/start', { host, port: Number(port), name: String(name ?? '') }));
+ipcMain.handle('v0id:api:relaySelfcheck', () => nodeApi('POST', '/relay/selfcheck'));
+ipcMain.handle('v0id:api:hsStart', (_e, { host, port, name, staticDir } = {}) => {
+  const body = { name: String(name ?? '') };
+  if (staticDir) body.staticDir = String(staticDir);
+  else { body.host = host; body.port = Number(port); }
+  return nodeApi('POST', '/hs/start', body);
+});
+// 选一个本地文件夹（供「托管站点」的零后端静态托管模式用）。取消 → null；
+// 顺带检查有没有 index.html，供 UI 提前提醒「访问根地址会 404」。
+ipcMain.handle('v0id:pickFolder', async () => {
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+  if (r.canceled || !r.filePaths.length) return null;
+  const dir = r.filePaths[0];
+  const hasIndex = fs.existsSync(path.join(dir, 'index.html'));
+  return { dir, hasIndex };
+});
 ipcMain.handle('v0id:api:hsStop', (_e, id) =>
   nodeApi('POST', '/hs/stop', id ? { id: String(id) } : {}));
 ipcMain.handle('v0id:api:importWallet', (_e, privateKey) =>

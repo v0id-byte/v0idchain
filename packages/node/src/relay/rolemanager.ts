@@ -16,11 +16,15 @@ import {
   type OnionKeypair,
 } from '@v0idchain/core';
 import { isIP } from 'node:net';
+import { existsSync, statSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { V0idNode } from '../node.js';
 import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js';
 import { SocksProxy, type HopPicker } from './socks.js';
 import { GuardManager } from './guards.js';
 import { makeHsDeps, serveHiddenService, type HsDeps } from './hsbridge.js';
+import { serveStaticDir } from './staticserve.js';
+import { RelayReachability } from './reachability.js';
 import type { HopSpec } from './client.js';
 import type { MixnetOpts } from './relaynode.js';
 
@@ -75,12 +79,24 @@ export interface HsStatusEntry {
   target: { host: string; port: number };
   name: string;
   connCount: number;
+  /** 'static' = 零后端内置静态文件夹托管（见 staticserve.ts）；'external' = 用户自己起的 host:port 后端。 */
+  backend: 'external' | 'static';
+  staticDir?: string; // backend='static' 时，被发布的本地文件夹路径
 }
 
 /** GET /roles 返回的形状（GUI 读它渲染开关状态）。字段填已知项，未启用角色给 off + 占位。 */
 export interface RoleStatus {
   socks: { on: boolean; port: number | null };
-  relay: { on: boolean; port: number | null; address: string | null; circuits: number; published: boolean };
+  relay: {
+    on: boolean;
+    port: number | null;
+    address: string | null;
+    circuits: number;
+    published: boolean;
+    // 可达性自检结果：null=从未测试；测试打的是本中继自己广播的 host:port（见 selfCheckReachable）。
+    reachableSelf: boolean | null;
+    reachableSelfAt: number | null;
+  };
   hsList: HsStatusEntry[]; // 所有活动托管服务列表（空 = 无）
   mine: { on: boolean; intervalMs: number | null };
 }
@@ -107,12 +123,28 @@ export class RoleManager {
   private readonly hsDeps: HsDeps;
   /** 从链上目录解析中继地址 → cell 入口（EXTEND 拨号 & SOCKS 选路用）。 */
   private readonly resolver: RelayResolver;
+  /** 可达性探测缓存：GUI「中继数量」统计与本中继自检共用同一份缓存（暖缓存、避免重复探测）。 */
+  private readonly reachability = new RelayReachability();
 
   // ---- 活动句柄 ----
   private relay?: RelayNode;
   private relayPublished = false; // 中继描述符是否已上链（自动发布循环置位）
   private publishTimer?: ReturnType<typeof setInterval>;
-  private hsMap: Map<string, { id: string; address: string; stop: () => void; getConnCount: () => number; target: { host: string; port: number }; name: string }> = new Map();
+  /** 最近一次自检结果（探自己的广播 host:port）；下线时清空，避免展示「上一次开中继时」的陈旧结果。 */
+  private lastSelfCheck: { ok: boolean; at: number } | null = null;
+  private hsMap: Map<
+    string,
+    {
+      id: string;
+      address: string;
+      stop: () => void;
+      getConnCount: () => number;
+      target: { host: string; port: number };
+      name: string;
+      backend: 'external' | 'static';
+      staticDir?: string;
+    }
+  > = new Map();
   private socks?: SocksProxy;
   private socksPort: number | null = null;
   /** 最近一次 SOCKS .v0id 连接失败原因，按目标地址存（GET /hs/lasterror 供 GUI 展示具体原因用）。 */
@@ -222,38 +254,111 @@ export class RoleManager {
       this.relay = undefined;
     }
     this.relayPublished = false;
+    this.lastSelfCheck = null; // 中继已下线，上一次的可达结果不再有意义
     return this.status();
+  }
+
+  /**
+   * 中继可达性自检：探测「本中继自己广播的 host:port」，回答用户最常问的「我是不是真的上线了」。
+   * 只是 best-effort 提示（同 RelayReachability 的取舍）：测的是「探测节点连得上你」，不是「已被全网选中转发」。
+   * 中继未启动 → 抛错（API 转 409），避免测出一个无意义的假阴性。
+   */
+  async selfCheckReachable(): Promise<boolean> {
+    if (!this.relay) throw new Error('中继未上线，无法自检');
+    // 回环/私网广播地址（默认 127.0.0.1）本机探测必然连得通，但这正是 startRelay 判定「不值得上链」的
+    // 同一类地址——全网谁都连不到它。若照常探测会把「自己连自己」误报成「可达」，误导用户以为真的上线了。
+    if (!isPublishableAdvertiseHost(this.relayAdvertiseHost)) {
+      throw new Error('广播地址是回环/私网（默认 127.0.0.1），自检没有意义——这类地址本就不会上链、全网也连不到你；设 --relay-advertise 为公网地址/域名后再试');
+    }
+    const ok = await this.reachability.probeOne({ host: this.relayAdvertiseHost, port: this.relayAdvertisePort });
+    this.lastSelfCheck = { ok, at: Date.now() };
+    return ok;
+  }
+
+  /**
+   * 中继数量统计：{ registered=链上曾注册过的全部地址数, reachable=当前已知可达数（探测缓存过滤） }。
+   * 链上目录只会增长、从不注销（latest-wins 也无法删除早已下线的中继），registered 单独展示会显得虚高，
+   * 故额外跑一次可达性探测（复用 pickHops 同款 RelayReachability，暖缓存内 TTL 期内近乎零成本）。
+   */
+  async liveRelayCount(): Promise<{ registered: number; reachable: number }> {
+    const all = this.node.relays();
+    await this.reachability.refresh(all);
+    return { registered: all.length, reachable: this.reachability.knownUsable(all).length };
   }
 
   // ---- 隐藏服务（多服务支持）----
 
   /**
-   * 托管一个 .v0id 隐藏服务，把进来的会合连接转发到本机 target host:port。需链上 ≥3 中继。
+   * 托管一个 .v0id 隐藏服务，把进来的会合连接转发到一个本机 TCP 落地。需链上 ≥3 中继。
+   * 落地二选一：① 传 `target`（host:port）——用户自己起的外部后端；② opts.staticDir——零后端，
+   * 内置起一个只读静态文件服务器发布该文件夹（见 staticserve.ts），serveHiddenService 本就后端无关，
+   * 静态服务器的本地端口直接当 target 用即可，不需要 hsbridge.ts 知道「静态」这回事。
    * 每次调用启动一个独立服务（不同 .v0id 地址），返回 { id, address }。
    * 前置不满足 → 抛干净 Error（API 转 409，CLI 打一行通知）。
    */
-  async startHs(target: { host: string; port: number }, opts?: { name?: string; intros?: number }): Promise<{ id: string; address: string }> {
-    if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !target.host) {
+  async startHs(
+    target?: { host: string; port: number },
+    opts?: { name?: string; intros?: number; staticDir?: string },
+  ): Promise<{ id: string; address: string }> {
+    if (!!target === !!opts?.staticDir) {
+      throw new Error('host:port 与 staticDir 须二选一（不能都传或都不传）');
+    }
+    if (target && (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !target.host)) {
       throw new Error('hs target 非法：需 host:port，例如 127.0.0.1:8080');
+    }
+    if (opts?.staticDir && (!existsSync(opts.staticDir) || !statSync(opts.staticDir).isDirectory())) {
+      throw new Error('所选文件夹不存在或不是目录');
     }
     if (this.node.relays().length < MIN_RELAYS) {
       throw new Error('链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重试）');
     }
-    // 用 host:port 派生稳定 id，确保同一目标重启后复用同一身份文件（.v0id 地址不变）。
-    const id = `${target.host.replace(/[^a-zA-Z0-9]/g, '_')}_${target.port}`;
+    const backend: 'external' | 'static' = opts?.staticDir ? 'static' : 'external';
+    // id 派生须与「目标」一一对应且跨重启稳定（同一目标复用同一身份文件 → .v0id 地址不变）：
+    // 外部后端用 host:port；静态托管的落地端口每次都是随机临时端口，改用文件夹路径本身做稳定 id。
+    // 静态路径不能像外部 host:port 那样直接把非字母数字字符替换成 `_`——不同路径可能被替换成同一个
+    // id（如 site-a 和 site_a），导致后发布的那个被 hsMap 去重命中前者、误报「已发布」却服务着旧文件夹。
+    // 改用 realpath（顺带把符号链接/相对路径都归一化）的哈希做 id，坍缩概率可忽略。
+    const id = backend === 'static'
+      ? `static_${createHash('sha256').update(realpathSync(opts!.staticDir!)).digest('hex').slice(0, 24)}`
+      : `${target!.host.replace(/[^a-zA-Z0-9]/g, '_')}_${target!.port}`;
     if (this.hsMap.has(id)) {
       const existing = this.hsMap.get(id)!;
       return { id: existing.id, address: existing.address };
     }
-    const { address, stop, getConnCount } = await serveHiddenService({
-      dataDir: this.dataDir,
-      identityKey: id,
-      target,
-      deps: this.hsDeps,
-      numIntros: opts?.intros,
-    });
-    this.hsMap.set(id, { id, address, stop, getConnCount, target: { ...target }, name: opts?.name ?? '' });
-    return { id, address };
+    let resolvedTarget = target;
+    let staticStop: (() => void) | undefined;
+    if (backend === 'static') {
+      const { port, stop } = await serveStaticDir({ dir: opts!.staticDir! });
+      resolvedTarget = { host: '127.0.0.1', port };
+      staticStop = stop;
+    }
+    try {
+      const { address, stop, getConnCount } = await serveHiddenService({
+        dataDir: this.dataDir,
+        identityKey: id,
+        target: resolvedTarget!,
+        deps: this.hsDeps,
+        numIntros: opts?.intros,
+      });
+      const combinedStop = () => {
+        stop();
+        staticStop?.(); // 一并关掉静态文件服务器，避免留下没人用的孤儿监听
+      };
+      this.hsMap.set(id, {
+        id,
+        address,
+        stop: combinedStop,
+        getConnCount,
+        target: { ...resolvedTarget! },
+        name: opts?.name ?? '',
+        backend,
+        staticDir: opts?.staticDir,
+      });
+      return { id, address };
+    } catch (e) {
+      staticStop?.(); // 隐藏服务起失败（如引入点建路失败）→ 别留一个没人用的静态服务器孤儿进程
+      throw e;
+    }
   }
 
   /** 停止指定 id 的隐藏服务（不传 id 则停止所有）。 */
@@ -275,6 +380,8 @@ export class RoleManager {
       target: e.target,
       name: e.name,
       connCount: e.getConnCount(),
+      backend: e.backend,
+      staticDir: e.staticDir,
     }));
   }
 
@@ -358,6 +465,8 @@ export class RoleManager {
         address: this.relay ? this.node.wallet.address : null,
         circuits: this.relay ? this.relay.circuits : 0,
         published: this.relayPublished,
+        reachableSelf: this.lastSelfCheck ? this.lastSelfCheck.ok : null,
+        reachableSelfAt: this.lastSelfCheck ? this.lastSelfCheck.at : null,
       },
       hsList: this.hsList(),
       mine: { on: this.mineOn, intervalMs: this.mineOn ? this.mineIntervalMs : null },

@@ -6,7 +6,7 @@
 // 安全：所有 webview 都在 'v0id' partition（无 persist 前缀），main.js 已对它 setProxy(socks5://…) +
 // deny-all 权限 + WebRTC 加固 + 拒绝弹窗；webview 无 Node、无 preload。地址校验经 window.v0id.validate
 //（主进程的 normalizeTarget）。书签经 window.v0id.bookmarks.*（主进程文件 I/O）。浏览历史默认不落盘。
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 let TAB_SEQ = 1;
 const newTab = () => ({
@@ -245,10 +245,72 @@ export function Browser({ status }) {
     }
   };
 
+  // ---- 地址栏自动补全：按输入前缀/包含匹配书签 + 本次会话最近访问，书签优先 ----
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(-1);
+  const suggestions = useMemo(() => {
+    const q = activeTab.input.trim().toLowerCase();
+    if (!q) return [];
+    const bm = bookmarks
+      .filter((b) => b.url.toLowerCase().includes(q) || (b.title || '').toLowerCase().includes(q))
+      .map((b) => ({ url: b.url, title: b.title || b.url, star: true }));
+    const seen = new Set(bm.map((s) => s.url));
+    const rec = recent
+      .filter((u) => !seen.has(u) && u.toLowerCase().includes(q))
+      .map((u) => ({ url: u, title: u, star: false }));
+    return [...bm, ...rec].slice(0, 8);
+  }, [activeTab.input, bookmarks, recent]);
+
   // 地址栏受控输入
-  const onAddrChange = (e) => patchTab(activeId, { input: e.target.value });
+  const onAddrChange = (e) => {
+    patchTab(activeId, { input: e.target.value });
+    setShowSuggest(true);
+    setHighlightIdx(-1);
+  };
+  const onAddrFocus = () => setShowSuggest(true);
+  // 延迟关闭：让下拉项的 onClick 先于 blur 触发（下拉项额外用 onMouseDown 阻止 blur 抢跑）。
+  const onAddrBlur = () => setTimeout(() => setShowSuggest(false), 120);
   const onAddrKey = (e) => {
-    if (e.key === 'Enter') navigate(activeTab.input);
+    const list = showSuggest ? suggestions : [];
+    if (e.key === 'ArrowDown' && list.length) {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.min(i + 1, list.length - 1));
+      return;
+    }
+    if (e.key === 'ArrowUp' && list.length) {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.max(i - 1, -1));
+      return;
+    }
+    if (e.key === 'Escape') {
+      setShowSuggest(false);
+      return;
+    }
+    if (e.key === 'Enter') {
+      const pick = highlightIdx >= 0 ? list[highlightIdx] : null;
+      setShowSuggest(false);
+      navigate(pick ? pick.url : activeTab.input);
+    }
+  };
+  const pickSuggestion = (item) => {
+    setShowSuggest(false);
+    navigate(item.url);
+  };
+
+  // ---- 书签菜单（工具栏悬浮面板，任意标签页可用，不必回起始页）----
+  const [showBmMenu, setShowBmMenu] = useState(false);
+  const bmMenuRef = useRef(null);
+  useEffect(() => {
+    if (!showBmMenu) return undefined;
+    const onDocMouseDown = (e) => {
+      if (bmMenuRef.current && !bmMenuRef.current.contains(e.target)) setShowBmMenu(false);
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [showBmMenu]);
+  const openFromBmMenu = (url) => {
+    setShowBmMenu(false);
+    navigate(url);
   };
 
   const showStart = !activeTab.url && !activeTab.error;
@@ -299,15 +361,35 @@ export function Browser({ status }) {
         >
           {activeTab.loading ? '✕' : '⟲'}
         </button>
-        <input
-          className="addr"
-          value={activeTab.input}
-          onChange={onAddrChange}
-          onKeyDown={onAddrKey}
-          placeholder="xxxxx.v0id 或 http(s):// 链接"
-          spellCheck={false}
-          autoComplete="off"
-        />
+        <div className="addr-wrap">
+          <input
+            className="addr"
+            value={activeTab.input}
+            onChange={onAddrChange}
+            onKeyDown={onAddrKey}
+            onFocus={onAddrFocus}
+            onBlur={onAddrBlur}
+            placeholder="xxxxx.v0id 或 http(s):// 链接"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {showSuggest && suggestions.length > 0 && (
+            <div className="addr-suggest">
+              {suggestions.map((s, i) => (
+                <div
+                  key={s.url}
+                  className={'addr-suggest-item' + (i === highlightIdx ? ' active' : '')}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickSuggestion(s)}
+                >
+                  {s.star && <span className="as-star">★</span>}
+                  <span className="as-title">{s.title}</span>
+                  <span className="as-url">{s.url}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           className={'star' + (isBookmarked ? ' on' : '')}
           onClick={toggleBookmark}
@@ -316,6 +398,25 @@ export function Browser({ status }) {
         >
           {isBookmarked ? '★' : '☆'}
         </button>
+        <div className="bm-menu-wrap" ref={bmMenuRef}>
+          <button className="nav-btn" onClick={() => setShowBmMenu((v) => !v)} title="书签列表">
+            ☰
+          </button>
+          {showBmMenu && (
+            <div className="bookmark-popover">
+              <BookmarkList
+                bookmarks={bookmarks}
+                onOpen={openFromBmMenu}
+                onRemove={removeBookmark}
+                emptyText={
+                  <>
+                    还没有书签。访问一个 <code>.v0id</code> 地址后，点地址栏右侧的 <b>☆</b> 即可收藏。
+                  </>
+                }
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* webview 舞台：每个 tab 一个 webview，非活动的 CSS 隐藏 */}
@@ -378,6 +479,32 @@ export function Browser({ status }) {
   );
 }
 
+// ---- 书签列表（起始页大网格 + 工具栏悬浮面板共用），空态文案由调用方传入 ----
+function BookmarkList({ bookmarks, onOpen, onRemove, emptyText }) {
+  if (bookmarks.length === 0) {
+    return <div className="empty">{emptyText}</div>;
+  }
+  return (
+    <div className="bm-list">
+      {bookmarks.map((b) => (
+        <div className="bm-card" key={b.url} onClick={() => onOpen(b.url)} title={b.url}>
+          <span
+            className="bm-del"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(b.url);
+            }}
+          >
+            ✕
+          </span>
+          <div className="bm-title">{b.title || b.url}</div>
+          <div className="bm-url">{b.url}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---- 新标签起始页：书签 + 诚实空态/引导（不硬编码任何假 .v0id 地址）----
 function StartPage({ bookmarks, recent, externalMode, onOpen, onRemoveBookmark }) {
   return (
@@ -386,29 +513,16 @@ function StartPage({ bookmarks, recent, externalMode, onOpen, onRemoveBookmark }
       <div className="sp-tag">匿名 · 去中心 · 隐藏服务浏览器</div>
 
       <h3>书签</h3>
-      {bookmarks.length === 0 ? (
-        <div className="empty">
-          还没有书签。访问一个 <code>.v0id</code> 地址后，点地址栏右侧的 <b>☆</b> 即可收藏到这里。
-        </div>
-      ) : (
-        <div className="bm-list">
-          {bookmarks.map((b) => (
-            <div className="bm-card" key={b.url} onClick={() => onOpen(b.url)} title={b.url}>
-              <span
-                className="bm-del"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemoveBookmark(b.url);
-                }}
-              >
-                ✕
-              </span>
-              <div className="bm-title">{b.title || b.url}</div>
-              <div className="bm-url">{b.url}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <BookmarkList
+        bookmarks={bookmarks}
+        onOpen={onOpen}
+        onRemove={onRemoveBookmark}
+        emptyText={
+          <>
+            还没有书签。访问一个 <code>.v0id</code> 地址后，点地址栏右侧的 <b>☆</b> 即可收藏到这里。
+          </>
+        }
+      />
 
       <h3>开始浏览</h3>
       <div className="empty">
