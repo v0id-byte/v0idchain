@@ -633,6 +633,15 @@ body {
   color: var(--line);
   cursor: not-allowed;
 }
+/* 破坏性操作（如托管服务卡片的「停止」） */
+.mini-btn.danger {
+  border-color: var(--err);
+  color: var(--err);
+}
+.mini-btn.danger:hover:not(:disabled) {
+  background: var(--err);
+  color: var(--bg);
+}
 /* 下拉（角色选择） */
 .select {
   background: var(--panel);
@@ -775,6 +784,51 @@ body {
 }
 .slashed {
   color: var(--err);
+}
+
+/* 托管服务卡片（活动隐藏服务列表） */
+.hs-list {
+  max-width: 680px;
+  margin: 14px 0;
+}
+.hs-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+.hs-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.hs-name {
+  color: var(--fg);
+  font-size: 12.5px;
+}
+.badge.on {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.hs-addr-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.hs-addr-row code {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-all;
+}
+.hs-stats {
+  color: var(--dim-2);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.hs-stats b {
+  color: var(--fg);
 }
 
 /* 转账表单 */
