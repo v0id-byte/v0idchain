@@ -22,7 +22,7 @@ import type { V0idNode } from '../node.js';
 import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js';
 import { SocksProxy, type HopPicker } from './socks.js';
 import { GuardManager } from './guards.js';
-import { makeHsDeps, serveHiddenService, type HsDeps } from './hsbridge.js';
+import { makeHsDeps, serveHiddenService, isRoutableHost, type HsDeps } from './hsbridge.js';
 import { serveStaticDir } from './staticserve.js';
 import { RelayReachability } from './reachability.js';
 import type { HopSpec } from './client.js';
@@ -96,6 +96,9 @@ export interface RoleStatus {
     // 可达性自检结果：null=从未测试；测试打的是本中继自己广播的 host:port（见 selfCheckReachable）。
     reachableSelf: boolean | null;
     reachableSelfAt: number | null;
+    // 当前守护进程实际生效的广播 host/port（启动时定的常量，改需重启守护——见 main.js restartDaemon）。
+    advertiseHost: string;
+    advertisePort: number;
   };
   hsList: HsStatusEntry[]; // 所有活动托管服务列表（空 = 无）
   mine: { on: boolean; intervalMs: number | null };
@@ -171,18 +174,44 @@ export class RoleManager {
       const d = this.node.relays().find((r) => r.address === id);
       return d ? { host: d.host, port: d.port } : undefined;
     };
+    // 后台周期预热 SOCKS 选路用的可达性缓存（同 hsbridge.ts 的 warm() 套路）：链上目录会永久累积
+    // 无法注销的死中继，pickHops 若直接从全量目录里随机挑，建路必然时不时撞上死中继而卡 ~6s 超时。
+    const warmReachability = () => this.reachability.refresh(this.node.relays()).catch(() => undefined);
+    void warmReachability();
+    setInterval(warmReachability, 60_000).unref?.();
   }
 
   /**
-   * SOCKS 选路（从 CLI 原样抬过来）：hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则失败/等待
-   * 冷却恢复，绝不回退随机入口。链上中继 < 3 → 抛「中继不足」。middle ≠ guard、exit ≠ guard ∧ ≠ middle。
+   * SOCKS 选路（从 CLI 原样抬过来，后补：先经 RelayReachability 过滤掉已知死中继，同 hsbridge.buildCircuit
+   * 的选路收敛策略，避免每次都可能随机挑中一个早已下线却永远无法从链上目录注销的死中继）。
+   * hop0 = 持久守卫（与 HS 共用同一 GuardManager）；守卫不可用则失败/等待冷却恢复，绝不回退随机入口。
+   * 可达中继 < 3 → 抛「中继不足」。middle ≠ guard、exit ≠ guard ∧ ≠ middle。
    */
   private pickHops: HopPicker = (): HopSpec[] => {
-    const all = this.node.relays();
-    if (all.length < MIN_RELAYS) throw new Error('链上中继不足 3 个，暂无法建路');
+    const raw = this.node.relays();
+    if (raw.length < MIN_RELAYS) throw new Error('链上中继不足 3 个，暂无法建路');
+    // 先剔除不可路由的 host（回环/私网，如浏览器自己注册的 127.0.0.1）再做可达性过滤：否则本机若碰巧有
+    // 服务监听在同一端口，WS 自探测会“连得通”而把这条死中继误判为可用，选中后却是在拨自己、根本连不到
+    // 真正的对方——与 hsbridge.buildCircuit 同一口径（见 isRoutableHost）。
+    const routable = raw.filter((d) => isRoutableHost(d.host));
+    const all = this.reachability.knownUsable(routable);
+    if (all.length < MIN_RELAYS) throw new Error('链上可达中继不足 3 个，暂无法建路（其余为已知死中继，等待后台探测淘汰或稍后重试）');
     const hop = (d: (typeof all)[number]): HopSpec => ({ id: d.address, onionPub: hexToBytes(d.onionPubHex), host: d.host, port: d.port });
-    const gid = this.guard.currentGuard(all);
-    const guard = gid ? all.find((d) => d.address === gid) : undefined;
+    // 守卫钉住/落盘判定必须传 raw（未经可达性过滤的全量目录），不能传 all：GuardManager.currentGuard 把
+    // “不在传入目录里”等同于“中继已下线”并从 guards.json 里永久删除该守卫。若传经 reachability 过滤过的
+    // all，一次瞬时探测失败就会被误判成“下线”，导致钉住的入口守卫被迫频繁轮换——这正好违背守卫钉住本意
+    // （抗多电路统计去匿名，见 guards.ts 顶部注释），反而扩大了入口暴露面。真正“当前不可达”只应影响
+    // “这次建路用不用它”，绝不该影响“它还算不算钉住的守卫”。
+    // 于是这里在钉住集内部（最多 guard.size 次）跳过当前不可达的守卫，同时保持 guards.json 不受影响。
+    const excluded = new Set<string>();
+    let guard: (typeof all)[number] | undefined;
+    for (let i = 0; i < this.guard.size; i++) {
+      const gid = this.guard.currentGuard(raw, excluded);
+      if (!gid) break;
+      const candidate = all.find((d) => d.address === gid);
+      if (candidate) { guard = candidate; break; }
+      excluded.add(gid); // 该守卫当前不可达（探测判负）：本次建路跳过，不触碰其在 guards.json 里的钉住状态
+    }
     if (!guard) throw new Error('钉住守卫均不可用，暂无法建路');
     const afterGuard = all.filter((d) => d.address !== guard.address);
     const middle = afterGuard[Math.floor(Math.random() * afterGuard.length)];
@@ -417,13 +446,38 @@ export class RoleManager {
     this.socksPort = port;
   }
 
-  /** 供调用方在启动时构造 SocksProxy 用的依赖（pickHops + 共享 hsDeps + guard/hs 失败回调）。 */
-  socksWiring(): { pickHops: HopPicker; hsDeps: HsDeps; onGuardFail: (g: HopSpec) => void; onHsFail: (addr: string, reason: string) => void } {
+  /**
+   * 供调用方在启动时构造 SocksProxy 用的依赖（pickHops + 共享 hsDeps + guard/hs 失败回调 +
+   * middle/exit 可达性反馈回调——同 hsbridge.buildCircuit 的 markBad/markProvenForwarder 反馈环，
+   * 只是适配 SOCKS「整条路重挑」的简单重试模型，不做 hsbridge 那套多 middle 试探同一 exit 的精细计数）。
+   */
+  socksWiring(): {
+    pickHops: HopPicker;
+    hsDeps: HsDeps;
+    onGuardFail: (g: HopSpec) => void;
+    onHsFail: (addr: string, reason: string) => void;
+    onHopFail: (hop: HopSpec, kind: 'middle' | 'exit', middle?: HopSpec) => void;
+    onHopsProven: (middle: HopSpec) => void;
+  } {
+    const maybeMarkBad = (id: string) => {
+      // 留够 MIN_RELAYS 个可达的，绝不把可达集判到建不了路（同 hsbridge 的 usableCount 护栏）。
+      if (this.reachability.usableCount(this.node.relays()) > MIN_RELAYS) this.reachability.markBad(id);
+    };
     return {
       pickHops: this.pickHops,
       hsDeps: this.hsDeps,
       onGuardFail: (g) => this.guard.markUnreachable(g.id),
       onHsFail: (addr, reason) => this.recordHsError(addr, reason),
+      onHopFail: (hop, kind, middle) => {
+        // exit EXTEND 失败且 middle 已证能转发 → 大概率是 exit 端点本身的问题，别错怪好 middle；
+        // 否则（middle 未证实）保守地把嫌疑记在 middle 头上，与 hsbridge 的消歧逻辑同一思路。
+        if (kind === 'exit' && middle && this.reachability.isProven(middle.id)) {
+          maybeMarkBad(hop.id);
+          return;
+        }
+        maybeMarkBad(kind === 'exit' && middle ? middle.id : hop.id);
+      },
+      onHopsProven: (middle) => this.reachability.markProvenForwarder(middle.id),
     };
   }
 
@@ -467,6 +521,8 @@ export class RoleManager {
         published: this.relayPublished,
         reachableSelf: this.lastSelfCheck ? this.lastSelfCheck.ok : null,
         reachableSelfAt: this.lastSelfCheck ? this.lastSelfCheck.at : null,
+        advertiseHost: this.relayAdvertiseHost,
+        advertisePort: this.relayAdvertisePort,
       },
       hsList: this.hsList(),
       mine: { on: this.mineOn, intervalMs: this.mineOn ? this.mineIntervalMs : null },

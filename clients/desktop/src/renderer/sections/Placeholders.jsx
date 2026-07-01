@@ -82,7 +82,7 @@ function ChainStatus({ info, fields }) {
   if (info === null) return <p className="stat-note">链状态不可用（外部 SOCKS 模式，或本机节点 API 尚未就绪）。</p>;
   const all = {
     height:  { k: '链高',            v: info.height },
-    peers:   { k: '对等节点',        v: info.peers },
+    peers:   { k: '对等节点',        v: info.peers, hint: '当前连着的 P2P 广播连接数（同步区块/交易用）；与「中继」板块的可达中继数是两套独立机制，开中继不会让这个数变大' },
     blocks:  { k: '区块数',          v: info.blocks },
     mempool: { k: '内存池',          v: info.mempool },
     balance: { k: `余额 (${info.symbol || '$V0ID'})`, v: info.balance },
@@ -97,7 +97,7 @@ function ChainStatus({ info, fields }) {
         const cell = all[f];
         if (!cell) return null;
         return (
-          <div className="stat" key={f}>
+          <div className="stat" key={f} title={cell.hint}>
             <div className="k">{cell.k}</div>
             <div className={'v' + (cell.small ? ' small' : '')}>{cell.v ?? '—'}</div>
           </div>
@@ -197,6 +197,49 @@ export function RelayPanel() {
     );
   }, []);
 
+  // ---- 广播地址配置：默认 127.0.0.1（回环），中继只本地可用、描述符不上链。要让全网发现你，
+  // 得填一个公网可达的地址/域名。这是守护进程启动时定的常量，改了要重启守护进程才生效。----
+  const [advHost, setAdvHost] = useState('');
+  const [advPort, setAdvPort] = useState('');
+  const [advBusy, setAdvBusy] = useState(false);
+  useEffect(() => {
+    window.v0id.settings.getRelayAdvertise().then((s) => {
+      setAdvHost(s?.host || '');
+      setAdvPort(s?.port ? String(s.port) : '');
+    });
+  }, []);
+  const saveAdvertise = useCallback(async () => {
+    const wasOn = on; // 重启会把 RoleManager 状态一起清空，重启后若原先中继是开的，得手动把它接回去
+    setAdvBusy(true);
+    setMsg({ kind: '', text: '正在保存……' });
+    const sr = await window.v0id.settings.setRelayAdvertise(advHost, advPort ? Number(advPort) : null);
+    if (!sr.ok) {
+      setAdvBusy(false);
+      setMsg({ kind: 'err', text: sr.error });
+      return;
+    }
+    setMsg({ kind: '', text: '正在重启守护进程……（会短暂断开当前浏览/托管/中继连接）' });
+    const rr = await window.v0id.restartDaemon();
+    if (!rr.ok) {
+      setAdvBusy(false);
+      setMsg({ kind: 'err', text: rr.error });
+      return;
+    }
+    if (wasOn) {
+      setMsg({ kind: '', text: '守护进程已重启，正在恢复中继上线状态……' });
+      const rs = await window.v0id.api.relayStart();
+      setAdvBusy(false);
+      setMsg(
+        rs.ok
+          ? { kind: 'ok', text: '已重启守护进程，新的广播地址已生效，中继已恢复上线' }
+          : { kind: 'err', text: `新的广播地址已生效，但重新上线中继失败：${rs.error}` },
+      );
+      return;
+    }
+    setAdvBusy(false);
+    setMsg({ kind: 'ok', text: '已重启守护进程，新的广播地址已生效' });
+  }, [advHost, advPort, on]);
+
   return (
     <div className="panel">
       <h1>中继</h1>
@@ -249,6 +292,36 @@ export function RelayPanel() {
           「注册」是链上曾登记过的全部地址（早已下线的也无法注销）；「可达」是刚探测到确实连得上的数量，更能反映实际可用规模。
         </p>
       )}
+
+      <h3 className="sub-h">广播地址</h3>
+      <p>
+        默认 <code>127.0.0.1</code>（回环）——中继只在本机可用，描述符<b>不会</b>上链，全网也连不到你。
+        要让中继真正对外可用，填一个公网可达的 IP 或域名（如经反向代理/内网穿透暴露的地址）。
+        这是守护进程启动时的常量，修改后需<b>重启守护进程</b>才生效（会短暂断开当前浏览/托管/中继连接）。
+      </p>
+      <p className="stat-note">
+        当前生效：<code>{relay?.advertiseHost ?? '—'}:{relay?.advertisePort ?? '—'}</code>
+      </p>
+      <div className="ctl-row">
+        <input
+          className="text-input"
+          placeholder="公网地址/域名，如 example.com"
+          value={advHost}
+          onChange={(e) => setAdvHost(e.target.value)}
+          disabled={advBusy}
+        />
+        <input
+          className="text-input"
+          style={{ maxWidth: 120 }}
+          placeholder={`端口（默认同 cell 端口 ${relay?.port ?? ''}）`}
+          value={advPort}
+          onChange={(e) => setAdvPort(e.target.value.replace(/[^0-9]/g, ''))}
+          disabled={advBusy}
+        />
+        <button className="primary-btn" onClick={saveAdvertise} disabled={advBusy}>
+          {advBusy ? '重启中…' : '保存并重启守护进程'}
+        </button>
+      </div>
 
       <h3 className="sub-h">质押（诚实保证金）</h3>
       <p>

@@ -49,6 +49,10 @@ export class SocksProxy {
     private hsDeps?: HsDeps, // 注入则 <地址>.v0id 经 rendezvous 连隐藏服务；不注入则 .v0id 返回 SOCKS 失败
     private onGuardFail?: (guard: HopSpec) => void, // 连守卫(hop0)失败时回调 → 调用方据此把该守卫标记不可达、下次切备份
     private onHsFail?: (addr: string, reason: string) => void, // .v0id 连接失败时回调 → 调用方记下具体原因，供 GET /hs/lasterror 查询
+    // middle/exit EXTEND 失败时回调（kind 区分哪一跳；exit 失败时附上 middle 供调用方消歧「怪 middle 还是怪 exit」）——
+    // 调用方据此把链上目录里连不上/转不动的死中继计入可达性缓存，避免重试时反复挑中同一批死中继（同 hsbridge 的选路收敛）。
+    private onHopFail?: (hop: HopSpec, kind: 'middle' | 'exit', middle?: HopSpec) => void,
+    private onHopsProven?: (middle: HopSpec) => void, // 三跳全部建成时回调：middle 实测能转发，调用方可将其列为「已证骨干」
   ) {
     this.server = createServer((s) => this.handle(s).catch(() => s.destroy()));
     this.server.listen(port, host);
@@ -104,8 +108,19 @@ export class SocksProxy {
           this.onGuardFail?.(hops[0]); // 仅当连守卫(hop0)失败才回报 → 下次 pickHops 自动切钉住备份（不误伤并发新连接的钉固）
           throw e;
         }
-        await c.extend(hops[1]);
-        await c.extend(hops[2]);
+        try {
+          await c.extend(hops[1]);
+        } catch (e) {
+          this.onHopFail?.(hops[1], 'middle');
+          throw e;
+        }
+        try {
+          await c.extend(hops[2]);
+        } catch (e) {
+          this.onHopFail?.(hops[2], 'exit', hops[1]);
+          throw e;
+        }
+        this.onHopsProven?.(hops[1]); // 三跳建成：middle 实测能转发到 exit
         const ok = await c.beginStream(target, port);
         if (ok) {
           client = c;

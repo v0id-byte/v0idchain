@@ -112,6 +112,16 @@ function spawnDaemon() {
     // PEERS 现在默认就是 seeds.js 的出厂种子（除非 V0ID_PEERS 覆盖），所以这里几乎总会带上 --peers。
     startArgs.push('--peers', PEERS.trim());
   }
+  // 中继广播地址（用户在「中继」板块里配置、持久化在 settings.json）：不设则守护进程走 CLI 默认
+  // 127.0.0.1（回环，中继只本地可用、描述符不上链）。这是启动时的常量，改了要重启守护进程才生效
+  // （RoleManager 的 relayAdvertiseHost 是构造时定的只读字段）——见 restartDaemon()。
+  const settings = readSettings();
+  if (settings.relayAdvertiseHost && settings.relayAdvertiseHost.trim()) {
+    startArgs.push('--relay-advertise', settings.relayAdvertiseHost.trim());
+    if (settings.relayAdvertisePort) {
+      startArgs.push('--relay-advertise-port', String(settings.relayAdvertisePort));
+    }
+  }
 
   pushStatus({ phase: 'starting', socksPort: SOCKS_PORT, dataDir });
 
@@ -333,6 +343,29 @@ ipcMain.handle('v0id:api:walletInfo', async () => {
 ipcMain.handle('v0id:api:relayStart', () => nodeApi('POST', '/relay/start'));
 ipcMain.handle('v0id:api:relayStop', () => nodeApi('POST', '/relay/stop'));
 ipcMain.handle('v0id:api:relaySelfcheck', () => nodeApi('POST', '/relay/selfcheck'));
+// 中继广播地址设置：持久化在 settings.json，改了要重启守护进程才生效（见 restartDaemon）。
+ipcMain.handle('v0id:settings:getRelayAdvertise', () => {
+  const s = readSettings();
+  return { host: s.relayAdvertiseHost || '', port: s.relayAdvertisePort || null };
+});
+ipcMain.handle('v0id:settings:setRelayAdvertise', (_e, { host, port } = {}) => {
+  let portNum = null;
+  if (port !== null && port !== undefined && port !== '') {
+    portNum = Number(port);
+    // 端口非法（如误输入 0 / 超 65535）却照样落盘的话，下次重启会把它原样传给 --relay-advertise-port，
+    // RoleManager 会把它当广播端口报出来，但 publishRelay 校验描述符时会拒绝，导致「广播地址已生效」
+    // 界面却怎么也发布不出去、原因还不明显——不如现在就把错误的输入挡在保存这一步。
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      return { ok: false, error: '端口须为 1–65535 的整数' };
+    }
+  }
+  writeSettings({
+    relayAdvertiseHost: typeof host === 'string' ? host.trim() : '',
+    relayAdvertisePort: portNum,
+  });
+  return { ok: true };
+});
+ipcMain.handle('v0id:restartDaemon', () => restartDaemon());
 ipcMain.handle('v0id:api:hsStart', (_e, { host, port, name, staticDir } = {}) => {
   const body = { name: String(name ?? '') };
   if (staticDir) body.staticDir = String(staticDir);
@@ -490,6 +523,42 @@ function killDaemon() {
   child.on('exit', () => clearTimeout(t));
 }
 
+// ---- 重启守护进程（改中继广播地址等启动时常量后生效用）----
+// 等旧进程真正退出（而非发完信号就立刻重拉）再 spawn，避免抢占同一批端口（socks/api/中继 cell）导致 EADDRINUSE。
+// 直到新进程的 SOCKS 端口真正就绪才 resolve：调用方（保存广播地址的 UI）据此知道什么时候才能安全地
+// 再调 /relay/start 之类的 API——太早调用会打到还没起来的新进程上，白白失败。
+function restartDaemon() {
+  // 外部 SOCKS 验证模式（V0ID_SOCKS_EXTERNAL）本就不拉内部守护进程（用的是外面已经在跑的 demo SOCKS），
+  // 这里如果照常 spawnDaemon() 会在同一个 SOCKS 端口上再起一个真守护进程，跟 demo 服务打架，
+  // 其余主进程逻辑（nodeApi 等）仍以为节点 API 不可用，导致状态分裂。这类改动在该模式下没有意义，直接拒绝。
+  if (SOCKS_EXTERNAL != null) {
+    return Promise.resolve({ ok: false, error: '外部 SOCKS 验证模式下没有内部守护进程，无法重启（该模式仅用于本地联调）' });
+  }
+  return new Promise((resolve) => {
+    const afterExit = () => {
+      socksReady = false;
+      spawnDaemon();
+      waitSocksReady(SOCKS_PORT)
+        .then(() => {
+          socksReady = true;
+          pushStatus({ phase: 'socks-ready', socksPort: SOCKS_PORT });
+          resolve({ ok: true });
+        })
+        .catch((err) => {
+          pushStatus({ phase: 'error', error: `SOCKS 未就绪：${err.message}` });
+          resolve({ ok: false, error: err.message });
+        });
+    };
+    const child = daemon;
+    if (!child) {
+      afterExit();
+      return;
+    }
+    child.once('exit', afterExit);
+    killDaemon();
+  });
+}
+
 // ---- 书签持久化（userData/bookmarks.json）----
 // 结构：[{ url, title, addedAt }]。读失败/损坏一律当空列表（不让坏文件阻断 UI）。
 function bookmarksPath() {
@@ -511,6 +580,32 @@ function writeBookmarks(list) {
   } catch (e) {
     log(`书签写入失败：${e.message}`);
   }
+}
+
+// ---- 设置持久化（userData/settings.json）----
+// 目前只存中继广播地址（--relay-advertise / --relay-advertise-port）：这是守护进程启动时的常量，
+// 改了要 restartDaemon() 才生效，所以得先落盘再重启，而不是像 /relay/start 那样运行时直接调 API。
+function settingsPath() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+function readSettings() {
+  try {
+    const raw = fs.readFileSync(settingsPath(), 'utf8');
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch {
+    return {};
+  }
+}
+function writeSettings(patch) {
+  const next = { ...readSettings(), ...patch };
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(settingsPath(), JSON.stringify(next, null, 2), 'utf8');
+  } catch (e) {
+    log(`设置写入失败：${e.message}`);
+  }
+  return next;
 }
 
 // ---- 极简文件日志（写到 userData/browser.log，便于无 GUI 时排查）----

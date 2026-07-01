@@ -120,7 +120,7 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             // 未接 RoleManager 时回全 off 的占位形，调用方无须区分。
             return json(200, roles?.status() ?? {
               socks: { on: false, port: null },
-              relay: { on: false, port: null, address: null, circuits: 0, published: false, reachableSelf: null, reachableSelfAt: null },
+              relay: { on: false, port: null, address: null, circuits: 0, published: false, reachableSelf: null, reachableSelfAt: null, advertiseHost: '127.0.0.1', advertisePort: 0 },
               hsList: [],
               mine: { on: false, intervalMs: null },
             });
