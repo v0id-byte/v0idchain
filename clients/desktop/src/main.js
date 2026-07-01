@@ -317,6 +317,8 @@ async function nodeApi(method, pathname, body) {
 ipcMain.handle('v0id:api:roles', () => nodeApi('GET', '/roles'));
 ipcMain.handle('v0id:api:stakeStatus', () => nodeApi('GET', '/stake'));
 ipcMain.handle('v0id:api:txStatus', (_e, txid) => nodeApi('GET', `/tx?txid=${encodeURIComponent(String(txid ?? ''))}`));
+// .v0id 页面加载失败时查最近一次真实失败原因（取不到描述符/无可用引入点/超时/ntor 认证失败……），供错误页展示中文原因而非通用错误码。
+ipcMain.handle('v0id:api:hsLastError', (_e, addr) => nodeApi('GET', `/hs/lasterror?addr=${encodeURIComponent(String(addr ?? ''))}`));
 // 钱包信息：合并 /info 的 address+symbol 与 /balance 的余额（/info 已含 balance，但分开取更直观且 /balance 更轻）。
 ipcMain.handle('v0id:api:walletInfo', async () => {
   const info = await nodeApi('GET', '/info');

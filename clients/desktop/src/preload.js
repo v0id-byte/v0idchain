@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('v0id', {
     stakeStatus: () => ipcRenderer.invoke('v0id:api:stakeStatus'),
     walletInfo: () => ipcRenderer.invoke('v0id:api:walletInfo'),
     txStatus: (txid) => ipcRenderer.invoke('v0id:api:txStatus', txid),
+    hsLastError: (addr) => ipcRenderer.invoke('v0id:api:hsLastError', addr),
     // ---- 写（POST，主进程带 Bearer）----
     relayStart: () => ipcRenderer.invoke('v0id:api:relayStart'),
     relayStop: () => ipcRenderer.invoke('v0id:api:relayStop'),

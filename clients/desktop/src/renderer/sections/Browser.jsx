@@ -92,6 +92,27 @@ export function Browser({ status }) {
           loading: false,
           error: { code: e.errorCode, desc: e.errorDescription || '' },
         });
+        // -120 = ERR_SOCKS_CONNECTION_FAILED：.v0id 连接失败的具体原因（取不到描述符/无可用引入点/
+        // 会合超时/ntor 认证失败……）由守护进程记着，这里查一次拿真实原因，换掉下面那句通用猜测文案。
+        // 守护记录先于 SOCKS 失败应答写出（socks.ts 的 catch 里先 record 后 sock.write），故这里查询时记录必已就绪。
+        if (e.errorCode === -120 && window.v0id?.api?.hsLastError) {
+          let host = '';
+          try {
+            host = new URL(e.validatedURL).hostname;
+          } catch {
+            /* 解析失败就跳过，保留通用文案 */
+          }
+          if (host.endsWith('.v0id')) {
+            window.v0id.api
+              .hsLastError(host)
+              .then((res) => {
+                if (res?.ok && res.data?.reason) {
+                  patchTab(id, { error: { code: e.errorCode, desc: e.errorDescription || '', reason: res.data.reason } });
+                }
+              })
+              .catch(() => {});
+          }
+        }
       };
       const onNav = (e) => {
         // 页面内导航（含 SPA pushState）后刷新地址与前进/后退态。
@@ -333,7 +354,7 @@ export function Browser({ status }) {
               <p>{activeTab.error.desc}</p>
             ) : (
               <>
-                <p>未发布 / 取不到描述符 / 守护未就绪 / 链上中继不足。</p>
+                <p>{activeTab.error.reason || '未发布 / 取不到描述符 / 守护未就绪 / 链上中继不足。'}</p>
                 <p className="mono-err">
                   ({activeTab.error.code} {activeTab.error.desc})
                 </p>
