@@ -97,20 +97,29 @@ export function isEncryptedMemo(memo: string): boolean {
 }
 
 /** 共享密钥：我的 ed25519 私钥(种子) × 对方地址(ed25519 公钥) → 32 字节对称密钥 */
-function sharedKey(myPrivateKey: Uint8Array, otherAddress: string): Uint8Array {
+export function memoSharedKey(myPrivateKey: Uint8Array, otherAddress: string): Uint8Array {
   const otherPub = hexToBytes(addressToPublicKeyHex(otherAddress));
   const secret = x25519.getSharedSecret(edwardsToMontgomeryPriv(myPrivateKey), edwardsToMontgomeryPub(otherPub));
   return secret.subarray(0, 32);
 }
 
-/** 加密一段明文给收件人（发送方用自己的私钥）。返回 `ENC|<hex>` 串，直接当 memo 上链。 */
-export function encryptMemo(plaintext: string, recipientAddress: string, senderPrivateKey: Uint8Array): string {
-  const nonce = randomBytes(24);
-  const ct = xchacha20poly1305(sharedKey(senderPrivateKey, recipientAddress), nonce).encrypt(utf8ToBytes(plaintext));
+export function encryptMemoWithNonce(
+  plaintext: string,
+  recipientAddress: string,
+  senderPrivateKey: Uint8Array,
+  nonce: Uint8Array,
+): string {
+  if (nonce.length !== 24) throw new Error('XChaCha20-Poly1305 nonce must be 24 bytes');
+  const ct = xchacha20poly1305(memoSharedKey(senderPrivateKey, recipientAddress), nonce).encrypt(utf8ToBytes(plaintext));
   const blob = new Uint8Array(nonce.length + ct.length);
   blob.set(nonce);
   blob.set(ct, nonce.length);
   return ENC_PREFIX + bytesToHex(blob);
+}
+
+/** 加密一段明文给收件人（发送方用自己的私钥）。返回 `ENC|<hex>` 串，直接当 memo 上链。 */
+export function encryptMemo(plaintext: string, recipientAddress: string, senderPrivateKey: Uint8Array): string {
+  return encryptMemoWithNonce(plaintext, recipientAddress, senderPrivateKey, randomBytes(24));
 }
 
 /**
@@ -124,7 +133,7 @@ export function decryptMemo(memo: string, otherPartyAddress: string, myPrivateKe
     if (blob.length < 24 + 16) return null; // nonce(24) + 至少一个 poly1305 tag(16)
     const nonce = blob.subarray(0, 24);
     const ct = blob.subarray(24);
-    const pt = xchacha20poly1305(sharedKey(myPrivateKey, otherPartyAddress), nonce).decrypt(ct);
+    const pt = xchacha20poly1305(memoSharedKey(myPrivateKey, otherPartyAddress), nonce).decrypt(ct);
     return new TextDecoder().decode(pt);
   } catch {
     return null;

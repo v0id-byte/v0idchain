@@ -3,6 +3,7 @@
 > 写**任何**非 Node 客户端（Swift / Kotlin / Rust …）都必须严格照此实现。
 > **核心铁律：你的客户端算出的 `txid` 和签名，必须与 `packages/core` 逐字节一致**，否则签出的交易全网校验不过、直接被丢弃。
 > 权威参考实现：`packages/core/src/{crypto,transaction,block,blockchain,messages}.ts`。本规范若与代码冲突，**以代码为准**——但下面的金标准测试向量可让你自检是否对齐。
+> 客户端协议参考层：`packages/core/src/client-protocol.ts`（余额/nonce 回放、headers/recent/proof 验证、轻同步消息构造）与 `scripts/client-protocol-test.ts`（§9 金标准向量）。
 
 ---
 
@@ -153,6 +154,8 @@ merkleRoot(txids): 两两 sha256Hex(a+b) 逐层归并，奇数复制末尾；空
 2. 发 `QUERY_RECENT`，例如 `{maxBlocks:10000,minTimestamp:Date.now()-3*24*3600*1000}`，只缓存同时满足“最近 10000 块”和“三天内”的完整块。
 3. 用户导入老地址或打开历史页时，发 `QUERY_ADDRESS_PROOFS` 回填该地址历史；每条 proof 用区块 header 的 `merkleRoot` 验证交易存在。
 4. 若要查单笔交易，发 `QUERY_TX_PROOF`；若要浏览旧区块，发 `QUERY_BLOCK_RANGE` 按高度段拉取。
+
+JS/TS 客户端可直接复用 `recentSyncWindow()`、`verifyLightSyncSnapshot()`、`replayAddressProofs()`、`replayClientState()`；Swift/Kotlin/Rust 客户端照这些纯函数移植即可。
 
 安全边界：Merkle proof 是**存在证明**，不是“无遗漏证明”。如果钱包不拉全链，最好向多个节点交叉请求同一地址历史；真正的单节点余额证明需要未来共识层加入状态承诺。
 

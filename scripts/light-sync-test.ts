@@ -2,9 +2,16 @@
 import { rmSync } from 'node:fs';
 import {
   Wallet,
+  clientBalanceOf,
+  clientNonceOf,
   verifyHeaderChain,
   verifyTxInclusionProof,
   findTxInclusionProof,
+  queryRecent,
+  recentSyncWindow,
+  replayAddressProofs,
+  replayClientState,
+  verifyLightSyncSnapshot,
   type TxInclusionProof,
 } from '../packages/core/src/index.js';
 import { V0idNode, startHttpApi } from '../packages/node/src/index.js';
@@ -73,6 +80,19 @@ const recentRes = await fetchJSON<{ blocks: any[] }>(
 );
 check('GET /recent 同时满足最近块数与时间窗口', recentRes.status === 200 && recentRes.body.blocks.length <= 3);
 check('GET /recent 不返回早于 minTimestamp 的块', recentRes.body.blocks.every((b) => b.timestamp >= minTimestamp));
+check(
+  'client-protocol 可验证 headers + recent snapshot',
+  verifyLightSyncSnapshot({
+    headers: headersRes.body.headers,
+    recentBlocks: recentRes.body.blocks,
+    maxBlocks: 3,
+    minTimestamp,
+  }).ok,
+);
+
+const defaultWindow = recentSyncWindow(1_700_000_000_000);
+check('client-protocol 默认 recent 窗口 = 10000 blocks + 3 days', defaultWindow.maxBlocks === 10_000 && defaultWindow.minTimestamp === 1_699_740_800_000);
+check('client-protocol QUERY_RECENT builder 使用窗口参数', JSON.stringify(queryRecent({ maxBlocks: 3, minTimestamp })) === JSON.stringify({ type: 'QUERY_RECENT', maxBlocks: 3, minTimestamp }));
 
 const proofRes = await fetchJSON<TxInclusionProof>(`http://127.0.0.1:7811/tx-proof?txid=${txid}`);
 check('GET /tx-proof 返回证明', proofRes.status === 200);
@@ -83,6 +103,13 @@ const addrRes = await fetchJSON<{ proofs: TxInclusionProof[] }>(
 );
 check('GET /address-proofs 返回地址相关交易证明', addrRes.status === 200 && addrRes.body.proofs.some((p) => p.tx.txid === txid));
 check('address proofs 每条都可验证', addrRes.body.proofs.every(verifyTxInclusionProof));
+const replayedProofs = replayAddressProofs(recipient.address, addrRes.body.proofs, headersRes.body.headers);
+check('client-protocol 可用地址 proofs 回放余额', replayedProofs.ok && replayedProofs.value.balance === node.bc.balanceOf(recipient.address));
+check('client-protocol 地址 proofs 回放 nonce', replayedProofs.ok && replayedProofs.value.nonce === node.bc.nonceOf(recipient.address));
+
+const replayedFull = replayClientState(node.bc.chain);
+check('client-protocol 全块回放余额与节点一致', clientBalanceOf(replayedFull, recipient.address) === node.bc.balanceOf(recipient.address));
+check('client-protocol 全块回放 nonce 与节点一致', clientNonceOf(replayedFull, recipient.address) === node.bc.nonceOf(recipient.address));
 
 const ws = new WebSocket('ws://127.0.0.1:6811');
 await new Promise<void>((resolve) => {
