@@ -2,7 +2,7 @@
 // 与洋葱/rendezvous 完全解耦——就是个只读静态文件服务器；serveHiddenService（hsbridge.ts）本就后端无关，
 // 只需把这里吐出的本地端口当 target 传给它，「静态文件夹」就变成了一个正常的隐藏服务后端。
 import { createServer, type Server } from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, realpath } from 'node:fs/promises';
 import { join, normalize, extname, sep } from 'node:path';
 
 const MIME: Record<string, string> = {
@@ -37,24 +37,35 @@ export interface StaticServeOptions {
  */
 export function serveStaticDir(opts: StaticServeOptions): Promise<{ port: number; stop: () => void }> {
   const root = normalize(opts.dir);
+  // root 自己也可能是个符号链接；只解析一次（server 生命周期内文件夹身份不变），后续每次请求都拿它当基准。
+  let rootReal: string | null = null;
   const server: Server = createServer((req, res) => {
     void (async () => {
       try {
+        rootReal ??= await realpath(root);
         const rawPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
         const rel = rawPath === '/' ? '/index.html' : rawPath;
         const resolved = normalize(join(root, rel));
-        // 路径遍历防护：resolved 必须仍在 root 之下（含 root 本身），否则 ../../etc/passwd 这类请求会被拒绝。
+        // 第一道防线（字面路径）：挡住 ../../etc/passwd 这类明文遍历，不碰文件系统、开销最小。
         if (resolved !== root && !resolved.startsWith(root + sep)) {
           res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end('forbidden');
           return;
         }
-        const st = await stat(resolved).catch(() => null);
+        // 第二道防线（符号链接逃逸）：第一道只看得到链接本身的路径，看不到它指向哪——文件夹里若有一个
+        // 指向 /etc/passwd 之类外部文件的符号链接，resolved 本身在 root 之下、但 stat/readFile 会跟着
+        // 链接读到外面去。realpath 把链接一路解到真实文件，再核对真实路径是否仍落在 root 的真实路径下。
+        const resolvedReal = await realpath(resolved).catch(() => null);
+        if (!resolvedReal || (resolvedReal !== rootReal && !resolvedReal.startsWith(rootReal + sep))) {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+          return;
+        }
+        const st = await stat(resolvedReal).catch(() => null);
         if (!st || !st.isFile()) {
           res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
           return;
         }
-        const body = await readFile(resolved);
-        const type = MIME[extname(resolved).toLowerCase()] ?? 'application/octet-stream';
+        const body = await readFile(resolvedReal);
+        const type = MIME[extname(resolvedReal).toLowerCase()] ?? 'application/octet-stream';
         res.writeHead(200, { 'content-type': type });
         res.end(body);
       } catch {

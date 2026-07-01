@@ -16,7 +16,8 @@ import {
   type OnionKeypair,
 } from '@v0idchain/core';
 import { isIP } from 'node:net';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { V0idNode } from '../node.js';
 import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js';
 import { SocksProxy, type HopPicker } from './socks.js';
@@ -264,6 +265,11 @@ export class RoleManager {
    */
   async selfCheckReachable(): Promise<boolean> {
     if (!this.relay) throw new Error('中继未上线，无法自检');
+    // 回环/私网广播地址（默认 127.0.0.1）本机探测必然连得通，但这正是 startRelay 判定「不值得上链」的
+    // 同一类地址——全网谁都连不到它。若照常探测会把「自己连自己」误报成「可达」，误导用户以为真的上线了。
+    if (!isPublishableAdvertiseHost(this.relayAdvertiseHost)) {
+      throw new Error('广播地址是回环/私网（默认 127.0.0.1），自检没有意义——这类地址本就不会上链、全网也连不到你；设 --relay-advertise 为公网地址/域名后再试');
+    }
     const ok = await this.reachability.probeOne({ host: this.relayAdvertiseHost, port: this.relayAdvertisePort });
     this.lastSelfCheck = { ok, at: Date.now() };
     return ok;
@@ -309,8 +315,11 @@ export class RoleManager {
     const backend: 'external' | 'static' = opts?.staticDir ? 'static' : 'external';
     // id 派生须与「目标」一一对应且跨重启稳定（同一目标复用同一身份文件 → .v0id 地址不变）：
     // 外部后端用 host:port；静态托管的落地端口每次都是随机临时端口，改用文件夹路径本身做稳定 id。
+    // 静态路径不能像外部 host:port 那样直接把非字母数字字符替换成 `_`——不同路径可能被替换成同一个
+    // id（如 site-a 和 site_a），导致后发布的那个被 hsMap 去重命中前者、误报「已发布」却服务着旧文件夹。
+    // 改用 realpath（顺带把符号链接/相对路径都归一化）的哈希做 id，坍缩概率可忽略。
     const id = backend === 'static'
-      ? `static_${opts!.staticDir}`.replace(/[^a-zA-Z0-9]/g, '_')
+      ? `static_${createHash('sha256').update(realpathSync(opts!.staticDir!)).digest('hex').slice(0, 24)}`
       : `${target!.host.replace(/[^a-zA-Z0-9]/g, '_')}_${target!.port}`;
     if (this.hsMap.has(id)) {
       const existing = this.hsMap.get(id)!;
