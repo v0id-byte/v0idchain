@@ -22,6 +22,7 @@ import {
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
+import { runPaywallServer, type VoucherAcceptor } from './paywall.js';
 import { RelayReachability } from './reachability.js';
 import type { GuardManager } from './guards.js';
 
@@ -197,7 +198,7 @@ const HS_CONNECT_ATTEMPTS = 4;
  * 单次尝试封顶 HS_ATTEMPT_TIMEOUT_MS（杜绝半死服务吊死 SOCKS 连接），失败则换新电路重试至多 HS_CONNECT_ATTEMPTS 次
  * （多步会合经 CF 隧道偶发抖动 → 重来一次大概率即通）。全部失败才抛错（上层回 SOCKS 失败）。
  */
-export async function connectHs(addr: string, deps: HsDeps): Promise<RdvChannel> {
+export async function connectHs(addr: string, deps: HsDeps): Promise<{ channel: RdvChannel; price?: number }> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < HS_CONNECT_ATTEMPTS; attempt++) {
     try {
@@ -239,6 +240,8 @@ export interface ServeHiddenServiceOptions {
   target: { host: string; port: number }; // 隐藏服务背后的本机 TCP 落地（每个会合通道连一次它）
   deps: HsDeps; // 选路器 + 名录
   numIntros?: number; // 引入点数量（默认 3）
+  price?: number; // 可选：付费墙价格（$V0ID/连接）。设了则每条通道桥接到 target 前先跑付费墙握手（需 acceptor）
+  acceptor?: VoucherAcceptor; // 券受理器（验签+防双花）；price 设了必须提供。operator==mint 时其 spentSerials 应与铸币厂兑现共享
   onError?: (err: unknown) => void; // 单个落地连接出错的可观察回调（默认吞掉）
 }
 
@@ -250,20 +253,38 @@ export interface ServeHiddenServiceOptions {
  */
 export async function serveHiddenService(
   opts: ServeHiddenServiceOptions,
-): Promise<{ address: string; stop: () => void; getConnCount: () => number }> {
+): Promise<{ address: string; stop: () => void; getConnCount: () => number; getPaidCount: () => number }> {
   const identityFile = opts.identityKey ? `hs-${opts.identityKey}.json` : 'hs.json';
   const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir, identityFile);
   let connCount = 0;
-  const handler: RendezvousHandler = (channel) => {
-    connCount++;
-    // 每个成功会合 → 连一次本机落地；连不上就关通道（服务进程没在监听 target）。
+  let paidCount = 0;
+  // 每个成功会合 → 连一次本机落地；连不上就关通道（服务进程没在监听 target）。
+  const bridgeToTarget = (channel: RdvChannel, leftover?: Uint8Array) => {
     const sock = connect(opts.target.port, opts.target.host);
-    sock.on('connect', () => bridgeChannelToSocket(channel, sock));
+    sock.on('connect', () => {
+      if (leftover && leftover.length) sock.write(Buffer.from(leftover)); // 付费握手后残留(A.1 正常空)→先写目标保字节序
+      bridgeChannelToSocket(channel, sock);
+    });
     sock.on('error', (e) => {
       opts.onError?.(e);
       channel.close();
       sock.destroy();
     });
+  };
+  const handler: RendezvousHandler = (channel) => {
+    connCount++;
+    if (opts.price && opts.price > 0 && opts.acceptor) {
+      // 付费站点：桥接前先在隧道内跑付费墙握手（验券，放行全程链下、不等出块）。未付费 → 关通道，不连 target。
+      runPaywallServer(channel, opts.price, opts.acceptor)
+        .then((res) => {
+          if (!res.paid) return void channel.close();
+          paidCount++;
+          bridgeToTarget(channel, res.leftover);
+        })
+        .catch(() => channel.close());
+    } else {
+      bridgeToTarget(channel);
+    }
   };
   const svc = new HiddenService({
     seed,
@@ -272,9 +293,10 @@ export async function serveHiddenService(
     dir: opts.deps.directory,
     handler,
     numIntros: opts.numIntros,
+    price: opts.price,
   });
   await svc.start();
-  return { address: svc.address, stop: () => svc.stop(), getConnCount: () => connCount };
+  return { address: svc.address, stop: () => svc.stop(), getConnCount: () => connCount, getPaidCount: () => paidCount };
 }
 
 /** 从 <dataDir>/<filename> 读回 hs 身份（种子 + 服务 onion 私钥）；不存在则生成并落盘（0600）。 */

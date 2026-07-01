@@ -63,6 +63,7 @@ export interface HiddenServiceOptions {
   dir: RelayDirectory; // 中继目录
   handler: RendezvousHandler; // 会合就绪回调
   numIntros?: number; // 引入点数量（默认 3）
+  price?: number; // 可选：付费墙价格（$V0ID/连接），写进已签名描述符 → 客户端连接前即知价、可乐观预付。缺省=免费
   now?: () => number; // 时间源（默认 Date.now/1000）
 }
 
@@ -74,6 +75,7 @@ export class HiddenService {
   private dir: RelayDirectory;
   private handler: RendezvousHandler;
   private numIntros: number;
+  private price?: number;
   private now: () => number;
   private A: Uint8Array;
   // 已建立的引入电路（常开，监听后向 INTRODUCE2）。引入点 relayId → {circ, authKey}。
@@ -101,6 +103,7 @@ export class HiddenService {
     this.dir = opts.dir;
     this.handler = opts.handler;
     this.numIntros = opts.numIntros ?? 3;
+    this.price = opts.price;
     this.now = opts.now ?? (() => Math.floor(Date.now() / 1000));
     this.A = identityPub(this.seed);
     this.address = encodeV0idAddress(this.A);
@@ -228,7 +231,7 @@ export class HiddenService {
       relayOnionPubHex: onionPubOf(relays, it.relayId), // 见下：测试经 dirOnion 提供；缺省占位（IP 的 onion 公钥客户端无需用）
       authKeyHex: bytesToHex(it.authKey),
     }));
-    const desc = buildDescriptor(this.seed, TP, introPoints, bytesToHex(this.onion.pub), this.nextRev());
+    const desc = buildDescriptor(this.seed, TP, introPoints, bytesToHex(this.onion.pub), this.nextRev(), this.price);
     const json = JSON.stringify(desc);
     const descId = descriptorId(blindPublic(this.A, TP), TP);
     const hsdirs = responsibleHsDirs(descId, relays, HSDIR_REPLICAS);
