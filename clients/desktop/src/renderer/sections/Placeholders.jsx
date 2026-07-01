@@ -11,6 +11,9 @@ import { useInfo } from '../useInfo.js';
 
 // 质押激活高度（镜像 config.ts，链未到此高度前按钮禁用）
 const STAKING_ACTIVATION_HEIGHT = 16_000;
+// 中继不足时 RoleManager.startHs 抛出的精确错误文案（镜像 rolemanager.ts），精确匹配以给出对应中文提示，
+// 而非用脆弱的正则去猜测任意错误字符串里是不是含着「不足 3 个」的意思。
+const HS_INSUFFICIENT_RELAYS_ERR = '链上中继不足 3 个，暂无法托管隐藏服务（待更多 relay 上链后重试）';
 
 // ---- 轮询任意 GET：每 intervalMs 调一次 fn()，返回最新结果 ----
 function usePoll(fn, intervalMs = 4000, deps = []) {
@@ -143,6 +146,8 @@ export function RelayPanel() {
   const info = useInfo();
   const roles = usePoll(() => window.v0id.api.roles(), 3000);
   const stakeRes = usePoll(() => window.v0id.api.stakeStatus(), 5000);
+  const countRes = usePoll(() => window.v0id.api.relayCount(), 10000);
+  const relayCount = countRes?.ok ? countRes.data : null;
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [role, setRole] = useState('middle');
@@ -179,6 +184,19 @@ export function RelayPanel() {
     setMsg(r.ok ? { kind: 'ok', text: `赎回已提交（txid ${r.data.txid.slice(0, 12)}…）` } : { kind: 'err', text: r.error });
   }, []);
 
+  const [checking, setChecking] = useState(false);
+  const selfCheck = useCallback(async () => {
+    setChecking(true);
+    setMsg({ kind: '', text: '正在探测可达性…' });
+    const r = await window.v0id.api.relaySelfcheck();
+    setChecking(false);
+    setMsg(
+      r.ok
+        ? { kind: r.data.ok ? 'ok' : 'err', text: r.data.ok ? '探测成功：连得上你的中继' : '探测失败：连不上（端口未开放 / 防火墙 / 已下线？）' }
+        : { kind: 'err', text: r.error },
+    );
+  }, []);
+
   return (
     <div className="panel">
       <h1>中继</h1>
@@ -191,12 +209,46 @@ export function RelayPanel() {
           {on ? '● 中继运行中 —— 点击下线' : '○ 中继已下线 —— 点击上线'}
         </button>
       </div>
+
+      {/* 三段式状态：本地是否起了服务 / 描述符是否上链 / 探测节点是否连得上你——分开展示，避免「点了开关就以为全网都认识我了」 */}
+      <div className="stage-row">
+        <div className="stage-item">
+          <span className={'dot' + (relay?.on ? ' ready' : '')} />
+          本地服务已启动
+        </div>
+        <div className="stage-item">
+          <span className={'dot' + (relay?.published ? ' ready' : '')} />
+          描述符已上链发布
+        </div>
+        <div className="stage-item">
+          <span className={'dot' + (relay?.reachableSelf === true ? ' ready' : relay?.reachableSelf === false ? ' err' : '')} />
+          可达性自测
+          {relay?.reachableSelf == null ? '（未测试）' : relay.reachableSelf ? '：可达' : '：不可达'}
+          <button className="mini-btn" onClick={selfCheck} disabled={!on || checking} style={{ marginLeft: 8 }}>
+            {checking ? '探测中…' : '测试是否可达'}
+          </button>
+        </div>
+      </div>
+      <p className="stat-note">
+        「可达」只代表探测节点连得上你（示例性自测，非全网共识）；真正被网络使用取决于其他节点选路时是否选中你做电路一跳。
+      </p>
+
       <div className="stat-grid">
         <div className="stat"><div className="k">cell 端口</div><div className="v">{relay?.port ?? '—'}</div></div>
         <div className="stat"><div className="k">活动电路</div><div className="v">{relay ? relay.circuits : '—'}</div></div>
-        <div className="stat"><div className="k">描述符上链</div><div className="v">{relay ? (relay.published ? '已发布' : '待发布') : '—'}</div></div>
+        <div className="stat">
+          <div className="k">全网中继</div>
+          <div className="v small">
+            {relayCount ? `注册 ${relayCount.registered} · 可达 ${relayCount.reachable ?? '—'}` : '—'}
+          </div>
+        </div>
       </div>
       {relay?.address && <p className="stat-note">中继链上身份：<code>{shortAddr(relay.address)}</code></p>}
+      {relayCount && relayCount.reachable != null && relayCount.reachable < relayCount.registered && (
+        <p className="stat-note">
+          「注册」是链上曾登记过的全部地址（早已下线的也无法注销）；「可达」是刚探测到确实连得上的数量，更能反映实际可用规模。
+        </p>
+      )}
 
       <h3 className="sub-h">质押（诚实保证金）</h3>
       <p>
@@ -283,7 +335,9 @@ function HsServiceCard({ entry, onStop, busy }) {
       <div className="hs-card-header">
         <span className="badge on">托管中</span>
         {entry.name && <span className="hs-name">{entry.name}</span>}
-        <span className="dim" style={{ marginLeft: 'auto' }}>→ {entry.target.host}:{entry.target.port}</span>
+        <span className="dim" style={{ marginLeft: 'auto' }}>
+          {entry.backend === 'static' ? `📁 ${entry.staticDir}` : `→ ${entry.target.host}:${entry.target.port}`}
+        </span>
       </div>
       <div className="hs-addr-row">
         <code className="small">{entry.address}</code>
@@ -301,30 +355,54 @@ function HsServiceCard({ entry, onStop, busy }) {
 
 export function HostPanel() {
   const roles = usePoll(() => window.v0id.api.roles(), 2000);
+  const [mode, setMode] = useState('external'); // 'external'=自己起的 host:port 后端 | 'static'=零后端，选文件夹内置托管
   const [target, setTarget] = useState('127.0.0.1:8080');
+  const [staticDir, setStaticDir] = useState('');
+  const [hasIndex, setHasIndex] = useState(true);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
   const hsList = roles?.ok ? (roles.data.hsList ?? []) : [];
 
+  const pickFolder = useCallback(async () => {
+    const r = await window.v0id.pickFolder();
+    if (!r) return; // 用户取消
+    setStaticDir(r.dir);
+    setHasIndex(r.hasIndex);
+  }, []);
+
   const start = useCallback(async () => {
-    const m = target.trim().match(/^([^:]+):(\d+)$/);
-    if (!m) { setMsg({ kind: 'err', text: '目标格式应为 host:port，例如 127.0.0.1:8080' }); return; }
+    let host, port;
+    if (mode === 'static') {
+      if (!staticDir) { setMsg({ kind: 'err', text: '请先选择要发布的文件夹' }); return; }
+    } else {
+      const m = target.trim().match(/^([^:]+):(\d+)$/);
+      if (!m) { setMsg({ kind: 'err', text: '目标格式应为 host:port，例如 127.0.0.1:8080' }); return; }
+      [, host, port] = m;
+    }
     setBusy(true);
-    setMsg({ kind: '', text: '正在发布隐藏服务（选引入点 / 签名 / 上 DHT，需链上 ≥3 中继）…' });
-    const r = await window.v0id.api.hsStart(m[1], Number(m[2]), name.trim() || undefined);
+    setMsg({
+      kind: '',
+      text: mode === 'static'
+        ? '正在发布隐藏服务（起本地静态文件服务器 / 选引入点 / 签名 / 上 DHT，需链上 ≥3 中继）…'
+        : '正在发布隐藏服务（选引入点 / 签名 / 上 DHT，需链上 ≥3 中继）…',
+    });
+    const r = mode === 'static'
+      ? await window.v0id.api.hsStart(undefined, undefined, name.trim() || undefined, staticDir)
+      : await window.v0id.api.hsStart(host, Number(port), name.trim() || undefined);
     setBusy(false);
     if (r.ok) {
       setMsg({ kind: 'ok', text: `隐藏服务已发布：${r.data.address}` });
-      setTarget('127.0.0.1:8080');
+      if (mode === 'static') setStaticDir('');
+      else setTarget('127.0.0.1:8080');
       setName('');
-    } else if (/中继不足|≥?3|3 个/.test(r.error || '')) {
+    } else if (r.error === HS_INSUFFICIENT_RELAYS_ERR) {
       setMsg({ kind: 'err', text: '链上中继不足 3 个，暂无法托管（待更多 relay 上链后重试）。' });
     } else {
       setMsg({ kind: 'err', text: r.error });
     }
-  }, [target, name]);
+  }, [mode, target, staticDir, name]);
 
   const stop = useCallback(async (id) => {
     setBusy(true);
@@ -339,9 +417,14 @@ export function HostPanel() {
       <h1>托管站点</h1>
       <span className="role-tag">HIDDEN SERVICE · 发布 .v0id 隐藏服务</span>
       <p>
-        把本机一个普通服务（如 <code>127.0.0.1:8080</code>）发布成 <code>.v0id</code> 隐藏服务：
-        守护进程选引入点、签名并发布描述符到 DHT。访问者经 rendezvous 连进来——你不暴露任何对外 IP，
-        访问者也只知道那串 <code>.v0id</code> 地址。支持同时托管多个服务，每个独立地址。
+        把一个服务发布成 <code>.v0id</code> 隐藏服务：守护进程选引入点、签名并发布描述符到 DHT。
+        访问者经 rendezvous 连进来——你不暴露任何对外 IP，访问者也只知道那串 <code>.v0id</code> 地址。
+        支持同时托管多个服务，每个独立地址。
+      </p>
+      <p className="stat-note">
+        <b>关闭本窗口会一并下线你的站点</b>（本 App 关窗即退出并停掉后台守护进程）——托管期间请让本窗口保持开启。
+        要 7×24 常驻托管、不依赖这个图形界面，可参考 <code>docs/troubleshooting/deployment.md</code> 的
+        systemd 方案，或直接用 <code>v0id start --hs-target</code> 纯命令行跑同一套守护进程。
       </p>
 
       {/* 已托管服务列表 */}
@@ -356,18 +439,39 @@ export function HostPanel() {
 
       {/* 添加新服务 */}
       <h3 className="sub-h">发布新服务</h3>
+      <div className="ctl-row">
+        <button className={'toggle' + (mode === 'external' ? ' on' : '')} onClick={() => setMode('external')} disabled={busy}>
+          外部服务（host:port）
+        </button>
+        <button className={'toggle' + (mode === 'static' ? ' on' : '')} onClick={() => setMode('static')} disabled={busy}>
+          本地文件夹（零后端）
+        </button>
+      </div>
       <div className="form">
-        <label className="field">
-          <span>本机目标（host:port）</span>
-          <input className="text-input" value={target} onChange={(e) => setTarget(e.target.value)}
-            placeholder="127.0.0.1:8080" spellCheck={false} disabled={busy} />
-        </label>
+        {mode === 'external' ? (
+          <label className="field">
+            <span>本机目标（host:port）</span>
+            <input className="text-input" value={target} onChange={(e) => setTarget(e.target.value)}
+              placeholder="127.0.0.1:8080" spellCheck={false} disabled={busy} />
+          </label>
+        ) : (
+          <label className="field">
+            <span>要发布的本地文件夹</span>
+            <div className="ctl-row" style={{ margin: 0 }}>
+              <button className="mini-btn" onClick={pickFolder} disabled={busy}>选择文件夹…</button>
+              <code className="small">{staticDir || '（未选择）'}</code>
+            </div>
+            {staticDir && !hasIndex && (
+              <p className="stat-note">该文件夹没有 <code>index.html</code>，访问者打开根地址会看到 404。</p>
+            )}
+          </label>
+        )}
         <label className="field">
           <span>备注名（可选，仅本地显示）</span>
           <input className="text-input" value={name} onChange={(e) => setName(e.target.value)}
             placeholder="如「我的博客」" spellCheck={false} disabled={busy} />
         </label>
-        <button className="primary-btn" onClick={start} disabled={busy || !roles?.ok}>
+        <button className="primary-btn" onClick={start} disabled={busy || !roles?.ok || (mode === 'static' && !staticDir)}>
           发布隐藏服务
         </button>
       </div>

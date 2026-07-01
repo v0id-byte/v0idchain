@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('v0id', {
   validate: (addr) => ipcRenderer.invoke('v0id:validate', addr),
   // 只读链/节点状态（占位板块用）。外部 SOCKS 模式无链 → 返回 null。
   info: () => ipcRenderer.invoke('v0id:info'),
+  // 弹系统文件夹选择器（托管站点的「本地文件夹零后端」模式用）。取消 → null。
+  pickFolder: () => ipcRenderer.invoke('v0id:pickFolder'),
   // 书签：持久化在主进程的 userData/bookmarks.json，渲染层只经这三个方法读写。
   bookmarks: {
     list: () => ipcRenderer.invoke('v0id:bookmarks:list'),
@@ -33,6 +35,7 @@ contextBridge.exposeInMainWorld('v0id', {
   api: {
     // ---- 只读（GET，无需令牌）----
     roles: () => ipcRenderer.invoke('v0id:api:roles'),
+    relayCount: () => ipcRenderer.invoke('v0id:api:relayCount'),
     stakeStatus: () => ipcRenderer.invoke('v0id:api:stakeStatus'),
     walletInfo: () => ipcRenderer.invoke('v0id:api:walletInfo'),
     txStatus: (txid) => ipcRenderer.invoke('v0id:api:txStatus', txid),
@@ -40,7 +43,8 @@ contextBridge.exposeInMainWorld('v0id', {
     // ---- 写（POST，主进程带 Bearer）----
     relayStart: () => ipcRenderer.invoke('v0id:api:relayStart'),
     relayStop: () => ipcRenderer.invoke('v0id:api:relayStop'),
-    hsStart: (host, port, name) => ipcRenderer.invoke('v0id:api:hsStart', { host, port, name }),
+    relaySelfcheck: () => ipcRenderer.invoke('v0id:api:relaySelfcheck'),
+    hsStart: (host, port, name, staticDir) => ipcRenderer.invoke('v0id:api:hsStart', { host, port, name, staticDir }),
     hsStop: (id) => ipcRenderer.invoke('v0id:api:hsStop', id),
     importWallet: (privateKey) => ipcRenderer.invoke('v0id:api:importWallet', privateKey),
     mineStart: (intervalMs) => ipcRenderer.invoke('v0id:api:mineStart', intervalMs),
