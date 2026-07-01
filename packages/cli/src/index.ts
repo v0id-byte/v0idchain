@@ -2,7 +2,7 @@
 // v0idChain CLI —— start / mine / send / balance / peers / info / wallet
 import { Command } from 'commander';
 import { join } from 'node:path';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import {
   V0idNode,
   startHttpApi,
@@ -827,22 +827,34 @@ apiOpt(mint.command('issue'))
     mintAddrWarn(w);
     const bc = await fetchChain(o);
     const dataDir = join(wPath, '..');
-    const d = new MintDaemon({ dataDir, mintWallet: w });
+    const d = new MintDaemon({ dataDir, mintWallet: w }); // 默认确认深度：只对已确认充值发券（防未 finality 的充值被 reorg）
     d.syncDeposits(bc.chain);
     const denom = Number(o.denom);
+    // 先把券文件读好、目录建好（**消耗额度前**）：文件损坏或目录不可写就先失败，避免扣了额度却存不进券。
+    const outPath = o.out || join(defaultDataDir('mint'), 'tokens.json');
+    let existing: MintToken[] = [];
+    if (existsSync(outPath)) {
+      try {
+        existing = JSON.parse(readFileSync(outPath, 'utf8'));
+        if (!Array.isArray(existing)) throw new Error('券文件不是 JSON 数组');
+      } catch (e) {
+        console.error(c.red(`券文件 ${outPath} 解析失败：${e instanceof Error ? e.message : String(e)}`));
+        console.error(c.dim('  修复或换 --out 后再发券（避免消耗额度却写不进券）。'));
+        process.exit(1);
+      }
+    }
+    mkdirSync(join(outPath, '..'), { recursive: true });
     let tok: MintToken;
     try {
-      tok = d.issue(String(o.user), denom);
+      tok = d.issue(String(o.user), denom); // 消耗额度（在券文件已就绪之后）
     } catch (e) {
       console.error(c.red('发券失败：' + (e instanceof Error ? e.message : String(e))));
       process.exit(1);
     }
-    const outPath = o.out || join(defaultDataDir('mint'), 'tokens.json');
-    const existing: MintToken[] = existsSync(outPath) ? JSON.parse(readFileSync(outPath, 'utf8')) : [];
-    existing.push(tok!);
-    mkdirSync(join(outPath, '..'), { recursive: true });
+    existing.push(tok);
     writeFileSync(outPath, JSON.stringify(existing, null, 2), { mode: 0o600 });
-    console.log(c.green(`✅ 已发券 面额 ${denom} ${SYMBOL}`), c.dim(`serial=${tok!.serial.slice(0, 12)}…`));
+    try { chmodSync(outPath, 0o600); } catch { /* 已存在的券文件也收紧权限：券是无记名持有物，别留给同机他人可读 */ }
+    console.log(c.green(`✅ 已发券 面额 ${denom} ${SYMBOL}`), c.dim(`serial=${tok.serial.slice(0, 12)}…`));
     console.log(c.dim(`  用户 ${short(String(o.user))} 剩余额度 ${d.allowanceOf(String(o.user))}；券已追加到 ${outPath}（0600）`));
   });
 
@@ -881,7 +893,10 @@ txCmd(mint.command('redeem'))
       return;
     }
     const bc = await fetchChain(o);
-    const nonce = bc.nonceOf(w.address);
+    // nonce 须含 mempool 里本钱包的待打包交易，否则 nonce 撞车被 /tx/submit 拒（而券已标记已花 → 白白报废）。
+    const mempool = (await api(o, 'GET', '/mempool').catch(() => [])) as Array<{ from?: string }>;
+    const pending = Array.isArray(mempool) ? mempool.filter((t) => t.from === w.address).length : 0;
+    const nonce = bc.nonceOf(w.address) + pending;
     let r;
     try {
       r = d.redeem(tokens, String(o.to), nonce); // 正式：标记已花 + 成形交易
@@ -889,6 +904,11 @@ txCmd(mint.command('redeem'))
       console.error(c.red('兑现失败：' + (e instanceof Error ? e.message : String(e))));
       process.exit(1);
     }
+    // 这批券已在守护进程标记已花：从券文件移除、保持文件可用（否则下次 issue 追加后再 redeem 会撞已花券、整批报错）。
+    const redeemed = new Set(tokens.map((t) => t.serial));
+    const remaining = tokens.filter((t) => !redeemed.has(t.serial));
+    writeFileSync(tPath, JSON.stringify(remaining, null, 2), { mode: 0o600 });
+    try { chmodSync(tPath, 0o600); } catch { /* 尽力而为 */ }
     console.log(c.bold(`\n兑现  收款=${short(String(o.to))}  面额 ${r.gross} → 实得 ${r.net}（抽成 ${r.fee}）`));
     const res = await api(o, 'POST', '/tx/submit', { tx: r.tx }).catch((e) => ({ error: String(e) }));
     if ((res as { ok?: boolean }).ok) {
@@ -896,7 +916,7 @@ txCmd(mint.command('redeem'))
       if (o.wait) await waitConfirm(o, r.tx.txid);
     } else {
       console.log(c.red(`✖ 提交失败：${(res as { error?: string }).error}`));
-      console.log(c.dim('  （链上兑现需 mint 钱包地址 === MINT_ADDRESS；占位密钥未 rotate 会被拒，属部署期。券已本地标记已花以防重兑。）'));
+      console.log(c.dim('  （券已本地标记已花以防重兑、并已从券文件移除；链上兑现需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
     }
   });
 
@@ -909,9 +929,12 @@ txCmd(token.command('buy'))
   .action(async (amount, o) => {
     const amt = Number(amount);
     const fee = o.fee !== undefined ? Number(o.fee) : minFeeFor(amt);
+    // 激活前充值会被当普通转账锁进托管、不计入额度且事后不被 syncDeposits 采集 → 会锁死你的币。fail closed：拒绝广播。
     const info = await api(o, 'GET', '/info').catch(() => null);
     if (info && typeof info.height === 'number' && info.height < MINT_ACTIVATION_HEIGHT) {
-      console.log(c.yellow(`⚠ 当前链高 ${info.height} < 铸币激活高度 ${MINT_ACTIVATION_HEIGHT}：此充值暂按普通转账进托管，激活后才计入铸币储备/额度。`));
+      console.error(c.red(`✖ 铸币厂尚未激活（当前链高 ${info.height} < 激活高度 ${MINT_ACTIVATION_HEIGHT}）。`));
+      console.error(c.dim('  激活前充值不计入额度、会锁死在托管 → 拒绝广播。等激活后再 `token buy`。'));
+      process.exit(1);
     }
     const r = await api(o, 'POST', '/send', { to: MINT_ESCROW_ADDRESS, amount: amt, memo: MINT_DEPOSIT_PREFIX, fee });
     console.log(c.green('✅ 充值已广播'), c.dim('txid='), r.txid, c.dim(`额=${amt} 手续费=${fee}`));

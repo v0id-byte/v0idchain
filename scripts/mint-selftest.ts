@@ -99,8 +99,14 @@ async function main() {
     check('激活前普通转账到铸币托管地址可按普通历史交易处理', pre.addTransaction(ordinaryToEscrow).ok);
     await pre.mine(user.address);
     check('激活前 computeMintState 视图储备为 0（不计激活前）', computeMintState(pre.chain).reserve === 0);
+    // 关键：激活前误入托管的普通转账**不**计入可兑现储备（共识 mintReserve=0），托管余额>0 也不能被当储备兑走。
+    check('激活前托管有余额但共识 mintReserve=0（排除误入托管的普通转账）',
+      pre.computeState().mintReserve === 0 && pre.balanceOf(MINT_ESCROW_ADDRESS) === 1);
     check('激活前 REDEEM 零额新边界被拒',
       !pre.addTransaction(createTransaction(user, user.address, 0, pre.nonceOf(user.address), `${REDEEM_PREFIX}1`, MIN_FEE)).ok);
+    // 激活前带 REDEEM| 前缀但 amount>0 的普通转账 = 历史普通交易，不被 retroactive 拒（只拦 amount=0 新边界）。
+    check('激活前带 REDEEM| 前缀的普通转账(amount>0)按普通交易处理',
+      pre.addTransaction(createTransaction(user, funder.address, 2, pre.nonceOf(user.address), `${REDEEM_PREFIX}999`, MIN_FEE)).ok);
     check('激活前链整链校验通过', Blockchain.validateChain(pre.chain).ok);
   }
 
@@ -124,6 +130,7 @@ async function main() {
   const mv = computeMintState(bc.chain);
   check('computeMintState：reserve/deposited=充值额、deposits=1', mv.reserve === DEP && mv.deposited === DEP && mv.deposits === 1);
   check('视图储备 ≡ 链上托管余额', mv.reserve === bc.balanceOf(MINT_ESCROW_ADDRESS));
+  check('共识 mintReserve ≡ computeMintState.reserve（链上储备与公开视图一致）', bc.computeState().mintReserve === mv.reserve);
   check('DEPOSIT 后全链守恒', conserved(bc));
   check('含 DEPOSIT 的链整链校验通过', Blockchain.validateChain(bc.chain).ok);
 

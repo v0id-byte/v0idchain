@@ -13,6 +13,7 @@ import type { Block } from './block.js';
 import {
   MINT_DEPOSIT_PREFIX,
   MINT_ESCROW_ADDRESS,
+  MINT_ADDRESS,
   MINT_ACTIVATION_HEIGHT,
   MINT_FEE_BPS,
   REDEEM_PREFIX,
@@ -37,9 +38,11 @@ export function isMintDeposit(memo: string): boolean {
  * 兑现拆分（共识关键 · 全整数，杜绝浮点撕裂共识）：
  * 抽成 fee = floor(面额 × MINT_FEE_BPS / 10000) 移交国库；服务方实得 net = 面额 − 抽成。
  * 不变量：net + fee === gross（供给守恒）；因 MINT_FEE_BPS < 10000 恒有 0 ≤ fee ≤ gross、net ≥ 0。
+ * 用 BigInt 做中间乘除：对大额 gross，`gross × MINT_FEE_BPS` 可能越过 MAX_SAFE_INTEGER 而先舍入，
+ * 直接浮点乘会算错抽成（跨节点还可能不一致）。BigInt 除法向零截断 = 正数下的 floor，结果必为安全整数（fee ≤ gross）。
  */
 export function redeemSplit(gross: number): { net: number; fee: number } {
-  const fee = Math.floor((gross * MINT_FEE_BPS) / 10_000);
+  const fee = Number((BigInt(gross) * BigInt(MINT_FEE_BPS)) / 10_000n);
   return { net: gross - fee, fee };
 }
 
@@ -76,7 +79,7 @@ export function computeMintState(chain: Block[]): MintView {
         v.deposits += 1;
         continue;
       }
-      const r = tx.amount === 0 ? parseRedeem(m) : null;
+      const r = tx.amount === 0 && tx.from === MINT_ADDRESS ? parseRedeem(m) : null;
       if (r && r.gross <= v.reserve) {
         const { fee } = redeemSplit(r.gross);
         v.reserve -= r.gross;
