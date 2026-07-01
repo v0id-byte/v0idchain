@@ -12,7 +12,7 @@
 - **目录层** = 区块链:中继把自己登记上链,客户端回放链得到一致名单——**替代 Tor 的目录权威**。
 - **客户端** = v0id 浏览器(签名 macOS app)+ CLI 守护进程。
 
-> 📐 **想懂原理?** 看 **[架构与原理 → ARCHITECTURE.md](ARCHITECTURE.md)**(威胁模型 / 洋葱路由 / 隐藏服务 / 激励 / 部署,含架构图)。协议细节:[HS-PROTOCOL.md](HS-PROTOCOL.md) · [INCENTIVE-PROTOCOL.md](INCENTIVE-PROTOCOL.md)。
+> 📐 **想懂原理?** 看 **[架构与原理 → ARCHITECTURE.md](ARCHITECTURE.md)**(威胁模型 / 洋葱路由 / 隐藏服务 / 激励 / 部署,含架构图)。协议细节:[HS-PROTOCOL.md](HS-PROTOCOL.md) · [INCENTIVE-PROTOCOL.md](INCENTIVE-PROTOCOL.md) · [MINT-PROTOCOL.md](MINT-PROTOCOL.md)(央行电子现金铸币厂：用户为服务付费、用量回流养中继)。
 
 ## 能做什么
 
@@ -55,8 +55,8 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --relay --relay-advertise
 ## 给开发者
 
 - **代码**:洋葱协议 `packages/core/src/{onion,onioncell,hsdesc,hsrend,mixnet}.ts`;中继/客户端 `packages/node/src/relay/*`;桌面 app `clients/desktop/`。
-- **架构**:[ARCHITECTURE.md](ARCHITECTURE.md)。**协议规范**:[HS-PROTOCOL.md](HS-PROTOCOL.md)(隐藏服务 §0–20)、[INCENTIVE-PROTOCOL.md](INCENTIVE-PROTOCOL.md)(激励)。
-- **测试**:`scripts/{onion-selftest,onioncell-selftest,relay-integration,hs-*,guards-test,relay-dos-test,antireplay-test,staking-selftest,measurer-test}.ts`,黄金向量跨实现对齐。
+- **架构**:[ARCHITECTURE.md](ARCHITECTURE.md)。**协议规范**:[HS-PROTOCOL.md](HS-PROTOCOL.md)(隐藏服务 §0–20)、[INCENTIVE-PROTOCOL.md](INCENTIVE-PROTOCOL.md)(激励)、[MINT-PROTOCOL.md](MINT-PROTOCOL.md)(央行电子现金铸币厂 · 支付层)。
+- **测试**:`scripts/{onion-selftest,onioncell-selftest,relay-integration,hs-*,guards-test,relay-dos-test,antireplay-test,staking-selftest,measurer-test,mint-selftest,mint-daemon-test}.ts`,黄金向量跨实现对齐。
 
 ## 诚实边界
 
