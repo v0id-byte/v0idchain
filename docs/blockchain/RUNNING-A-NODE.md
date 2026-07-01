@@ -1,6 +1,8 @@
 # 怎么开节点 —— 完整安装指南
 
-> 新手入口：先跑通这篇，再去 [TUTORIAL.md](../TUTORIAL.md) 学转账 / 集市 / 备份等玩法。
+**[English](RUNNING-A-NODE.en.md) | 中文**
+
+> 新手入口：先跑通这篇，再去 [TUTORIAL.md](TUTORIAL.md) 学转账 / 集市 / 备份等玩法。
 
 ---
 
@@ -94,7 +96,7 @@ v0id --help                                   # 现在全局可用
 一条命令开节点（纯节点不挖矿）：
 
 ```bash
-v0id start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6201 --advertise <你的公网ip> #可以选择其他的已公开的经过验证的节点 
+v0id start --name me --p2p-port 6001 --api-port 7001 --peers ws://mc.void1211.com:6001 --advertise <你的公网ip> #可以选择其他的已公开的经过验证的节点 
 ```
 
 | 选项 | 作用 |
@@ -140,7 +142,7 @@ v0id info --name miner          # 地址 / 余额 / 链高 / 对等数
 v0id balance --name miner       # 只看余额
 ```
 
-> ⚠️ **挖到第一个币，立刻备份钱包**（见 [TUTORIAL.md §8](../TUTORIAL.md#8-钱包备份与找回必看)）：私钥只在 `.data/miner/wallet.json`，删了数据目录币就没了。
+> ⚠️ **挖到第一个币，立刻备份钱包**（见 [TUTORIAL.md §8](TUTORIAL.md#8-钱包备份与找回必看)）：私钥只在 `.data/miner/wallet.json`，删了数据目录币就没了。
 
 ---
 
@@ -194,7 +196,53 @@ corepack pnpm exec tsx packages/cli/src/index.ts start \
 
 ---
 
-## 8. Web 仪表盘（实时看链 + 转账）
+## 8. 开机自启 + 崩溃自动重启（systemd）
+
+上一节的 `tsx …/index.ts start` 是**前台进程**：关终端 / 服务器重启，节点就停了。要 7×24 常驻，用 systemd 托管（Linux 服务器标准做法）。
+
+**新建 `/etc/systemd/system/v0idchain-seed.service`**（把 `<你的用户名>`、`<仓库绝对路径>`、`<公网IP或域名>` 换成实际值；`ExecStart` 里的参数照抄第 7 节自己那条命令改就行，不一定要叫 `seed`）：
+
+```ini
+[Unit]
+Description=v0idChain node ($V0ID)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<你的用户名>
+WorkingDirectory=<仓库绝对路径>
+Environment=PATH=/usr/bin:/bin:/usr/local/bin
+ExecStart=<仓库绝对路径>/node_modules/.bin/tsx packages/cli/src/index.ts start --name seed --p2p-port 6001 --api-port 7001 --advertise ws://<公网IP或域名>:6001
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+- `Restart=always` + `RestartSec=3`：进程崩溃（未捕获异常、OOM 被杀等）3 秒后自动拉起——这就是「崩溃自动重启」。
+- `WantedBy=multi-user.target` + 下面的 `enable`：服务器重启后开机自动跟着起——这就是「开机自启」。
+- 要挖矿就在 `ExecStart` 末尾加 `--mine`；已装全局 `v0id` 也可以把 `ExecStart` 换成 `which v0id` 的输出（例如 `/usr/local/bin/v0id`），参数不变。
+- `Environment=PATH=…` 是因为 systemd 不会加载你的 shell 配置（`.zshrc`/`.bashrc`），`node`/`corepack` 装在别的路径（比如 nvm）就把那个路径也加进去，用 `:` 分隔。
+
+**生效 + 常用命令：**
+
+```bash
+sudo systemctl daemon-reload              # 装完/改完 service 文件都要跑一次
+sudo systemctl enable --now v0idchain-seed   # 开机自启 + 立刻启动
+
+systemctl status v0idchain-seed --no-pager   # 看是不是 active (running)
+journalctl -u v0idchain-seed -f              # 实时看日志（等价于原来终端里滚动的那些行）
+sudo systemctl restart v0idchain-seed        # 改了 --advertise / --peers 等参数后重启生效
+sudo systemctl stop v0idchain-seed           # 停止（不影响开机自启设置，下次重启还会起）
+```
+
+> ⚠️ 数据目录（`.data/seed/wallet.json` 等）权限跟着 `User=` 那个账户走；用 `sudo` 手动跑过一次会把文件 chown 成 root，之后 systemd 用普通用户起就会因为读不了文件报错——出现这种情况 `sudo chown -R <你的用户名> .data/` 修一下。
+
+---
+
+## 9. Web 仪表盘（实时看链 + 转账）
 
 确保有节点在跑，另开终端：
 
@@ -208,7 +256,7 @@ corepack pnpm dev:web
 
 ---
 
-## 9. 常见启动问题
+## 10. 常见启动问题
 
 | 现象 | 原因 / 解法 |
 |------|------------|
@@ -219,4 +267,4 @@ corepack pnpm dev:web
 | `unauthorized：缺少或错误的 API token` | 写操作（send / mine / market）需带 `--name <启动时的名字>` |
 | `corepack pnpm install` 一直报网络错误 | 检查是否需要代理，或改用镜像：`COREPACK_NPM_REGISTRY=https://registry.npmmirror.com corepack pnpm install` |
 
-更多问题见 [TUTORIAL.md §10 常见问题排查](../TUTORIAL.md#10-常见问题排查-)。
+更多问题见 [TUTORIAL.md §10 常见问题排查](TUTORIAL.md#10-常见问题排查-)。
