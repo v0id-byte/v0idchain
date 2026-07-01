@@ -18,6 +18,7 @@ export * from './names.js';
 export * from './relays.js';
 export * from './redpacket.js';
 export * from './staking.js';
+export * from './mint.js';
 export * from './pets.js';
 export * from './fishing.js';
 export * from './farm.js';
