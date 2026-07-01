@@ -209,7 +209,7 @@ program
       const socksPort = Number(o.socksPort);
       // SOCKS 仍是「启动即常开」的轻量基座：用 roleManager 提供的 pickHops/hsDeps/守卫失败回调拉起，再登记回 roleManager 供 /roles 展示。
       const w = roleManager.socksWiring();
-      const socks = new SocksProxy(w.pickHops, socksPort, '127.0.0.1', w.hsDeps, w.onGuardFail, w.onHsFail);
+      const socks = new SocksProxy(w.pickHops, socksPort, '127.0.0.1', w.hsDeps, w.onGuardFail, w.onHsFail, w.onHopFail, w.onHopsProven);
       roleManager.attachSocks(socks, socksPort);
       console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
     }

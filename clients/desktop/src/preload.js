@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('v0id', {
   info: () => ipcRenderer.invoke('v0id:info'),
   // 弹系统文件夹选择器（托管站点的「本地文件夹零后端」模式用）。取消 → null。
   pickFolder: () => ipcRenderer.invoke('v0id:pickFolder'),
+  // 重启守护进程（改中继广播地址等启动时常量后生效用）。
+  restartDaemon: () => ipcRenderer.invoke('v0id:restartDaemon'),
+  // 持久化设置：目前只有中继广播地址（host/port），改了要配合 restartDaemon() 才生效。
+  settings: {
+    getRelayAdvertise: () => ipcRenderer.invoke('v0id:settings:getRelayAdvertise'),
+    setRelayAdvertise: (host, port) => ipcRenderer.invoke('v0id:settings:setRelayAdvertise', { host, port }),
+  },
   // 书签：持久化在主进程的 userData/bookmarks.json，渲染层只经这三个方法读写。
   bookmarks: {
     list: () => ipcRenderer.invoke('v0id:bookmarks:list'),

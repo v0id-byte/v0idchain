@@ -313,6 +313,12 @@ export function Browser({ status }) {
     navigate(url);
   };
 
+  // Electron 的 <webview> 是独立合成层，无论 CSS z-index 多高，只要它的区域和别的元素重叠，
+  // webview 永远画在最上面——书签悬浮面板 / 地址栏自动补全下拉都会向下延伸到 webview 舞台区域，
+  // 结果是「弹出来了但下半截被网页盖住看不见」。这里在下拉/面板打开期间临时隐藏当前 webview
+  // （复用非活动标签页已有的 .hidden 处理），关闭后恢复，而不是徒劳地调 CSS 层级。
+  const dropdownOpen = showBmMenu || (showSuggest && suggestions.length > 0);
+
   const showStart = !activeTab.url && !activeTab.error;
   const showError = !!activeTab.error;
 
@@ -425,7 +431,7 @@ export function Browser({ status }) {
           <webview
             key={t.id}
             ref={(el) => setViewRef(t.id, el)}
-            className={t.id === activeId ? '' : 'hidden'}
+            className={t.id === activeId && !dropdownOpen ? '' : 'hidden'}
             // partition 必须与 main.js 的 PARTITION 完全一致（'v0id'，内存型、无 persist 前缀），
             // 这样 main.js 给这个 session 设的 SOCKS 代理 + deny-all 权限 + WebRTC 加固才作用到它身上。
             partition="v0id"
@@ -471,7 +477,10 @@ export function Browser({ status }) {
         <span className={status.phase === 'error' ? 'err-text' : 'phase'}>{status.phaseText}</span>
         {status.chain && (
           <span>
-            {status.chain.syncing ? '同步中 · ' : ''}链高 {status.chain.height} · 对等 {status.chain.peers}
+            {status.chain.syncing ? '同步中 · ' : ''}链高 {status.chain.height} ·{' '}
+            <span title="对等＝当前连着的 P2P 广播连接数（同步区块/交易用，独立机制）；跟「中继」板块的可达数是两回事——开中继不会让这个数变大">
+              对等 {status.chain.peers}
+            </span>
           </span>
         )}
       </div>
