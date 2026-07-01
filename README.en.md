@@ -15,12 +15,12 @@ A from-scratch, hand-rolled TypeScript project that grew three working things: a
 A Tor-style onion network: visitor and server communicate over **3-hop encrypted circuits**, and `.v0id` hidden services let **both sides hide their IP from each other**. The blockchain serves as the **decentralized relay directory** (replay the chain → a consistent relay list, replacing Tor's directory authorities).
 
 - **Browse / host `.v0id` hidden services** · **run a relay** · **Mixnet** (opt-in) · **staking incentive layer** (built, activates at height 16000)
-- **Download the v0id Browser** (signed + notarized macOS app): [browser-v0.2.0](https://github.com/v0id-byte/v0idchain/releases/tag/browser-v0.2.0) · Windows/Linux coming soon
-- **Live network**: seed `mc.void1211.com:6001` + 6 relays; a real 3-hop circuit is verified
+- **Download the v0id Browser** (signed + notarized macOS app): [browser-v0.2.5](https://github.com/v0id-byte/v0idchain/releases/tag/browser-v0.2.5) · Windows/Linux coming soon
+- **Live network**: seed `mc.void1211.com:6001` + 5 relays (AWS ×3 + RackNerd ×2); a real 3-hop circuit is verified
 
 ## ⛓ v0idChain — the $V0ID blockchain (the base)
 
-> **[→ module docs: docs/blockchain/](docs/blockchain/README.en.md)** · [run a node](docs/blockchain/RUNNING-A-NODE.md) · [full tutorial](docs/blockchain/TUTORIAL.en.md)
+> **[→ module docs: docs/blockchain/](docs/blockchain/README.en.md)** · [run a node](docs/blockchain/RUNNING-A-NODE.en.md) · [full tutorial](docs/blockchain/TUTORIAL.en.md)
 
 Hand-written blocks / hashing / PoW mining (adaptive difficulty + Bitcoin-style retargeting + heaviest-chain rule) / ed25519 signatures / WebSocket P2P. Coins come from mining; transfers pay a fee (gas) to the miner. Both v0idnet and the game run on top of it.
 

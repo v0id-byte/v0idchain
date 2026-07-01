@@ -16,7 +16,7 @@
 
 - **浏览 / 托管 `.v0id` 隐藏服务** · **跑中继** · **Mixnet**(opt-in)· **质押激励层**(已建,height 16000 激活)
 - **下载 v0id 浏览器**(签名公证 macOS app):[browser-v0.2.5](https://github.com/v0id-byte/v0idchain/releases/tag/browser-v0.2.5) · Win/Linux 敬请期待
-- **线上网络**:种子 `mc.void1211.com:6001` + 6 中继,真 3 跳电路已验证
+- **线上网络**:种子 `mc.void1211.com:6001` + 5 中继(AWS ×3 + RackNerd ×2),真 3 跳电路已验证
 
 ## ⛓ v0idChain —— $V0ID 区块链(底座)
 
