@@ -19,5 +19,7 @@ export * from './relay/rolemanager.js';
 // 央行电子现金铸币厂守护（Phase A：发券/验券/兑现的链下逻辑 + 记名券密码学）
 export * from './mint/token.js';
 export * from './mint/mintd.js';
+// 在线核销服务（Phase A.2：铸币厂作 .v0id 隐藏服务，第三方站点匿名提交券核销 → 防跨服务方双花）
+export * from './mint/spend-service.js';
 // 付费墙券库（Phase A.1：服务方持久化已花集/已收券 → 供 `mint redeem --paywall` 兑现）
 export * from './relay/paywall-store.js';
