@@ -243,6 +243,8 @@ program
           console.log(`  ${c.red('✖ --hs-price 须为正整数（$V0ID/连接）')}`);
         } else if (mintAddr !== undefined && (hsPrice === undefined || !mintAddr.endsWith('.v0id'))) {
           console.log(`  ${c.red('✖ --mint 须是 .v0id 地址且配合 --hs-price 使用（在线核销仅对付费站点有意义）')}`);
+        } else if (o.hsProvider && mintAddr === undefined) {
+          console.log(`  ${c.red('✖ --hs-provider 仅在 --mint 在线核销模式下有意义（本地受理模式无跨节点收款记账）')}`);
         } else {
         roleManager
           .startHs({ host: thost, port: tport }, { intros: o.hsIntros ? Number(o.hsIntros) : undefined, price: hsPrice, mint: mintAddr, provider: o.hsProvider ? String(o.hsProvider) : undefined })

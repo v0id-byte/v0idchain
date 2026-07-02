@@ -372,6 +372,9 @@ export class RoleManager {
     if (opts?.price !== undefined) {
       if (!Number.isInteger(opts.price) || opts.price < 1) throw new Error('hs price 非法：须为正整数（$V0ID/连接）');
       if (opts.mint) {
+        // fail-fast：程序化调用方（HTTP API/GUI）若误传钱包地址而非核销服务的 .v0id 地址，这里就报错，
+        // 而不是等到首次付费访问才在 connect 阶段挂（站点看着起来了却每次付费都失败）。
+        if (!opts.mint.endsWith('.v0id')) throw new Error('hs mint 非法：须是铸币厂在线核销服务的 .v0id 地址');
         const provider = opts.provider ?? this.node.wallet.address; // 收款地址默认本节点钱包
         verifier = makeOnlineVerifier(opts.mint, this.hsDeps, provider);
       } else {
