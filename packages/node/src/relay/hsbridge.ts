@@ -24,6 +24,7 @@ import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirector
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
 import { RelayReachability } from './reachability.js';
 import type { GuardManager } from './guards.js';
+import { resolveRelayWsUrl } from './relaynode.js';
 
 // RdvChannel.send 是“单 cell”发送（不自动分片）：cell data ≤ CELL_DATA_LEN(485)，
 // rdvSeal 额外占 8(ctr)+16(tag)=24B，故净荷上限 ≈461B。取 400B 留足余量，与 hsclient 注释一致。
@@ -78,7 +79,8 @@ export function makeHsDeps(
     // ② 可达集内仍可能有 hairpin/瞬断 → 逐个试 middle、坏的靠 HOP_TIMEOUT 快速放弃换下一个，直到拼出活电路。
     const pool = dir();
     await reachability.refresh(pool); // 探测可达性（暖缓存即时返回，冷缓存一次并行探测 ~5s）
-    const all = reachability.knownUsable(pool);
+    const sanitizedPool = await sanitizedRelayPool(pool, opts?.allowPrivateHosts ?? false);
+    const all = reachability.knownUsable(sanitizedPool);
     const exit = all.find((d) => d.address === exitRelayId);
     if (!exit) throw new Error(`终点中继 ${exitRelayId} 不可达或不在目录`);
     if (all.length < 3) throw new Error('链上可达中继不足 3 个，暂无法建路');
@@ -87,12 +89,11 @@ export function makeHsDeps(
     // 若钉住守卫全在冷却/被排除/不在目录，返回 undefined 并失败；绝不退回目录随机入口。
     const pickGuard = (failed: Set<string>): RelayDescriptor | undefined => {
       if (!guardManager) return shuffle(all.filter((d) => d.address !== exitRelayId && !failed.has(d.address)))[0];
-      // 守卫的**持久化/采样**喂**全量目录** pool（不是可达性过滤后的 all）：currentGuard 会把“不在所传目录里”的
-      // 持久守卫当作已下线而永久剔除并重写 guards.json——若传 all，一次瞬时探测失败 / markBad 就会把稳定守卫永久
-      // 轮换掉，破坏入口守卫的稳定性（入口集被放大 → 削弱抗统计去匿名）。守卫“此刻是否可达”改由下面 hop0 的实际
-      // connect 判定：连不上即 markUnreachable 冷却 + 换下一个钉住守卫（既有逻辑），到点自动恢复，绝不动持久集。
-      const gid = guardManager.currentGuard(pool, new Set([exitRelayId, ...failed]));
-      return gid ? pool.find((d) => d.address === gid) : undefined;
+      // 守卫的**持久化/采样**喂 SSRF 清洗后的全量目录 sanitizedPool（不是可达性过滤后的 all）：既保留“瞬时
+      // 不可达不永久轮换守卫”的稳定性，又绝不把 127.0.0.1 / 169.254.169.254 / 解析到私网的污染描述符钉成 hop0。
+      // 守卫“此刻是否可达”仍由下面 hop0 的实际 connect 判定：连不上即 markUnreachable 冷却 + 换下一个钉住守卫。
+      const gid = guardManager.currentGuard(sanitizedPool, new Set([exitRelayId, ...failed]));
+      return gid ? sanitizedPool.find((d) => d.address === gid) : undefined;
     };
 
     const maxGuardAttempts = guardManager ? guardManager.size : all.length;
@@ -217,6 +218,19 @@ export async function connectHs(addr: string, deps: HsDeps): Promise<RdvChannel>
  * 给一个 Promise 套封顶超时：到点抛 msg。**关键**：给原 promise 挂一个吞错的 .catch，
  * 这样 race 已超时落定后、那条慢 promise 稍后才 reject 时不会变成 unhandledRejection（建路时换路会留下被放弃的 connect/extend）。
  */
+async function sanitizedRelayPool(relays: RelayDescriptor[], allowPrivateHosts: boolean): Promise<RelayDescriptor[]> {
+  if (allowPrivateHosts) return relays;
+  const pairs = await Promise.all(
+    relays.map(
+      (d) =>
+        new Promise<[RelayDescriptor, boolean]>((resolve) => {
+          resolveRelayWsUrl(d.host, d.port, allowPrivateHosts, (url) => resolve([d, url !== null]));
+        }),
+    ),
+  );
+  return pairs.filter(([, ok]) => ok).map(([d]) => d);
+}
+
 function raceTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   promise.catch(() => {}); // 吞掉“已放弃的慢 promise”的迟到 reject

@@ -154,10 +154,27 @@ function isPublicIpAddress(address: string): boolean {
   }
   if (kind === 6) {
     const h = address.toLowerCase();
-    if (h.startsWith('::ffff:') && h.includes('.')) return isPublicIpAddress(h.slice(7));
+    if (h.startsWith('::ffff:')) {
+      const mapped = ipv4FromMappedIpv6(h);
+      if (mapped) return isPublicIpAddress(mapped);
+    }
     return !(h === '::' || h === '::1' || h.startsWith('fc') || h.startsWith('fd') || /^fe[89ab]/.test(h) || h.startsWith('ff'));
   }
   return false;
+}
+
+function ipv4FromMappedIpv6(address: string): string | undefined {
+  const rest = address.slice('::ffff:'.length);
+  if (rest.includes('.')) return rest;
+  const parts = rest.split(':');
+  if (parts.length < 1 || parts.length > 2) return undefined;
+  let n = 0;
+  for (const part of parts) {
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return undefined;
+    n = (n << 16) | Number.parseInt(part, 16);
+  }
+  if (parts.length === 1) n &= 0xffff;
+  return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
 }
 
 function wsHost(host: string): string {

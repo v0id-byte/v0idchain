@@ -54,12 +54,17 @@ async function main(): Promise<void> {
   check('allowPrivateHosts=true：放行后真的发起 TCP 连接探测（>=1 次，证明默认的 0 来自守卫）', conns >= 1);
 
   // ---- 纯私网 IP 字面量（无服务）：默认守卫应**同步**判不可达，不耗满 5s 探测超时 ----
-  const privIps = [desc('169.254.169.254', 80, '0xbbbb'), desc('10.1.2.3', 6011, '0xcccc')];
+  const privIps = [
+    desc('169.254.169.254', 80, '0xbbbb'),
+    desc('10.1.2.3', 6011, '0xcccc'),
+    desc('::ffff:0a00:1', 6011, '0xdddd'),
+    desc('::ffff:7f00:1', 6011, '0xeeee'),
+  ];
   const t0 = Date.now();
   const r = new RelayReachability();
   await r.refresh(privIps);
   const elapsed = Date.now() - t0;
-  check('SSRF 守卫：169.254/10.x 私网 IP 被同步判负（未走满 5s 探测超时）', elapsed < 2000);
+  check('SSRF 守卫：169.254/10.x/IPv4-mapped 私网 IP 被同步判负（未走满 5s 探测超时）', elapsed < 2000);
   check('SSRF 守卫：私网 IP 字面量均不可达（选路剔除）', r.knownUsable(privIps).length === 0);
 
   srv.close();
