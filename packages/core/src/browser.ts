@@ -4,6 +4,7 @@
 // 落盘由各端自理（浏览器用 localStorage，见客户端），不依赖 storage 模块。
 export * from './config.js';
 export * from './crypto.js';
+export * from './bdhke.js';
 export * from './onion.js';
 export * from './onioncell.js';
 export * from './wallet.js';
