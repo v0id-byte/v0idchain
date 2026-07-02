@@ -1,0 +1,43 @@
+name: "✨ Feature request / 功能建议"
+description: "Suggest an idea / 提一个想法"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a look at [ROADMAP.md](../blob/main/ROADMAP.md) first — your idea may already have a home there.
+        先看看 [ROADMAP.md](../blob/main/ROADMAP.md)——你的想法也许已经在路线图里了。
+  - type: dropdown
+    id: track
+    attributes:
+      label: "Which roadmap track? / 属于哪条路线?"
+      description: "See ROADMAP.md. / 见 ROADMAP.md。"
+      options:
+        - "L1 — anti-abuse / anti-Sybil fuel / 反滥用·反女巫燃料"
+        - "L2 — censorship-resistant hosting / 抗审查托管"
+        - "L3 — on-chain governance / 链上治理"
+        - "blockchain module / 区块链模块"
+        - "v0idnet module / 匿名网模块"
+        - "game module / 游戏模块"
+        - "community / infra / DX / 社区与基础设施"
+        - "other / new direction / 其他 / 新方向"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem / 要解决的问题"
+      description: "What's the pain or gap this addresses? / 它解决什么痛点或空白?"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "Proposed solution / 设想的方案"
+      description: "If it touches the chain, can it be a memo-convention soft-fork rather than a consensus change? / 如果涉及链,能否做成 memo 约定软分叉而非改共识?"
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternatives considered / 其他考虑过的做法"

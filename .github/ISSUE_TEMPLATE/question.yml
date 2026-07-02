@@ -1,0 +1,20 @@
+name: "❓ Question / 提问"
+description: "Ask how something works / 问某个东西怎么运作"
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [docs](../blob/main/docs) and [TUTORIAL](../blob/main/docs/blockchain/TUTORIAL.md) first.
+        请先看 [docs](../blob/main/docs) 和 [教程](../blob/main/docs/blockchain/TUTORIAL.md)。
+  - type: textarea
+    id: question
+    attributes:
+      label: "Your question / 你的问题"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: "Context / 背景"
+      description: "What are you trying to do? What have you tried? / 你想做什么?试过什么?"
