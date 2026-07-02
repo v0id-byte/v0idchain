@@ -22,7 +22,7 @@ import {
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
-import { runPaywallServer, type VoucherAcceptor } from './paywall.js';
+import { runPaywallServer, type VoucherVerifier } from './paywall.js';
 import { RelayReachability } from './reachability.js';
 import type { GuardManager } from './guards.js';
 
@@ -198,13 +198,21 @@ const HS_CONNECT_ATTEMPTS = 4;
  * 单次尝试封顶 HS_ATTEMPT_TIMEOUT_MS（杜绝半死服务吊死 SOCKS 连接），失败则换新电路重试至多 HS_CONNECT_ATTEMPTS 次
  * （多步会合经 CF 隧道偶发抖动 → 重来一次大概率即通）。全部失败才抛错（上层回 SOCKS 失败）。
  */
-export async function connectHs(addr: string, deps: HsDeps): Promise<{ channel: RdvChannel; price?: number }> {
+export async function connectHs(
+  addr: string,
+  deps: HsDeps,
+  opts?: { deadlineMs?: number }, // 可选总预算：多次重试合计不超过它（付费墙在线核销热路径用它把总时长压到客户端付费超时之内，防慢速会合迟到成功后已花券却无人接）
+): Promise<{ channel: RdvChannel; price?: number }> {
+  const start = Date.now();
   let lastErr: unknown;
   for (let attempt = 0; attempt < HS_CONNECT_ATTEMPTS; attempt++) {
+    // 有总预算时：单次尝试封顶取 min(常规单次上限, 剩余预算)；预算耗尽则停止重试（不再新起一轮可能迟到成功的会合）。
+    const remaining = opts?.deadlineMs !== undefined ? opts.deadlineMs - (Date.now() - start) : HS_ATTEMPT_TIMEOUT_MS;
+    if (remaining <= 0) break;
     try {
       return await withAttemptTimeout(
         connectHiddenService(addr, deps.buildCircuit, deps.directory),
-        HS_ATTEMPT_TIMEOUT_MS,
+        Math.min(HS_ATTEMPT_TIMEOUT_MS, remaining),
       );
     } catch (e) {
       lastErr = e; // 本次（新电路）失败 → 重试
@@ -240,8 +248,8 @@ export interface ServeHiddenServiceOptions {
   target: { host: string; port: number }; // 隐藏服务背后的本机 TCP 落地（每个会合通道连一次它）
   deps: HsDeps; // 选路器 + 名录
   numIntros?: number; // 引入点数量（默认 3）
-  price?: number; // 可选：付费墙价格（$V0ID/连接）。设了则每条通道桥接到 target 前先跑付费墙握手（需 acceptor）
-  acceptor?: VoucherAcceptor; // 券受理器（验签+防双花）；price 设了必须提供。operator==mint 时其 spentSerials 应与铸币厂兑现共享
+  price?: number; // 可选：付费墙价格（$V0ID/连接）。设了则每条通道桥接到 target 前先跑付费墙握手（需 verifier）
+  verifier?: VoucherVerifier; // 验券+核销策略；price 设了必须提供。本地 VoucherAcceptor（A.1）或在线 makeOnlineVerifier（A.2 第三方）
   onError?: (err: unknown) => void; // 单个落地连接出错的可观察回调（默认吞掉）
 }
 
@@ -255,8 +263,8 @@ export async function serveHiddenService(
   opts: ServeHiddenServiceOptions,
 ): Promise<{ address: string; stop: () => void; getConnCount: () => number; getPaidCount: () => number }> {
   const priced = !!(opts.price && opts.price > 0);
-  // 设了价必须有受理器：否则描述符对外宣称收费、服务却无人验券 → 忽略价的客户端白嫖、守规客户端因收不到 PAYOK 反而失败。
-  if (priced && !opts.acceptor) throw new Error('serveHiddenService: 设了 price 必须提供 acceptor（否则描述符宣称收费但无人验券）');
+  // 设了价必须有验券器：否则描述符对外宣称收费、服务却无人验券 → 忽略价的客户端白嫖、守规客户端因收不到 PAYOK 反而失败。
+  if (priced && !opts.verifier) throw new Error('serveHiddenService: 设了 price 必须提供 verifier（否则描述符宣称收费但无人验券）');
   const identityFile = opts.identityKey ? `hs-${opts.identityKey}.json` : 'hs.json';
   const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir, identityFile);
   let connCount = 0;
@@ -270,7 +278,7 @@ export async function serveHiddenService(
     sock.on('connect', () => {
       handled = true;
       if (!priced) return void bridgeChannelToSocket(channel, sock);
-      runPaywallServer(channel, opts.price!, opts.acceptor!)
+      runPaywallServer(channel, opts.price!, opts.verifier!)
         .then((res) => {
           if (!res.paid) {
             channel.close();

@@ -8,12 +8,13 @@
 //   站点→铸币厂  SPEND {"t":"spend","v":1,"provider":"0x…","vouchers":[[denom,"serial","sig"], …]}
 //   铸币厂→站点  OK    {"t":"ok","gross":N}   /   ERR {"t":"err","code":"spent|invalid|bad"}
 import { randomBytes } from 'node:crypto';
-import { generateOnionKeypair, utf8ToBytes, type OnionKeypair } from '@v0idchain/core';
+import { generateOnionKeypair, utf8ToBytes, MINT_ADDRESS, type OnionKeypair } from '@v0idchain/core';
 import { HiddenService } from '../relay/hsservice.js';
 import { connectHs, type HsDeps } from '../relay/hsbridge.js';
 import type { RdvChannel } from '../relay/hsclient.js';
+import type { VoucherVerifier, VoucherVerdict } from '../relay/paywall.js';
 import type { MintDaemon } from './mintd.js';
-import type { MintToken } from './token.js';
+import { verifyToken, type MintToken } from './token.js';
 
 const HDR = 4; // 每 cell 头：[u16 序号][u16 总片数]
 const CHUNK = 400; // 每 cell 净荷上限（单 cell ~461B 减去头，留余量；与 paywall/hsbridge 同口径）
@@ -21,6 +22,11 @@ const REQ_TIMEOUT_MS = 15_000; // 单次核销请求封顶（含建路 + 洋葱�
 const REPLY_GRACE_MS = 3_000; // 服务方发完应答后**宽限**再关通道（不与应答同 tick 关，防 mixnet 下 DESTROY 抢在被延迟的应答之前到）
 const MAX_FRAME = 64 * 1024; // 单帧总字节上限（一次可核销几十张券，够用且防内存滥用）
 const MAX_CELLS = 256; // 单帧分片数上限（防伪造巨大 count）
+// 在线核销放行热路径的**时间预算**：站点侧的连接+请求合计必须**明显小于客户端的付费握手超时**（paywall.PAID_PAYOK_TIMEOUT_MS=30s），
+// 这样客户端总能等到服务方基于本次核销发出的 PAYOK/PAYERR。否则慢速会合迟到成功后：铸币厂已把券标记已花，客户端却早已超时回滚
+// 那张券且关通道 → 用户丢券又拿不到访问。故连接给 14s（含重试）、请求给 8s，合计 ≤22s < 30s，留 8s 供 PAYOK 回程。
+const ONLINE_CONNECT_DEADLINE_MS = 14_000;
+const ONLINE_REQUEST_TIMEOUT_MS = 8_000;
 
 /** 把一个对象编成带序号分片的帧发出（顺序无关：接收端按序号重组）。 */
 function sendFrame(ch: RdvChannel, obj: unknown): void {
@@ -148,9 +154,9 @@ export interface SpendVerdict {
 }
 
 /** 站点侧：经一条已连到铸币厂核销服务的通道核销一批券。返回放行判定（不抛协议错，超时/断开由通道层抛）。 */
-export async function requestMintSpend(channel: RdvChannel, vouchers: MintToken[], provider: string): Promise<SpendVerdict> {
+export async function requestMintSpend(channel: RdvChannel, vouchers: MintToken[], provider: string, timeoutMs: number = REQ_TIMEOUT_MS): Promise<SpendVerdict> {
   sendFrame(channel, { t: 'spend', v: 1, provider, vouchers: vouchers.map((v) => [v.denom, v.serial, v.sig]) });
-  const msg = await readFrame(channel, REQ_TIMEOUT_MS);
+  const msg = await readFrame(channel, timeoutMs);
   if (msg?.t === 'ok') return { ok: true, gross: msg.gross };
   if (msg?.t === 'err') return { ok: false, code: msg.code };
   return { ok: false, code: 'bad' };
@@ -161,11 +167,48 @@ export async function requestMintSpend(channel: RdvChannel, vouchers: MintToken[
  * 用 `connectHs`（多次有界重试）而非裸 `connectHiddenService`：单次 fetch/RP/INTRODUCE 可能瞬时失败，
  * 与 SOCKS/桥接的 HS 客户端路径同款重试 → 健康的核销服务不会因一次瞬断而误拒有效付费访问。
  */
-export async function spendViaMint(mintAddr: string, deps: HsDeps, vouchers: MintToken[], provider: string): Promise<SpendVerdict> {
-  const { channel } = await connectHs(mintAddr, deps);
+export async function spendViaMint(
+  mintAddr: string,
+  deps: HsDeps,
+  vouchers: MintToken[],
+  provider: string,
+  opts?: { connectDeadlineMs?: number; requestTimeoutMs?: number }, // 时间预算：放行热路径传它把总时长压进客户端付费超时之内（见 ONLINE_* 常量）；不传=无界（沿用 connectHs 默认重试）
+): Promise<SpendVerdict> {
+  const { channel } = await connectHs(mintAddr, deps, opts?.connectDeadlineMs !== undefined ? { deadlineMs: opts.connectDeadlineMs } : undefined);
   try {
-    return await requestMintSpend(channel, vouchers, provider);
+    return await requestMintSpend(channel, vouchers, provider, opts?.requestTimeoutMs);
   } finally {
     channel.close();
   }
+}
+
+/**
+ * 第三方付费站点用的**在线核销 VoucherVerifier**（A.2）：放行前把访客券提交给铸币厂 `.v0id` 核销服务，防跨服务方双花。
+ * @param mintHsAddr 铸币厂核销服务的 `.v0id` 地址（≠铸币厂钱包地址）。@param provider 站点收款地址（mint 记 owed[provider]，日后 settle 得款）。
+ * @param mintAddress 铸币厂**钱包**地址（验签用；默认共识常量 MINT_ADDRESS，测试传本地 mint 地址）。
+ *
+ * verify()：**先本地做可离线判定的部分**——验签（对公开的 mintAddress）+ 批内不重复 + 面额和 ≥ price。这既省掉对无效/不足券的
+ * 洋葱往返，又**确保只把签名有效且够额的券送去核销**（否则铸币厂会把不够额的券也标记已花 → 站点收了被烧的券却仍欠费）。
+ * 本地全过 → 才 `spendViaMint` 让铸币厂原子核销（全局防双花 + 记 owed）。连不上铸币厂/超时 → 抛，由 runPaywallServer 归一为未付费。
+ */
+export function makeOnlineVerifier(mintHsAddr: string, deps: HsDeps, provider: string, mintAddress: string = MINT_ADDRESS): VoucherVerifier {
+  return {
+    async verify(vouchers: MintToken[], price: number): Promise<VoucherVerdict> {
+      if (!Array.isArray(vouchers) || vouchers.length === 0) return { ok: false, gross: 0, code: 'insufficient', need: price, got: 0 };
+      const seen = new Set<string>();
+      let gross = 0;
+      for (const v of vouchers) {
+        if (!v || typeof v.serial !== 'string' || !verifyToken(v, mintAddress)) return { ok: false, gross: 0, code: 'invalid' };
+        if (seen.has(v.serial)) return { ok: false, gross: 0, code: 'spent' }; // 批内重复 → 按已花处理
+        seen.add(v.serial);
+        gross += v.denom;
+      }
+      if (gross < price) return { ok: false, gross, code: 'insufficient', need: price, got: gross };
+      // 本地 sig+面额已过 → 提交铸币厂原子核销（全局防双花 + 记 owed[provider]）；多一次链下洋葱往返，仍不碰链。
+      // 有界预算：总时长压进客户端付费超时之内 → 慢速会合不会迟到成功后已花券却无人接（见 ONLINE_* 常量注释）。
+      const v = await spendViaMint(mintHsAddr, deps, vouchers, provider, { connectDeadlineMs: ONLINE_CONNECT_DEADLINE_MS, requestTimeoutMs: ONLINE_REQUEST_TIMEOUT_MS });
+      if (v.ok) return { ok: true, gross: v.gross ?? gross };
+      return { ok: false, gross: 0, code: v.code === 'spent' ? 'spent' : 'invalid' };
+    },
+  };
 }

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { Wallet, getPublicKey, publicKeyToAddress, generateOnionKeypair, encodeV0idAddress } from '../packages/core/src/index.js';
 import { RelayNode, type RelayResolver } from '../packages/node/src/relay/relaynode.js';
 import { CircuitClient, type HopSpec } from '../packages/node/src/relay/client.js';
-import type { HsDeps } from '../packages/node/src/relay/hsbridge.js';
+import { connectHs, type HsDeps } from '../packages/node/src/relay/hsbridge.js';
 import { MintDaemon } from '../packages/node/src/mint/mintd.js';
 import { issueToken } from '../packages/node/src/mint/token.js';
 import { serveMintSpendService, spendViaMint } from '../packages/node/src/mint/spend-service.js';
@@ -112,6 +112,18 @@ async function main() {
     failedCleanly = true;
   }
   check('④ 连未发布的铸币厂地址 → 干净抛错（不挂起）', failedCleanly);
+
+  // ---- ⑤ 时间预算（P1 回归）：connectHs 有界 deadline 下，对**永远建不成电路**的 deps 也按时放弃 ----
+  // 无此上界时 = 4 次尝试 × 18s = 最坏 72s 才失败，会远超客户端付费超时 → 慢速会合迟到成功后已花券却无人接。
+  const hangDeps: HsDeps = { buildCircuit: () => new Promise<CircuitClient>(() => {}), directory: () => allRelayIds }; // build 永不 resolve
+  const t0 = Date.now();
+  let deadlineHonored = false;
+  try {
+    await connectHs(encodeV0idAddress(getPublicKey(randomBytes(32))), hangDeps, { deadlineMs: 1500 });
+  } catch {
+    deadlineHonored = Date.now() - t0 < 4000; // 应在 ~1.5s 放弃，远小于无界的 72s
+  }
+  check('⑤ 时间预算：connectHs 有界 deadline 下按时放弃（不无限等挂死会合，防在线核销迟到丢券）', deadlineHonored);
 
   // ---- 收尾 ----
   svc.stop();

@@ -14,6 +14,9 @@ import {
   bytesToHex,
   hexToBytes,
   MINT_ADDRESS,
+  SYSTEM_ADDRESSES,
+  isValidAddress,
+  decodeV0idAddress,
   type OnionKeypair,
 } from '@v0idchain/core';
 import { isIP } from 'node:net';
@@ -24,8 +27,9 @@ import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js
 import { SocksProxy, type HopPicker } from './socks.js';
 import { GuardManager } from './guards.js';
 import { makeHsDeps, serveHiddenService, isRoutableHost, type HsDeps } from './hsbridge.js';
-import { VoucherAcceptor } from './paywall.js';
+import { VoucherAcceptor, type VoucherVerifier } from './paywall.js';
 import { PaywallStore } from './paywall-store.js';
+import { makeOnlineVerifier } from '../mint/spend-service.js';
 import { serveStaticDir } from './staticserve.js';
 import { RelayReachability } from './reachability.js';
 import type { HopSpec } from './client.js';
@@ -330,7 +334,7 @@ export class RoleManager {
    */
   async startHs(
     target?: { host: string; port: number },
-    opts?: { name?: string; intros?: number; staticDir?: string; price?: number },
+    opts?: { name?: string; intros?: number; staticDir?: string; price?: number; mint?: string; provider?: string },
   ): Promise<{ id: string; address: string }> {
     if (!!target === !!opts?.staticDir) {
       throw new Error('host:port 与 staticDir 须二选一（不能都传或都不传）');
@@ -364,12 +368,24 @@ export class RoleManager {
       resolvedTarget = { host: '127.0.0.1', port };
       staticStop = stop;
     }
-    // 付费站点：构造券受理器（验签对 MINT_ADDRESS + 持久化已花集防跨重启双花 + 记账已收券供日后兑现）。
-    let acceptor: VoucherAcceptor | undefined;
+    // 付费站点：构造验券器。① 设了 --mint <addr>.v0id → **在线核销**（A.2 第三方站点：提交给铸币厂核销防跨服务方双花，
+    //   mint 记 owed[provider]，日后 `mint settle` 得款；无本地券库）；② 否则**本地受理**（A.1 operator==mint：验签对
+    //   MINT_ADDRESS + 持久化已花集防跨重启双花 + 记账已收券供日后 `mint redeem --paywall`）。
+    let verifier: VoucherVerifier | undefined;
     if (opts?.price !== undefined) {
       if (!Number.isInteger(opts.price) || opts.price < 1) throw new Error('hs price 非法：须为正整数（$V0ID/连接）');
-      const store = new PaywallStore(this.dataDir, id);
-      acceptor = new VoucherAcceptor(MINT_ADDRESS, store.spent, (v, s) => store.record(v, s));
+      if (opts.mint) {
+        // fail-fast：程序化调用方（HTTP API/GUI）若误传地址，这里就报错，而不是等到首次付费访问才在 connect/核销 阶段挂
+        // （站点看着起来了却每次付费都失败）。用**完整 .v0id 自认证解码**（校验 base32/校验和/版本），不只看后缀。
+        if (!decodeV0idAddress(opts.mint)) throw new Error('hs mint 非法：须是合法的铸币厂在线核销服务 .v0id 地址（校验和/版本不符）');
+        const provider = opts.provider ?? this.node.wallet.address; // 收款地址默认本节点钱包
+        // provider 须是合法非系统地址（同 mint spend/settle 口径）：否则铸币厂 spend 会拒记 owed → 站点每笔付费经洋葱往返后仍被拒。
+        if (!isValidAddress(provider) || SYSTEM_ADDRESSES.has(provider)) throw new Error('hs provider 非法：须是合法且非系统/托管的收款地址');
+        verifier = makeOnlineVerifier(opts.mint, this.hsDeps, provider);
+      } else {
+        const store = new PaywallStore(this.dataDir, id);
+        verifier = new VoucherAcceptor(MINT_ADDRESS, store.spent, (v, s) => store.record(v, s));
+      }
     }
     try {
       const { address, stop, getConnCount } = await serveHiddenService({
@@ -379,7 +395,7 @@ export class RoleManager {
         deps: this.hsDeps,
         numIntros: opts?.intros,
         price: opts?.price,
-        acceptor,
+        verifier,
       });
       const combinedStop = () => {
         stop();

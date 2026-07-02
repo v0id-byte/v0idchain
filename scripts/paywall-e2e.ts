@@ -158,7 +158,7 @@ async function main() {
       target: { host: '127.0.0.1', port: 7998 }, // 无人监听 → 预连必失败
       deps: { buildCircuit, directory },
       price: PRICE,
-      acceptor: acc2,
+      verifier: acc2,
     });
     const { channel: cDown } = await withTimeout(connectHiddenService(paidSvc2.address, buildCircuit, directory), 15000, 'connect down-target');
     let downFailed = false;
