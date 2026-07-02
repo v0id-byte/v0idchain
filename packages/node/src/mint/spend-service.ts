@@ -3,67 +3,90 @@
 //   服务侧调 `MintDaemon.spend` 原子核销（验签 + 全局标记已花 + 记 owed）→ 回 ok/spent。全局已花集是唯一权威 →
 //   同一张券给第二个站点核销必被拒 = **跨服务方双花归零**（PAYWALL-PROTOCOL §3B）。放行只多一次链下洋葱往返，不碰链。
 //
-// 协议（隧道内，u32be 长度前缀 JSON 帧，单次请求-应答后关通道）：
+// 协议（隧道内，单次请求-应答后关通道）。帧按 cell 分片，**每片带 [u16 序号][u16 总片数] 头 → 顺序无关重组**
+// （mixnet 逐跳延迟会让 RDV cell 乱序到达，纯按到达顺序拼接会串错；故按序号收齐再拼）：
 //   站点→铸币厂  SPEND {"t":"spend","v":1,"provider":"0x…","vouchers":[[denom,"serial","sig"], …]}
 //   铸币厂→站点  OK    {"t":"ok","gross":N}   /   ERR {"t":"err","code":"spent|invalid|bad"}
 import { randomBytes } from 'node:crypto';
 import { generateOnionKeypair, utf8ToBytes, type OnionKeypair } from '@v0idchain/core';
 import { HiddenService } from '../relay/hsservice.js';
-import { connectHiddenService, type RdvChannel } from '../relay/hsclient.js';
-import type { HsDeps } from '../relay/hsbridge.js';
+import { connectHs, type HsDeps } from '../relay/hsbridge.js';
+import type { RdvChannel } from '../relay/hsclient.js';
 import type { MintDaemon } from './mintd.js';
 import type { MintToken } from './token.js';
 
-const CHUNK = 400; // 单 cell 净荷上限 ~461B，取 400 留余量（与 paywall/hsbridge 同口径）
-const REQ_TIMEOUT_MS = 15_000; // 单次核销请求封顶（含建路+洋葱往返）
-const MAX_FRAME = 64 * 1024; // 单帧上限（一次可核销几十张券，够用且防内存滥用）
+const HDR = 4; // 每 cell 头：[u16 序号][u16 总片数]
+const CHUNK = 400; // 每 cell 净荷上限（单 cell ~461B 减去头，留余量；与 paywall/hsbridge 同口径）
+const REQ_TIMEOUT_MS = 15_000; // 单次核销请求封顶（含建路 + 洋葱往返）
+const REPLY_GRACE_MS = 3_000; // 服务方发完应答后**宽限**再关通道（不与应答同 tick 关，防 mixnet 下 DESTROY 抢在被延迟的应答之前到）
+const MAX_FRAME = 64 * 1024; // 单帧总字节上限（一次可核销几十张券，够用且防内存滥用）
+const MAX_CELLS = 256; // 单帧分片数上限（防伪造巨大 count）
 
+/** 把一个对象编成带序号分片的帧发出（顺序无关：接收端按序号重组）。 */
 function sendFrame(ch: RdvChannel, obj: unknown): void {
   const json = utf8ToBytes(JSON.stringify(obj));
-  const f = new Uint8Array(4 + json.length);
-  new DataView(f.buffer).setUint32(0, json.length, false); // big-endian 长度前缀
-  f.set(json, 4);
-  for (let o = 0; o < f.length; o += CHUNK) ch.send(f.subarray(o, o + CHUNK));
+  const count = Math.max(1, Math.ceil(json.length / CHUNK));
+  for (let i = 0; i < count; i++) {
+    const chunk = json.subarray(i * CHUNK, (i + 1) * CHUNK);
+    const cell = new Uint8Array(HDR + chunk.length);
+    const dv = new DataView(cell.buffer);
+    dv.setUint16(0, i, false); // 序号
+    dv.setUint16(2, count, false); // 总片数
+    cell.set(chunk, HDR);
+    ch.send(cell);
+  }
 }
 
+/** 读回一个帧：按序号收齐所有分片再拼接解析（乱序到达也正确）。超时/通道关 → 抛。 */
 function readFrame(ch: RdvChannel, timeoutMs: number): Promise<any> {
   return new Promise((resolve, reject) => {
-    let buf = new Uint8Array(0);
+    const parts = new Map<number, Uint8Array>();
+    let count = -1;
+    let bytes = 0;
     let done = false;
-    const timer = setTimeout(() => {
-      if (done) return;
-      done = true;
-      reject(new Error('核销请求超时'));
-    }, timeoutMs);
-    ch.onClose(() => {
+    const fail = (e: Error) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      reject(new Error('核销通道关闭'));
-    });
+      reject(e);
+    };
+    const timer = setTimeout(() => fail(new Error('核销请求超时')), timeoutMs);
+    ch.onClose(() => fail(new Error('核销通道关闭')));
     ch.onData((b) => {
-      if (done) return;
-      const n = new Uint8Array(buf.length + b.length);
-      n.set(buf, 0);
-      n.set(b, buf.length);
-      buf = n;
-      if (buf.length < 4) return;
-      const len = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0, false);
-      if (len > MAX_FRAME) {
-        done = true;
-        clearTimeout(timer);
-        return reject(new Error('核销帧过大'));
+      if (done || b.length < HDR) return;
+      const dv = new DataView(b.buffer, b.byteOffset, HDR);
+      const idx = dv.getUint16(0, false);
+      const cnt = dv.getUint16(2, false);
+      if (cnt < 1 || cnt > MAX_CELLS) return fail(new Error('核销帧分片数异常'));
+      if (idx >= cnt || parts.has(idx)) return; // 越界/重复片 → 忽略（RFC6479 已挡重放，这里再防御一层）
+      count = cnt;
+      const chunk = b.subarray(HDR);
+      bytes += chunk.length;
+      if (bytes > MAX_FRAME) return fail(new Error('核销帧过大'));
+      parts.set(idx, chunk);
+      if (parts.size < count) return; // 未集齐（顺序无关，收齐 count 片即可）
+      const merged = new Uint8Array(bytes);
+      let off = 0;
+      for (let i = 0; i < count; i++) {
+        merged.set(parts.get(i)!, off);
+        off += parts.get(i)!.length;
       }
-      if (buf.length < 4 + len) return; // 未收全 → 等更多 cell
       done = true;
       clearTimeout(timer);
       try {
-        resolve(JSON.parse(new TextDecoder().decode(buf.subarray(4, 4 + len))));
+        resolve(JSON.parse(new TextDecoder().decode(merged)));
       } catch (e) {
         reject(e instanceof Error ? e : new Error('核销帧 JSON 非法'));
       }
     });
   });
+}
+
+/** 发完应答后**宽限再关**通道：不与应答同 tick 关，避免 mixnet 下即时传播的 DESTROY 抢在被延迟的应答之前到达客户端。 */
+function replyThenClose(ch: RdvChannel, reply: unknown): void {
+  sendFrame(ch, reply);
+  const t = setTimeout(() => ch.close(), REPLY_GRACE_MS);
+  t.unref?.(); // 别因宽限定时器拖住进程退出
 }
 
 export interface MintSpendServiceOptions {
@@ -92,20 +115,18 @@ export async function serveMintSpendService(
       readFrame(channel, REQ_TIMEOUT_MS)
         .then((msg) => {
           if (!msg || msg.t !== 'spend' || !Array.isArray(msg.vouchers) || typeof msg.provider !== 'string') {
-            sendFrame(channel, { t: 'err', code: 'bad' });
-            return void channel.close();
+            return void replyThenClose(channel, { t: 'err', code: 'bad' });
           }
           const vouchers: MintToken[] = msg.vouchers.map((a: any) => (Array.isArray(a) ? { denom: a[0], serial: a[1], sig: a[2] } : a));
           try {
             const { gross } = opts.daemon.spend(vouchers, msg.provider); // 原子核销：验签 + 全局标记已花 + 记 owed
             spendCount++;
-            sendFrame(channel, { t: 'ok', gross });
+            replyThenClose(channel, { t: 'ok', gross });
           } catch (e) {
-            sendFrame(channel, { t: 'err', code: classifySpendError(e) });
+            replyThenClose(channel, { t: 'err', code: classifySpendError(e) });
           }
-          channel.close(); // 单次请求-应答，随即关通道
         })
-        .catch(() => channel.close());
+        .catch(() => channel.close()); // 读请求就失败（超时/通道关）→ 无应答可发，直接关
     },
   });
   await svc.start();
@@ -135,9 +156,13 @@ export async function requestMintSpend(channel: RdvChannel, vouchers: MintToken[
   return { ok: false, code: 'bad' };
 }
 
-/** 便捷封装：站点仅知铸币厂 `.v0id` 地址时，自建电路 → 核销 → 关通道。供在线 acceptor 复用。 */
+/**
+ * 便捷封装：站点仅知铸币厂 `.v0id` 地址时，自建电路 → 核销 → 关通道。供在线 acceptor 复用。
+ * 用 `connectHs`（多次有界重试）而非裸 `connectHiddenService`：单次 fetch/RP/INTRODUCE 可能瞬时失败，
+ * 与 SOCKS/桥接的 HS 客户端路径同款重试 → 健康的核销服务不会因一次瞬断而误拒有效付费访问。
+ */
 export async function spendViaMint(mintAddr: string, deps: HsDeps, vouchers: MintToken[], provider: string): Promise<SpendVerdict> {
-  const { channel } = await connectHiddenService(mintAddr, deps.buildCircuit, deps.directory);
+  const { channel } = await connectHs(mintAddr, deps);
   try {
     return await requestMintSpend(channel, vouchers, provider);
   } finally {

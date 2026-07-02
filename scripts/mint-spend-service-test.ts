@@ -95,6 +95,14 @@ async function main() {
   check('owed[A] 累加 = 8', d.owedTo(A) === 8);
   check('服务端成功核销计数 = 2（仅两次有效，双花/伪券不计）', svc.getSpendCount() === 2);
 
+  // ---- 多券核销（帧分片 → 顺序无关重组回归）：5 张券的 SPEND 请求 >400B 会被切成多 cell ----
+  const provC = Wallet.generate().address;
+  const many = Array.from({ length: 5 }, () => issueToken(2, mint.privateKey)); // 5×~172B → 请求帧约 3 cell
+  const r5 = await withTimeout(spendViaMint(svc.address, hsDeps, many, provC), 20000, 'C spend many');
+  check('多券核销（分片帧按序号重组）→ ok，gross=10', r5.ok && r5.gross === 10);
+  check('owed[C] = 10', d.owedTo(provC) === 10);
+  check('服务端成功核销计数 = 3', svc.getSpendCount() === 3);
+
   // ---- ④ 连未发布的随机铸币厂地址 → 干净失败 ----
   const randomAddr = encodeV0idAddress(getPublicKey(randomBytes(32)));
   let failedCleanly = false;
