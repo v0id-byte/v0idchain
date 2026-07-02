@@ -8,6 +8,7 @@ enum OutgoingMessage {
     case queryAll
     case queryLatest
     case queryPeers
+    case queryBlockRange(from: Int, to: Int)
     case tx(Transaction)
 
     func jsonData() throws -> Data {
@@ -21,6 +22,8 @@ enum OutgoingMessage {
             return try encoder.encode(TypeOnly(type: "QUERY_LATEST"))
         case .queryPeers:
             return try encoder.encode(TypeOnly(type: "QUERY_PEERS"))
+        case let .queryBlockRange(from, to):
+            return try encoder.encode(QueryBlockRange(type: "QUERY_BLOCK_RANGE", from: from, to: to))
         case let .tx(tx):
             return try encoder.encode(TxMessage(type: "TX", tx: tx))
         }
@@ -28,6 +31,7 @@ enum OutgoingMessage {
 
     private struct TypeOnly: Encodable { let type: String }
     private struct Hello: Encodable { let type: String; let address: String; let height: Int; let listen: String }
+    private struct QueryBlockRange: Encodable { let type: String; let from: Int; let to: Int }
     private struct TxMessage: Encodable { let type: String; let tx: Transaction }
 }
 

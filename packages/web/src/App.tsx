@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, isCoinbase, search, findTx, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
+import { getJSON, postJSON, getTip, getBlockRange, verifyBlockChainLink, isCoinbase, search, findTx, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
+import { loadCachedChain, putBlocks, clearCache } from './chainCache';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
 const difficultyText = (d: number) => d > 255 ? `nBits 0x${d.toString(16).padStart(8, '0')}` : `${d} bit`;
@@ -57,13 +58,71 @@ export default function App() {
   const [open, setOpen] = useState<string | null>(null);
   const apiRef = useRef(api);
   apiRef.current = api;
+  const chainRef = useRef<Block[]>([]); // 与 chain state 同步的可变镜像，供同步逻辑同步读取（避免闭包拿到旧 state）
+  const [cacheReady, setCacheReady] = useState(false);
+
+  // 启动时先读本地 IndexedDB 缓存的链，有多少读多少，后续只补缺口——不用每次开钱包都整条链重拉。
+  // 缓存本身也要校验哈希链（万一被篡改/损坏，最后一块碰巧还是 /tip 报的那个，增量同步会误判"无新块"
+  // 而直接信任中间坏掉的数据）；打开失败（隐私模式/配额满）也不能让 cacheReady 卡死、轮询永远不启动。
+  useEffect(() => {
+    loadCachedChain()
+      .then((cached) => (verifyBlockChainLink(cached, -1, '') ? cached : []))
+      .catch(() => [])
+      .then((cached) => {
+        chainRef.current = cached;
+        setChain(cached);
+        setCacheReady(true);
+      });
+  }, []);
+
+  // 落盘只是优化，不是正确性前提（数据已经过哈希链校验）：写入失败（隐私模式/配额满）不该
+  // 阻断链的展示，也不该被 poll() 的 catch 误判成"连不上节点"。
+  const persistBestEffort = (fn: () => Promise<void>) => {
+    fn().catch(() => {});
+  };
+
+  // 整链重灌：本地缓存的链尾接不上节点（分叉/清空/首次同步）时兜底，从创世块逐块校验哈希链。
+  const fullResync = useCallback(async (base: string) => {
+    const full = await getJSON<Block[]>(base, '/chain');
+    if (!verifyBlockChainLink(full, -1, '')) {
+      console.error('v0id: 节点返回的链未通过完整性校验（hash/prevHash 不衔接），本次跳过同步');
+      return;
+    }
+    chainRef.current = full;
+    setChain(full);
+    persistBestEffort(async () => {
+      await clearCache();
+      await putBlocks(full);
+    });
+  }, []);
+
+  // 增量同步：先问 /tip 有没有新块，有才拉缺口区间；拉到的区块必须校验能接上本地链尾（hash 自洽 + prevHash 衔接 + 高度连续），
+  // 接不上（分叉/本地损坏）就退回整链重灌，绝不带病拼接。
+  const syncChain = useCallback(async (base: string) => {
+    const tip = await getTip(base);
+    const local = chainRef.current;
+    const localTop = local.length ? local[local.length - 1] : undefined;
+    const localHeight = localTop ? localTop.index : -1;
+    const localHash = localTop ? localTop.hash : '';
+    if (tip.height === localHeight && tip.hash === localHash) return; // 无新块，本次不用碰链数据
+    if (tip.height > localHeight) {
+      const fresh = await getBlockRange(base, localHeight + 1, tip.height);
+      if (fresh.length > 0 && verifyBlockChainLink(fresh, localHeight, localHash)) {
+        const merged = [...local, ...fresh];
+        chainRef.current = merged;
+        setChain(merged);
+        persistBestEffort(() => putBlocks(fresh));
+        return;
+      }
+    }
+    await fullResync(base); // 高度倒退 / hash 对不上 / 区间校验失败：分叉或缓存损坏
+  }, [fullResync]);
 
   const poll = useCallback(async () => {
     const base = apiRef.current;
     try {
-      const [i, c, m, mk, msg, nc, nm, rps] = await Promise.all([
+      const [i, m, mk, msg, nc, nm, rps] = await Promise.all([
         getJSON<Info>(base, '/info'),
-        getJSON<Block[]>(base, '/chain'),
         getJSON<Tx[]>(base, '/mempool'),
         getJSON<Listing[]>(base, '/market'),
         getJSON<Messages>(base, '/messages'),
@@ -71,8 +130,8 @@ export default function App() {
         getJSON<NameRegistry>(base, '/names'),
         getJSON<RedPacket[]>(base, '/redpackets'),
       ]);
+      await syncChain(base);
       setInfo(i);
-      setChain(c);
       setMempool(m);
       setMarket(mk);
       setMessages(msg);
@@ -84,13 +143,14 @@ export default function App() {
     } catch {
       setUp(false);
     }
-  }, []);
+  }, [syncChain]);
 
   useEffect(() => {
+    if (!cacheReady) return; // 先等本地缓存读出来，避免把已有的链当成空的重拉一遍
     poll();
     const t = setInterval(poll, 1500);
     return () => clearInterval(t);
-  }, [poll]);
+  }, [poll, cacheReady]);
 
   useEffect(() => {
     localStorage.setItem('v0id-api', api);

@@ -61,6 +61,10 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             return json(200, node.info());
           case '/chain':
             return json(200, node.bc.chain);
+          case '/tip':
+            // 轻量高度探针（无需令牌，与 /info 同级）：客户端本地已缓存区块时，
+            // 用它判断有没有新块，而不必每次都拉整条链或整段 headers。
+            return json(200, { height: node.bc.height, hash: node.bc.chain[node.bc.height]?.hash ?? '' });
           case '/headers': {
             const from = Number(url.searchParams.get('from') ?? 0);
             const requestedTo = url.searchParams.has('to') ? Number(url.searchParams.get('to')) : node.bc.height;

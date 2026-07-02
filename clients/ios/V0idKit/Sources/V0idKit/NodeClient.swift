@@ -37,6 +37,12 @@ public final class NodeClient: ObservableObject {
     private var chunkBuffer: [Block] = []
     private var chunkTotal: Int = 0
 
+    // ---- 补缺口（QUERY_BLOCK_RANGE）在途请求：响应帧同样带 from/total 字段，
+    // 靠这个标记把它和 QUERY_ALL 的分片流区分开，不进 chunkBuffer 累积逻辑（total 语义不同——
+    // QUERY_BLOCK_RANGE 回的 total 是全链长度，不是这次请求的块数，累积会永远凑不齐卡死）。
+    private var pendingRangeFrom: Int?
+    private static let maxRangeRequest = 5_000   // 单次 QUERY_BLOCK_RANGE 最多补多少块（节点端上限 10_000，留余量）
+
     // ---- 种子失效 fallback：gossip 学到的备用地址 + 连续失败计数 ----
     private var backupURLs: [String] = []
     private var failCount = 0
@@ -55,6 +61,44 @@ public final class NodeClient: ObservableObject {
         // 代理（Clash/mihomo），把 ws:// 握手送进代理隧道，代理一抖就断。裸 socket 直连内核
         // TCP 栈，绕过系统代理。详见 WebSocket.swift。
         self.backupURLs = UserDefaults.standard.stringArray(forKey: "v0id-peer-backup") ?? []
+        loadCachedChain() // 读本地已同步的链——重开 App 不用每次都问节点要整条链
+    }
+
+    // ---- 本地链缓存（落盘）----
+    private static func chainFileURL() -> URL? {
+        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let v0idDir = dir.appendingPathComponent("v0idchain", isDirectory: true)
+        try? FileManager.default.createDirectory(at: v0idDir, withIntermediateDirectories: true)
+        return v0idDir.appendingPathComponent("light-chain.json")
+    }
+
+    private func loadCachedChain() {
+        guard let url = Self.chainFileURL(),
+              let data = try? Data(contentsOf: url),
+              let cached = try? JSONDecoder().decode([Block].self, from: data),
+              Self.verifyChainLink(cached, afterIndex: -1, tipHash: "")
+        else { return }   // 文件不存在/损坏/校验不过：当空缓存处理，退回冷启动整链同步
+        chain = cached
+    }
+
+    private func persistChain() {
+        guard let url = Self.chainFileURL(), let data = try? JSONEncoder().encode(chain) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// 校验一段区块能接到 afterIndex/tipHash 指定的链尾上：高度连续 + prevHash 衔接 + 逐块哈希自洽。
+    /// tipHash 为空串＝从创世块开始验（不查第一块的 prevHash）。用于本地缓存读回校验，也用于收到的新块。
+    private nonisolated static func verifyChainLink(_ blocks: [Block], afterIndex: Int, tipHash: String) -> Bool {
+        var prevIndex = afterIndex
+        var prevHash = tipHash
+        for b in blocks {
+            guard b.index == prevIndex + 1 else { return false }
+            if !prevHash.isEmpty, b.prevHash != prevHash { return false }
+            guard b.calcHash() == b.hash else { return false }
+            prevIndex = b.index
+            prevHash = b.hash
+        }
+        return true
     }
 
     // MARK: - 派生状态
@@ -122,12 +166,19 @@ public final class NodeClient: ObservableObject {
                 guard let self, gen == self.generation else { return }
                 // 连上了 → 重置该 peer 的失败计数（peer 复活）
                 self.gossipFailCounts.removeValue(forKey: self.connectURL)
-                // 握手：HELLO（height=0，listen 唯一——我们不被回拨）→ 要整条链 + 问邻居
-                self.send(.hello(address: self.address ?? Crypto.nullAddress, height: 0, listen: listen))
-                self.send(.queryAll)
+                // 握手：HELLO（listen 唯一——我们不被回拨）+ 问邻居。
+                // 本地已有缓存链 → 只探最新块，缺口由 onBlocks 里的 QUERY_BLOCK_RANGE 补；
+                // 缓存为空（首次启动）才整条链要（QUERY_ALL）。
+                self.send(.hello(address: self.address ?? Crypto.nullAddress, height: max(0, self.chain.count - 1), listen: listen))
                 self.send(.queryPeers)
-                self.status = .syncing
-                self.syncingStart = Date()
+                if self.chain.isEmpty {
+                    self.send(.queryAll)
+                    self.status = .syncing
+                    self.syncingStart = Date()
+                } else {
+                    self.send(.queryLatest)
+                    self.status = .connected
+                }
             }
         }
         conn.onText = { [weak self] text in
@@ -183,6 +234,7 @@ public final class NodeClient: ObservableObject {
         ws?.close()
         ws = nil
         chunkBuffer = []; chunkTotal = 0   // 旧连接的残片不要带入下一次同步
+        pendingRangeFrom = nil             // 旧连接的在途补缺口请求作废，换连接后重新判断
         if manual { status = .disconnected }
     }
 
@@ -239,7 +291,14 @@ public final class NodeClient: ObservableObject {
         case .blocks(let blocks):
             onBlocks(blocks)
         case .blocksChunk(let blocks, let from, let total):
-            onBlocksChunk(blocks, from: from, total: total)
+            // QUERY_BLOCK_RANGE 的响应也带 from/total，但那是"全链长度"不是"这次请求的块数"，
+            // 且服务端从不分片发它（单帧顶格）：命中在途补缺口请求就直接当完整答案处理，别进分片累积。
+            if let pending = pendingRangeFrom, from == pending {
+                pendingRangeFrom = nil
+                onBlocks(blocks)
+            } else {
+                onBlocksChunk(blocks, from: from, total: total)
+            }
         case .blocksError(let msg):
             lastError = msg
         case .peers(let urls):
@@ -267,19 +326,38 @@ public final class NodeClient: ObservableObject {
         }
     }
 
-    /// 合并收到的区块（信任节点）：整链快照直接采纳更长者；单块若正好接续链顶就追加，落后则补拉整链。
+    /// 合并收到的区块：多块响应按来源分两种——QUERY_ALL 整链重灌（从创世校验哈希链后更长则采纳），
+    /// QUERY_BLOCK_RANGE 补缺口（必须紧接链尾、哈希链自洽才追加）。单块响应正好接续链顶且哈希自洽就追加，
+    /// 落后则问缺的那一段（QUERY_BLOCK_RANGE），不再整链重拉——这是重开钱包不必每次全量同步的关键。
     private func onBlocks(_ blocks: [Block]) {
-        guard let last = blocks.last else { return }
+        guard let last = blocks.last, let first = blocks.first else { return }
+        let nextIndex = chain.count
         if blocks.count >= 2 {
-            // QUERY_ALL 的整链响应（或多块）：采纳更高/同高的节点视图
-            if last.index >= height { adopt(blocks) }
+            if first.index == 0 {
+                // 更长，或等长但链尾 hash 不同（同高分叉/换了视角不同的节点）才采纳——严格要求
+                // "更长" 会让同高分叉/换节点后的整链重灌被拒绝，永远卡在旧缓存上刷新不动。
+                let tipDiffers = blocks.count == chain.count && last.hash != chain.last?.hash
+                guard blocks.count > chain.count || tipDiffers, Self.verifyChainLink(blocks, afterIndex: -1, tipHash: "") else { return }
+                adopt(blocks)
+            } else if first.index == nextIndex, Self.verifyChainLink(blocks, afterIndex: nextIndex - 1, tipHash: tipHash) {
+                chain.append(contentsOf: blocks)
+                afterChainChanged()
+            } else if last.index >= nextIndex {
+                send(.queryAll) // 衔接不上/哈希校验失败：保底整链重拉
+            }
         } else {
-            if last.index == height + 1, last.prevHash == tipHash {
+            if last.index == nextIndex, last.prevHash == tipHash, last.calcHash() == last.hash {
                 chain.append(last)
                 afterChainChanged()
-            } else if last.index > height {
-                send(.queryAll) // 落后不止一块（或分叉）→ 要整条链
-            } else if last.index <= height, last.index < chain.count, chain[last.index].hash != last.hash {
+            } else if last.index == nextIndex {
+                // 紧接着但衔接不上/哈希校验失败：本地缓存跟这个节点视角不一致（换过节点/分叉）。
+                // 不重灌的话这个不匹配会每次心跳原样重现、永远卡住，所以必须兜底整链重拉。
+                send(.queryAll)
+            } else if last.index > nextIndex {
+                let to = min(last.index, nextIndex + Self.maxRangeRequest - 1)
+                pendingRangeFrom = nextIndex
+                send(.queryBlockRange(from: nextIndex, to: to))
+            } else if last.index < chain.count, chain[last.index].hash != last.hash {
                 send(.queryAll) // 同高但 hash 不同（reorg）→ 重新同步
             }
         }
@@ -302,6 +380,7 @@ public final class NodeClient: ObservableObject {
             let onChain = Set(chain.flatMap { $0.transactions.map(\.txid) })
             pending.removeAll { onChain.contains($0.txid) }
         }
+        persistChain()
     }
 
     /// 把节点 gossip 来的对等地址加入备用池并持久化（过滤掉私网/localhost/已有的）。

@@ -41,6 +41,17 @@ class WsClient(
     // 每条连接唯一的 HELLO listen 后缀：节点端按 listen 给连接判重（p2p.ts），同一客户端
     // 自动重连时若沿用旧 listen，可能与服务端尚未清理的陈旧连接对撞被踢 → 永久抖动。
     private var connToken: String = ""
+    // 本地已缓存的链尾高度（-1 = 无缓存）：决定握手要整链（QUERY_ALL）还是只探最新块（QUERY_LATEST）。
+    private var knownHeight: Long = -1
+
+    // ---- 分块同步缓冲：节点把长链拆成多片 BLOCKS 发（packages/node/src/p2p.ts 的 CHUNK=500），
+    // 每片都带 from/total；只有收满 total 块才是完整的一次 QUERY_ALL 回应，提前当完整链处理
+    // 会把每一片单独拿去和本地缓存比较，长度/衔接对不上就被误判丢弃，卡死在旧缓存上。
+    private var chunkBuffer = mutableListOf<Block>()
+    private var chunkTotal = -1L
+    // 在途的 QUERY_BLOCK_RANGE 请求起点：响应帧同样带 from/total，但那是"全链长度"不是"这次
+    // 请求的块数"，且节点端从不分片发它（单帧顶格）——命中就直接当完整答案处理，不进分片累积。
+    private var pendingRangeFrom: Long? = null
 
     @Volatile var status: Status = Status.DISCONNECTED
         private set
@@ -50,10 +61,12 @@ class WsClient(
     // gossip peer 失败是正常 P2P 现象（TUN 代理下死 peer 握手被代理接管 → HTTP 502/504），不上报日志。
     @Volatile private var isBootstrap = true
 
-    fun connect(url: String, address: String, isBootstrap: Boolean = true) {
+    fun connect(url: String, address: String, isBootstrap: Boolean = true, knownHeight: Long = -1) {
         this.isBootstrap = isBootstrap
+        this.knownHeight = knownHeight
         userClosed = false
         myAddress = address
+        resetChunkState() // 新连接不带上一条连接的残片/在途请求状态
         connToken = UUID.randomUUID().toString().take(8)   // 本次连接唯一，避免 listen 自我对撞
         setStatus(Status.CONNECTING)
         val trimmed = url.trim()
@@ -81,12 +94,26 @@ class WsClient(
         userClosed = true
         ws?.close(1000, "bye")
         ws = null
+        resetChunkState()
         setStatus(Status.DISCONNECTED)
+    }
+
+    private fun resetChunkState() {
+        chunkBuffer = mutableListOf()
+        chunkTotal = -1
+        pendingRangeFrom = null
     }
 
     /** 主动重新拉全链（用户下拉刷新 / 检测到分叉时）。 */
     fun requestChain() {
+        resetChunkState()
         ws?.send(JSONObject().put("type", "QUERY_ALL").toString())
+    }
+
+    /** 只补 [from, to] 这一段缺口（本地已有缓存，节点更高时用这个而不是整链重拉）。 */
+    fun requestRange(from: Long, to: Long) {
+        pendingRangeFrom = from
+        ws?.send(JSONObject().put("type", "QUERY_BLOCK_RANGE").put("from", from).put("to", to).toString())
     }
 
     /** 广播一笔本地签名的交易。返回是否已写入发送队列。 */
@@ -106,18 +133,25 @@ class WsClient(
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             setStatus(Status.CONNECTED)
-            // 自报家门（height=0：不被回拨也无所谓）+ 要整条链 + 问邻居
+            // 自报家门（height 不被回拨也无所谓，纯告知）+ 问邻居。
+            // 本地已有缓存链（knownHeight>=0）→ 只探最新块，缺口由 onBlocks 里的 QUERY_BLOCK_RANGE 补；
+            // 无缓存（首次启动）才整条链要（QUERY_ALL）。
             webSocket.send(
                 JSONObject()
                     .put("type", "HELLO")
                     .put("address", myAddress)
-                    .put("height", 0)
+                    .put("height", maxOf(0L, knownHeight))
                     .put("listen", "light://$myAddress/$connToken")
                     .toString(),
             )
-            webSocket.send(JSONObject().put("type", "QUERY_ALL").toString())
             webSocket.send(JSONObject().put("type", "QUERY_PEERS").toString())
-            onLog("已连接，正在同步全链…")
+            if (knownHeight < 0) {
+                webSocket.send(JSONObject().put("type", "QUERY_ALL").toString())
+                onLog("已连接，正在同步全链…")
+            } else {
+                webSocket.send(JSONObject().put("type", "QUERY_LATEST").toString())
+                onLog("已连接，续同步…")
+            }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -127,7 +161,32 @@ class WsClient(
                     "BLOCKS" -> {
                         val arr = o.optJSONArray("blocks") ?: return
                         val blocks = ChainCodec.parseBlocks(arr)
-                        if (blocks.isNotEmpty()) onBlocks(blocks)
+                        if (blocks.isEmpty()) return
+                        val from = if (o.has("from")) o.optLong("from", -1L) else -1L
+                        val total = if (o.has("total")) o.optLong("total", -1L) else -1L
+                        val pending = pendingRangeFrom
+                        when {
+                            pending != null && from == pending -> {
+                                // QUERY_BLOCK_RANGE 的响应：单帧顶格发，直接当完整答案处理。
+                                pendingRangeFrom = null
+                                onBlocks(blocks)
+                            }
+                            from >= 0 && total >= 0 -> {
+                                // QUERY_ALL 的分片流：按 from/total 累积，收满 total 块才是完整链。
+                                if (from == 0L || chunkTotal != total) {
+                                    chunkBuffer = mutableListOf()
+                                    chunkTotal = total
+                                }
+                                chunkBuffer.addAll(blocks)
+                                if (chunkBuffer.size >= chunkTotal) {
+                                    val full = chunkBuffer
+                                    chunkBuffer = mutableListOf()
+                                    chunkTotal = -1
+                                    onBlocks(full)
+                                }
+                            }
+                            else -> onBlocks(blocks)
+                        }
                     }
                     "PEERS" -> {
                         val arr = o.optJSONArray("peers") ?: return
