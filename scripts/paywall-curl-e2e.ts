@@ -45,21 +45,28 @@ const serialsIn = (file: string): Set<string> =>
 /**
  * 手写 SOCKS5 客户端：no-auth 握手 → CONNECT <domain>:<port> → 成功则发 httpReq、收正文。
  * 返回 { rep, body }：rep=SOCKS 应答码（0x00 成功 / 0x05 被拒），body=隧道里读回的 HTTP 响应文本。
+ * @param expectBody 期望正文子串：收到它才判定完成（否则**只到响应头就返回会漏掉后到 TCP 分片里的正文** → 断言偶发翻车）；未命中则等 close 兜底。
  */
-function socksHttpGet(socksPort: number, domain: string, port: number, httpReq: string): Promise<{ rep: number; body: string }> {
+function socksHttpGet(socksPort: number, domain: string, port: number, httpReq: string, expectBody?: string): Promise<{ rep: number; body: string }> {
   return new Promise((resolve, reject) => {
     const sock = tcpConnect(socksPort, '127.0.0.1');
     let stage: 'greet' | 'reply' | 'body' = 'greet';
     let buf = Buffer.alloc(0);
     let rep: number | null = null;
+    let settled = false;
     const bodyChunks: Buffer[] = [];
-    const finish = () => resolve({ rep: rep ?? -1, body: Buffer.concat(bodyChunks).toString('utf8') });
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve({ rep: rep ?? -1, body: Buffer.concat(bodyChunks).toString('utf8') });
+    };
     sock.on('error', reject);
     sock.on('connect', () => sock.write(Buffer.from([5, 1, 0]))); // VER=5, 1 method, no-auth
     sock.on('data', (d) => {
       if (stage === 'body') {
         bodyChunks.push(d);
-        if (Buffer.concat(bodyChunks).toString('utf8').includes('\r\n\r\n')) finish(); // 收到完整响应头+体即可判定（不等 close）
+        // 等**正文**真正到齐（而非仅响应头终止符）：命中期望正文即可判定；否则靠 close 兜底（backend 用 Connection: close）。
+        if (expectBody && Buffer.concat(bodyChunks).toString('utf8').includes(expectBody)) finish();
         return;
       }
       buf = Buffer.concat([buf, d]);
@@ -146,7 +153,7 @@ async function main() {
   writeFileSync(goodFile, JSON.stringify([vGood], null, 2), { mode: 0o600 });
   const socksGood = new SocksProxy(pickHops, 7820, '127.0.0.1', hsDeps, undefined, undefined, undefined, undefined, new VoucherWallet(goodFile, mint.address).source());
   await sleep(50);
-  const r1 = await withTimeout(socksHttpGet(7820, paid.address, 80, HTTP_REQ), 25000, 'curl 付费站点');
+  const r1 = await withTimeout(socksHttpGet(7820, paid.address, 80, HTTP_REQ, 'PAID-CONTENT-OK'), 25000, 'curl 付费站点');
   check('① 付费墙放行 → SOCKS 成功(0x00)', r1.rep === 0x00);
   check('① 拿到后端 HTTP 200 正文（PAID-CONTENT-OK）', r1.body.includes('200') && r1.body.includes('PAID-CONTENT-OK'));
   check('① 服务方 acceptor 已核销该券序列号', acceptor.spentSerials.has(vGood.serial));
@@ -174,6 +181,19 @@ async function main() {
   check('③ 付款被拒 → SOCKS 拒绝(0x05)', r3.rep === 0x05);
   await sleep(100);
   check('③ 关键不变量：付款失败 → 券仍留在钱包（未 commit）', serialsIn(dudFile).has(vDud.serial));
+
+  // ================= ④ 并发预留（P1 回归：并发连接不重复选同一张券）=================
+  const oneFile = join(tmp, 'wallet-one.json');
+  writeFileSync(oneFile, JSON.stringify([issueToken(PRICE, mint.privateKey)], null, 2), { mode: 0o600 });
+  const w = new VoucherWallet(oneFile, mint.address);
+  const [a, b] = await Promise.allSettled([w.select(PRICE), w.select(PRICE)]); // 仅一张券、两个并发 select
+  check('④ 并发下仅一次 select 成功（另一因该券已被预留而余额不足）', (a.status === 'fulfilled') !== (b.status === 'fulfilled'));
+  const okSel = a.status === 'fulfilled' ? a.value : b.status === 'fulfilled' ? b.value : null;
+  check('④ 成功的一方拿到那张券', okSel?.vouchers.length === 1);
+  await okSel?.rollback(); // 释放预留（未付款）
+  const again = await w.select(PRICE);
+  check('④ rollback 释放预留后该券可再被选（未落盘删除）', again.vouchers.length === 1);
+  await again.rollback();
 
   // ---- 收尾 ----
   socksGood.close();

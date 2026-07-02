@@ -8,11 +8,17 @@ import { connectHs, bridgeChannelToSocket, type HsDeps } from './hsbridge.js';
 import { runPaywallClient } from './paywall.js';
 import type { MintToken } from '../mint/token.js';
 
-/** 一次选券结果：这批券 + 一个 commit()。**券只有付款成功后才移出钱包**——调用方在 runPaywallClient 成功后才 await commit()。 */
+/**
+ * 一次选券结果：这批券（已在钱包内**内存预留**，并发连接不会再选到它们）+ commit/rollback。
+ * **券只有付款成功后才移出钱包**：调用方在 runPaywallClient 成功后 await commit()（落盘移出）；
+ * 付款失败/访客中断则 await rollback()（仅释放预留，券留钱包可重试）。二者互斥、各只调一次。
+ */
 export interface VoucherSelection {
   vouchers: MintToken[];
-  /** 付款成功（收到 PAYOK）后调用：把这批券从钱包移出。幂等、可安全省略（省略=券留钱包，服务方双花拦截兜底）。 */
+  /** 付款成功（收到 PAYOK）后调用：把这批券从钱包落盘移出。 */
   commit(): Promise<void>;
+  /** 付款失败/中断后调用：释放这批券的预留（文件未改 → 券留钱包）。 */
+  rollback(): Promise<void>;
 }
 
 /** 券源：某付费 .v0id 站点要价 price 时，从本地钱包选一批面额和 ≥ price 的记名券。不足/无券应抛错（连接将被拒、不动券）。 */
@@ -197,21 +203,31 @@ export class SocksProxy {
       }
       let sel: VoucherSelection;
       try {
-        sel = await this.voucherSource(addr, price); // 只挑不删（余额不足→抛→按下面统一拒绝，券未动）
-        // 取券可能慢（钱包提示/读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。此路径未 commit → 券留钱包。
-        if (sock.destroyed) {
-          channel.close();
-          return;
-        }
-        payokLeftover = await runPaywallClient(channel, sel.vouchers); // PAYERR/超时→抛→券留钱包（服务方未核销）
+        sel = await this.voucherSource(addr, price); // 选券 + 内存预留（余额不足/钱包损坏→抛，未预留 → 无需 rollback）
       } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        this.onHsFail?.(addr, `付费失败：${reason}`);
+        channel.close();
+        sock.write(reply(0x05));
+        return void sock.destroy();
+      }
+      // 取券可能慢（读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。释放预留（券留钱包）。
+      if (sock.destroyed) {
+        await sel.rollback();
+        channel.close();
+        return;
+      }
+      try {
+        payokLeftover = await runPaywallClient(channel, sel.vouchers); // PAYERR/超时→抛
+      } catch (e) {
+        await sel.rollback(); // 付款被拒/超时 → 释放预留，券留钱包（服务方未核销）
         const reason = e instanceof Error ? e.message : String(e);
         this.onHsFail?.(addr, `付费失败：${reason}`);
         channel.close();
         sock.write(reply(0x05)); // 连接被拒（付费墙未通过）
         return void sock.destroy();
       }
-      // 付款成功（PAYOK）才把券移出钱包。落盘失败不撤销放行（款已付）——只是钱包没更新，下次复用该券会被服务方双花拦截，自纠。
+      // 付款成功（PAYOK）才把券落盘移出钱包。落盘失败不撤销放行（款已付）——只是钱包没更新，下次复用该券会被服务方双花拦截，自纠。
       try {
         await sel.commit();
       } catch (e) {

@@ -1,18 +1,17 @@
 // 访客券钱包（Phase A.1 客户端）：持有一叠铸币厂记名券（MintToken[]），供 SOCKS 访问付费 .v0id 站点时**自动预付**。
-// 券是无记名持有物 → 文件 0600、fail-closed（损坏拒用，绝不静默重置丢券或误判余额）。选券在内存串行化，避免并发连接互相踩文件。
+// 券是无记名持有物 → 文件 0600、fail-closed（损坏 / 非数组 / 任一条目结构非法都拒用，绝不静默重置丢券或误判余额）。
 //
-// 关键不变量：**券只有在付款成功（PAYOK）后才移出钱包**。select() 只挑不删，返回一个 commit()；调用方（socks.handleHidden）
-// 在 runPaywallClient 成功后才 await commit() 落盘删除。付款被拒 / 访客中途断开 → 不 commit → 券留在钱包可重试（服务方并未核销）。
-//
-// 找零：Phase A.1 的付费墙对递进来的券**全额核销、不找零**（见 paywall.ts accept）。故选券要尽量贴着 price，避免溢付：
-//   ① 若有恰好等额的单张 → 直接用（零溢付）；② 否则小面额优先累加到覆盖。精确子集和的最优打包留待后续（A.1 建议按站价发等额券）。
+// 关键不变量：**券只有付款成功（PAYOK）后才移出钱包**。select() 只在**内存里预留（reserved）**、不改文件；付款成功后 commit()
+// 才落盘删除，付款失败/中断则 rollback() 仅释放预留（文件未改 → 券留钱包可重试）。并发连接经 reserved 集互斥 → 绝不重复选同一张
+// 券（否则一张券被两条在途连接各递一次：对同一服务被判重复、对不同服务方则同券被受理两次 = 双花）。
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { verifyToken, type MintToken } from '../mint/token.js';
 import type { VoucherSelection, VoucherSource } from './socks.js';
 
 export class VoucherWallet {
-  private lock: Promise<void> = Promise.resolve(); // 串行化 select/commit：并发连接不会交错读写同一钱包文件
+  private lock: Promise<void> = Promise.resolve(); // 串行化 select/commit/rollback：并发连接不交错读写同一钱包文件
+  private readonly reserved = new Set<string>(); // 已选未 commit 的 serial：并发连接跳过 → 防重复选同一张券
 
   /** @param file 券文件路径（JSON 数组 MintToken[]，即 `v0id mint issue --out` 的产物）。@param mintAddress 铸币厂地址，用于只挑本厂签的有效券。 */
   constructor(
@@ -20,9 +19,18 @@ export class VoucherWallet {
     private readonly mintAddress: string,
   ) {}
 
-  /** 读券文件（fail-closed：损坏/非数组 → 抛错，绝不静默当空钱包，以免把「文件坏了」误判成「余额不足」而放弃可用券）。 */
+  /**
+   * 读券文件（fail-closed）。文件不存在 → 空钱包；否则先收紧到 0600（券是无记名持有物，别留给同机他人可读），再解析。
+   * **损坏 / 非数组 / 任一条目结构非法都抛错**——绝不静默当空钱包或跳过坏条目：否则可能把「文件坏了」误判成「余额不足」，
+   * 或让坏条目在**付款成功后**的 commit 落盘时才触发崩溃 → 留下已被服务方核销、却仍留在钱包的死券。
+   */
   private read(): MintToken[] {
     if (!existsSync(this.file)) return [];
+    try {
+      chmodSync(this.file, 0o600); // 收紧既有文件权限（如用户从别处 cp 进来的 0644 券文件）——bearer 密钥不容他人可读
+    } catch {
+      /* 尽力而为 */
+    }
     const raw = readFileSync(this.file, 'utf8');
     let arr: unknown;
     try {
@@ -31,6 +39,9 @@ export class VoucherWallet {
       throw new Error(`券钱包文件损坏 ${this.file}：${e instanceof Error ? e.message : String(e)}（拒用以免误判余额/丢券，请核对后再访问付费站点）`);
     }
     if (!Array.isArray(arr)) throw new Error(`券钱包文件不是 JSON 数组：${this.file}`);
+    for (const t of arr) {
+      if (!isStructuralToken(t)) throw new Error(`券钱包含结构非法的条目：${this.file}（fail-closed：核对后再用，避免付款后触坏条目丢券）`);
+    }
     return arr as MintToken[];
   }
 
@@ -40,7 +51,7 @@ export class VoucherWallet {
     try {
       chmodSync(this.file, 0o600);
     } catch {
-      /* 尽力而为：券是无记名持有物，别留给同机他人可读 */
+      /* 尽力而为 */
     }
   }
 
@@ -55,24 +66,34 @@ export class VoucherWallet {
   }
 
   /**
-   * 选一叠面额合计 ≥ price 的有效券。**只挑不删**——返回的 commit() 在付款成功后由调用方落盘删除这批券。
-   * 有效券不足 price → 抛错（调用方据此回 SOCKS 失败、不动券）。
+   * 选一叠面额合计 ≥ price 的有效券并**内存预留**（不改文件）。返回 commit（付款成功后落盘移出）+ rollback（失败/中断释放预留）。
+   * 只算**未被其它在途连接预留**的可用券——并发连接因此不会挑到同一张（防跨连接双递）。可用有效券不足 price → 抛错（未预留）。
    */
   select(price: number): Promise<VoucherSelection> {
     return this.serialize(() => {
-      const valid = this.read().filter((t) => verifyToken(t, this.mintAddress)); // 只认本厂签的券（伪券/别厂券直接排除）
-      const total = valid.reduce((s, t) => s + t.denom, 0);
+      const available = this.read().filter((t) => verifyToken(t, this.mintAddress) && !this.reserved.has(t.serial));
+      const total = available.reduce((s, t) => s + t.denom, 0);
       if (total < price) {
-        throw new Error(`券余额不足：钱包有效券合计 ${total}，本站需 ${price}（先向运营者充值换券：\`v0id token buy\` → 运营者 \`mint issue\`）`);
+        throw new Error(`券余额不足：钱包可用有效券合计 ${total}，本站需 ${price}（先向运营者充值换券：\`v0id token buy\` → 运营者 \`mint issue\`）`);
       }
-      const chosen = pickVouchers(valid, price);
-      const chosenSerials = new Set(chosen.map((t) => t.serial));
+      const chosen = pickVouchers(available, price);
+      const serials = new Set(chosen.map((t) => t.serial));
+      for (const s of serials) this.reserved.add(s); // 预留：文件此刻不动，付款成功才 commit 落盘删除
+      let done = false; // 防 commit/rollback 被调两次
       const commit = () =>
         this.serialize(() => {
-          // 重读→删这批券→落盘（此刻付款已成）。重读而非用旧快照：期间可能有别的 commit 改过文件。
-          this.write(this.read().filter((t) => !chosenSerials.has(t.serial)));
+          if (done) return;
+          done = true;
+          this.write(this.read().filter((t) => !serials.has(t.serial))); // 付款已成 → 落盘移出钱包（重读，避免踩别的 commit 的改动）
+          for (const s of serials) this.reserved.delete(s);
         });
-      return { vouchers: chosen, commit };
+      const rollback = () =>
+        this.serialize(() => {
+          if (done) return;
+          done = true;
+          for (const s of serials) this.reserved.delete(s); // 付款失败/中断 → 仅释放预留，文件未改 → 券留钱包可重试
+        });
+      return { vouchers: chosen, commit, rollback };
     });
   }
 
@@ -82,21 +103,35 @@ export class VoucherWallet {
   }
 }
 
+/** 结构校验（非签名）：MintToken 须是带 number denom / string serial / string sig 的对象。null / 缺字段 / 错类型 → false。 */
+function isStructuralToken(t: unknown): t is MintToken {
+  if (!t || typeof t !== 'object') return false;
+  const v = t as Record<string, unknown>;
+  return typeof v.denom === 'number' && typeof v.serial === 'string' && typeof v.sig === 'string';
+}
+
 /**
- * 从有效券里挑一叠覆盖 price、尽量少溢付的券（Phase A.1 无找零）。
- * ① 恰好等额的单张 → 零溢付，直接用；② 否则小面额优先累加到覆盖（每张加入时都还不够 → 无单张冗余）。
- * 前置：valid 面额和 ≥ price（由 select 保证）。
+ * 从可用券里挑覆盖 price、尽量少溢付的券（Phase A.1 付费墙全额核销、**无找零**）。
+ * ① 恰好等额单张 → 零溢付；② 否则在「能单张覆盖 price 的最小单券」与「小面额升序累加」两个候选里取**总额更小**者（并列取张数更少）。
+ * 例：price=6、钱包 [5,10] → 候选 a=[10](溢 4) 胜过 b=[5,10](溢 9) → 选 [10]。前置：available 面额和 ≥ price（由 select 保证）。
+ * （启发式，非最优子集和：小额付费墙够用；建议运营者按站价发等额券以零溢付。）
  */
-function pickVouchers(valid: MintToken[], price: number): MintToken[] {
-  const exact = valid.find((t) => t.denom === price);
+function pickVouchers(available: MintToken[], price: number): MintToken[] {
+  const exact = available.find((t) => t.denom === price);
   if (exact) return [exact];
-  const asc = [...valid].sort((a, b) => a.denom - b.denom);
-  const chosen: MintToken[] = [];
-  let sum = 0;
-  for (const t of asc) {
-    if (sum >= price) break;
-    chosen.push(t);
-    sum += t.denom;
+  const sum = (ts: MintToken[]) => ts.reduce((s, t) => s + t.denom, 0);
+  const candidates: MintToken[][] = [];
+  // 候选 a：能单张覆盖 price 的最小单券（避免用一堆小券凑出远超 price 的总额）
+  const singles = available.filter((t) => t.denom >= price).sort((x, y) => x.denom - y.denom);
+  if (singles.length) candidates.push([singles[0]]);
+  // 候选 b：小面额升序累加到刚覆盖
+  const accum: MintToken[] = [];
+  let s = 0;
+  for (const t of [...available].sort((x, y) => x.denom - y.denom)) {
+    if (s >= price) break;
+    accum.push(t);
+    s += t.denom;
   }
-  return chosen;
+  candidates.push(accum); // available 和 ≥ price → accum 必覆盖
+  return candidates.sort((p, q) => sum(p) - sum(q) || p.length - q.length)[0]; // 总额更小者（并列张数更少）
 }
