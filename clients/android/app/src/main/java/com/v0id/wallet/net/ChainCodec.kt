@@ -53,6 +53,28 @@ object ChainCodec {
         )
     }
 
+    fun blocksToJson(blocks: List<Block>): JSONArray {
+        val arr = JSONArray()
+        for (b in blocks) arr.put(blockToJson(b))
+        return arr
+    }
+
+    fun blockToJson(b: Block): JSONObject {
+        val o = JSONObject()
+        o.put("index", b.index)
+        o.put("timestamp", b.timestamp)
+        o.put("prevHash", b.prevHash)
+        val txs = JSONArray()
+        for (tx in b.transactions) txs.put(txToJson(tx))
+        o.put("transactions", txs)
+        o.put("merkleRoot", b.merkleRoot)
+        o.put("difficulty", b.difficulty)
+        o.put("nonce", b.nonce)
+        o.put("miner", b.miner)
+        o.put("hash", b.hash)
+        return o
+    }
+
     /** 交易 → JSON。burn 仅在 >0 时写入（与 packages/core 一致：普通转账无 burn 字段）。 */
     fun txToJson(tx: Transaction): JSONObject {
         val o = JSONObject()

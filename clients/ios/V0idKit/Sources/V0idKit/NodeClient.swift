@@ -346,7 +346,11 @@ public final class NodeClient: ObservableObject {
             if last.index == nextIndex, last.prevHash == tipHash, last.calcHash() == last.hash {
                 chain.append(last)
                 afterChainChanged()
-            } else if last.index >= nextIndex {
+            } else if last.index == nextIndex {
+                // 紧接着但衔接不上/哈希校验失败：本地缓存跟这个节点视角不一致（换过节点/分叉）。
+                // 不重灌的话这个不匹配会每次心跳原样重现、永远卡住，所以必须兜底整链重拉。
+                send(.queryAll)
+            } else if last.index > nextIndex {
                 let to = min(last.index, nextIndex + Self.maxRangeRequest - 1)
                 pendingRangeFrom = nextIndex
                 send(.queryBlockRange(from: nextIndex, to: to))

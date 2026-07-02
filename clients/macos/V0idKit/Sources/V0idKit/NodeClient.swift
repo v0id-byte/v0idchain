@@ -319,7 +319,9 @@ public actor NodeClient {
                 if nb.index == chain.count, nb.prevHash == chain.last?.hash, nb.calcHash() == nb.hash {
                     chain.append(nb); changed = true
                 } else if nb.index == chain.count {
-                    break // 衔接不上或哈希校验失败：疑似分叉/篡改，本批停止
+                    // 衔接不上或哈希校验失败：本地缓存跟这个节点的视角不一致（换过节点/分叉）——
+                    // 不整链重拉的话这个不匹配会在每次心跳原样重现，永远卡住，所以这里必须兜底重灌。
+                    Self.rawSend(conn.ws, .queryAll); break
                 } else {
                     let to = min(nb.index, chain.count + Self.maxRangeRequest - 1)
                     Self.rawSend(conn.ws, .queryBlockRange(from: chain.count, to: to))

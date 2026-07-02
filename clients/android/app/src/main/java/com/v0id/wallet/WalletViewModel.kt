@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.v0id.wallet.core.*
+import com.v0id.wallet.data.ChainCache
 import com.v0id.wallet.data.KeyVault
 import com.v0id.wallet.net.WsClient
 import kotlinx.coroutines.Dispatchers
@@ -83,6 +84,7 @@ fun shortAddress(a: String): String =
 class WalletViewModel(app: Application) : AndroidViewModel(app) {
 
     private val vault = KeyVault(app)
+    private val chainCache = ChainCache(app)
     private var wallet: Wallet? = null
 
     private val _ui = MutableStateFlow(WalletUi())
@@ -118,6 +120,8 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
             val hex = withContext(Dispatchers.IO) { vault.loadPrivateKeyHex() }
             val savedNode = withContext(Dispatchers.IO) { vault.nodeUrl }
             val savedPeers = withContext(Dispatchers.IO) { vault.knownPeers }
+            // 读本地已同步的链——App 重开（冷启动/被系统杀后台再拉起）不用每次都问节点要整条链。
+            val cachedChain = withContext(Dispatchers.IO) { chainCache.load() }
             if (savedPeers.isNotBlank()) backupPeers.addAll(savedPeers.split(",").filter { it.isNotBlank() })
             val node = savedNode.ifBlank { DEFAULT_SEED_WS }
             if (hex != null) {
@@ -129,9 +133,10 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
                     hasWallet = wallet != null,
                     address = wallet?.address ?: "",
                     nodeUrl = node,
+                    chain = cachedChain,
                 )
             }
-            if (wallet != null) connect()
+            if (wallet != null) { recompute(); connect() }
         }
     }
 
@@ -183,8 +188,10 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch(Dispatchers.IO) { vault.nodeUrl = clean }
-        // 切换节点 = 重新以该节点的视角同步：清空旧链与待发交易，避免“旧链更高 → 新节点较短链被忽略”。
+        // 切换节点 = 重新以该节点的视角同步：清空旧链与待发交易，避免“旧链更高 → 新节点较短链被忽略”；
+        // 落盘缓存也一并清掉，否则下次冷启动又把旧节点的链读回来。
         pending.clear()
+        viewModelScope.launch(Dispatchers.IO) { chainCache.save(emptyList()) }
         _ui.update { it.copy(nodeUrl = clean, chain = emptyList()) }
         recompute()
         if (wallet != null) {
@@ -198,7 +205,8 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         wantConnected = true
         val url = _ui.value.nodeUrl
         lastTargetUrl = url
-        ws.connect(url, w.address, isBootstrap = true)
+        val knownHeight = _ui.value.chain.lastOrNull()?.index ?: -1L
+        ws.connect(url, w.address, isBootstrap = true, knownHeight = knownHeight)
     }
 
     fun disconnect() {
@@ -287,7 +295,8 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
             val isBootstrap = targetUrl == _ui.value.nodeUrl
             appendLog(if (isBootstrap) "正在重连…" else "种子不可达，切换备用节点…")
             lastTargetUrl = targetUrl
-            ws.connect(targetUrl, w.address, isBootstrap = isBootstrap)
+            val knownHeight = _ui.value.chain.lastOrNull()?.index ?: -1L
+            ws.connect(targetUrl, w.address, isBootstrap = isBootstrap, knownHeight = knownHeight)
         }
     }
 
@@ -298,6 +307,7 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         when (merged) {
             is Merge.Replace -> { setChain(merged.chain); appendLog("已同步至 #${merged.chain.last().index}") }
             is Merge.Append -> { setChain(merged.chain); appendLog("新块 #${merged.chain.last().index}") }
+            is Merge.NeedRange -> ws.requestRange(merged.from, merged.to)
             Merge.NeedFull -> ws.requestChain()
             Merge.Ignore -> {}
         }
@@ -306,28 +316,40 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
     private sealed interface Merge {
         data class Replace(val chain: List<Block>) : Merge
         data class Append(val chain: List<Block>) : Merge
+        data class NeedRange(val from: Long, val to: Long) : Merge
         data object NeedFull : Merge
         data object Ignore : Merge
     }
 
+    /** 单次 QUERY_BLOCK_RANGE 最多补多少块（节点端上限 10_000，留余量分批）。 */
+    private val maxRangeRequest = 5_000L
+
+    /** 合并收到的区块：整链响应（QUERY_ALL）从创世校验哈希链后更长则采纳；紧接链尾的一段先校验
+     *  哈希链自洽再追加；有缺口时只问缺的那一段（QUERY_BLOCK_RANGE），不用整链重拉——这是重开钱包
+     *  不必每次全量同步的关键。哈希/prevHash 校验不过（本地缓存跟这个节点视角不一致）才兜底整链重拉。 */
     private fun mergeChain(current: List<Block>, incoming: List<Block>): Merge {
         if (incoming.isEmpty()) return Merge.Ignore
-        val isFull = incoming.first().index == 0L
-        if (current.isEmpty()) {
-            return if (isFull) Merge.Replace(incoming) else Merge.NeedFull
+        val first = incoming.first()
+        if (first.index == 0L) {
+            if (incoming.size <= current.size) return Merge.Ignore
+            return if (verifyChainLink(incoming, afterIndex = -1, tipHash = "")) Merge.Replace(incoming) else Merge.Ignore
         }
+        if (current.isEmpty()) return Merge.NeedFull // 没有缓存/链，非整链响应帮不上忙，兜底整链要
         val currentTop = current.last().index
         val incomingTop = incoming.last().index
-        if (isFull) {
-            return if (incomingTop > currentTop) Merge.Replace(incoming) else Merge.Ignore
-        }
-        // 增量
         if (incomingTop <= currentTop) return Merge.Ignore
-        val first = incoming.first()
-        return if (first.index == currentTop + 1 && first.prevHash == current.last().hash) {
-            Merge.Append(current + incoming)
-        } else {
-            Merge.NeedFull // 有缺口或分叉 → 重拉全链
+        return when {
+            first.index == currentTop + 1 ->
+                if (verifyChainLink(incoming, afterIndex = currentTop, tipHash = current.last().hash)) {
+                    Merge.Append(current + incoming)
+                } else {
+                    Merge.NeedFull // 紧接着但哈希/prevHash 对不上：视角不一致，整链重拉
+                }
+            first.index > currentTop + 1 -> {
+                val to = minOf(incomingTop, currentTop + maxRangeRequest)
+                Merge.NeedRange(currentTop + 1, to)
+            }
+            else -> Merge.Ignore // first.index <= currentTop：已有的旧数据
         }
     }
 
@@ -340,6 +362,7 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         }
         _ui.update { it.copy(chain = chain) }
         recompute()
+        viewModelScope.launch(Dispatchers.IO) { chainCache.save(chain) }
     }
 
     // ---- 重算派生状态 ----

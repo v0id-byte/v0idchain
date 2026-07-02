@@ -41,6 +41,8 @@ class WsClient(
     // 每条连接唯一的 HELLO listen 后缀：节点端按 listen 给连接判重（p2p.ts），同一客户端
     // 自动重连时若沿用旧 listen，可能与服务端尚未清理的陈旧连接对撞被踢 → 永久抖动。
     private var connToken: String = ""
+    // 本地已缓存的链尾高度（-1 = 无缓存）：决定握手要整链（QUERY_ALL）还是只探最新块（QUERY_LATEST）。
+    private var knownHeight: Long = -1
 
     @Volatile var status: Status = Status.DISCONNECTED
         private set
@@ -50,8 +52,9 @@ class WsClient(
     // gossip peer 失败是正常 P2P 现象（TUN 代理下死 peer 握手被代理接管 → HTTP 502/504），不上报日志。
     @Volatile private var isBootstrap = true
 
-    fun connect(url: String, address: String, isBootstrap: Boolean = true) {
+    fun connect(url: String, address: String, isBootstrap: Boolean = true, knownHeight: Long = -1) {
         this.isBootstrap = isBootstrap
+        this.knownHeight = knownHeight
         userClosed = false
         myAddress = address
         connToken = UUID.randomUUID().toString().take(8)   // 本次连接唯一，避免 listen 自我对撞
@@ -89,6 +92,11 @@ class WsClient(
         ws?.send(JSONObject().put("type", "QUERY_ALL").toString())
     }
 
+    /** 只补 [from, to] 这一段缺口（本地已有缓存，节点更高时用这个而不是整链重拉）。 */
+    fun requestRange(from: Long, to: Long) {
+        ws?.send(JSONObject().put("type", "QUERY_BLOCK_RANGE").put("from", from).put("to", to).toString())
+    }
+
     /** 广播一笔本地签名的交易。返回是否已写入发送队列。 */
     fun broadcastTx(tx: Transaction): Boolean {
         val sock = ws ?: return false
@@ -106,18 +114,25 @@ class WsClient(
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             setStatus(Status.CONNECTED)
-            // 自报家门（height=0：不被回拨也无所谓）+ 要整条链 + 问邻居
+            // 自报家门（height 不被回拨也无所谓，纯告知）+ 问邻居。
+            // 本地已有缓存链（knownHeight>=0）→ 只探最新块，缺口由 onBlocks 里的 QUERY_BLOCK_RANGE 补；
+            // 无缓存（首次启动）才整条链要（QUERY_ALL）。
             webSocket.send(
                 JSONObject()
                     .put("type", "HELLO")
                     .put("address", myAddress)
-                    .put("height", 0)
+                    .put("height", maxOf(0L, knownHeight))
                     .put("listen", "light://$myAddress/$connToken")
                     .toString(),
             )
-            webSocket.send(JSONObject().put("type", "QUERY_ALL").toString())
             webSocket.send(JSONObject().put("type", "QUERY_PEERS").toString())
-            onLog("已连接，正在同步全链…")
+            if (knownHeight < 0) {
+                webSocket.send(JSONObject().put("type", "QUERY_ALL").toString())
+                onLog("已连接，正在同步全链…")
+            } else {
+                webSocket.send(JSONObject().put("type", "QUERY_LATEST").toString())
+                onLog("已连接，续同步…")
+            }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
