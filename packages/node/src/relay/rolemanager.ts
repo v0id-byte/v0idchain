@@ -13,6 +13,7 @@
 import {
   bytesToHex,
   hexToBytes,
+  MINT_ADDRESS,
   type OnionKeypair,
 } from '@v0idchain/core';
 import { isIP } from 'node:net';
@@ -23,6 +24,8 @@ import { RelayNode, isPublicIpAddress, type RelayResolver } from './relaynode.js
 import { SocksProxy, type HopPicker } from './socks.js';
 import { GuardManager } from './guards.js';
 import { makeHsDeps, serveHiddenService, isRoutableHost, type HsDeps } from './hsbridge.js';
+import { VoucherAcceptor } from './paywall.js';
+import { PaywallStore } from './paywall-store.js';
 import { serveStaticDir } from './staticserve.js';
 import { RelayReachability } from './reachability.js';
 import type { HopSpec } from './client.js';
@@ -327,7 +330,7 @@ export class RoleManager {
    */
   async startHs(
     target?: { host: string; port: number },
-    opts?: { name?: string; intros?: number; staticDir?: string },
+    opts?: { name?: string; intros?: number; staticDir?: string; price?: number },
   ): Promise<{ id: string; address: string }> {
     if (!!target === !!opts?.staticDir) {
       throw new Error('host:port 与 staticDir 须二选一（不能都传或都不传）');
@@ -361,6 +364,13 @@ export class RoleManager {
       resolvedTarget = { host: '127.0.0.1', port };
       staticStop = stop;
     }
+    // 付费站点：构造券受理器（验签对 MINT_ADDRESS + 持久化已花集防跨重启双花 + 记账已收券供日后兑现）。
+    let acceptor: VoucherAcceptor | undefined;
+    if (opts?.price !== undefined) {
+      if (!Number.isInteger(opts.price) || opts.price < 1) throw new Error('hs price 非法：须为正整数（$V0ID/连接）');
+      const store = new PaywallStore(this.dataDir, id);
+      acceptor = new VoucherAcceptor(MINT_ADDRESS, store.spent, (v, s) => store.record(v, s));
+    }
     try {
       const { address, stop, getConnCount } = await serveHiddenService({
         dataDir: this.dataDir,
@@ -368,6 +378,8 @@ export class RoleManager {
         target: resolvedTarget!,
         deps: this.hsDeps,
         numIntros: opts?.intros,
+        price: opts?.price,
+        acceptor,
       });
       const combinedStop = () => {
         stop();

@@ -34,9 +34,15 @@ export interface VoucherVerdict {
 export class VoucherAcceptor {
   private readonly mintAddress: string;
   private readonly spent: Set<string>;
-  constructor(mintAddress: string, spent: Set<string> = new Set()) {
+  private readonly onAccept?: (vouchers: MintToken[], serials: string[]) => void;
+  /**
+   * @param spent 初始已花集（从持久化恢复→跨重启防双花）。
+   * @param onAccept 成功受理后的回调（传全部已受理的券 + 其序列号）：持久化已花集 + 记账已收券以便日后向铸币厂兑现。
+   */
+  constructor(mintAddress: string, spent: Set<string> = new Set(), onAccept?: (vouchers: MintToken[], serials: string[]) => void) {
     this.mintAddress = mintAddress;
     this.spent = spent;
+    this.onAccept = onAccept;
   }
   /** 已受理（已花）的券序列号——供 operator==mint 时与铸币厂兑现共享同一集合（构造时传入同一个 Set）。 */
   get spentSerials(): Set<string> {
@@ -57,7 +63,9 @@ export class VoucherAcceptor {
       gross += v.denom;
     }
     if (gross < price) return { ok: false, gross, code: 'insufficient', need: price, got: gross };
-    for (const s of seen) this.spent.add(s); // 全通过 → 一次性核销
+    const serials = [...seen];
+    for (const s of serials) this.spent.add(s); // 全通过 → 一次性核销
+    this.onAccept?.(vouchers, serials); // 持久化 + 记账已收券（供日后兑现）；抛错不影响放行（尽力而为由回调自负）
     return { ok: true, gross };
   }
 }
