@@ -331,7 +331,10 @@ class WalletViewModel(app: Application) : AndroidViewModel(app) {
         if (incoming.isEmpty()) return Merge.Ignore
         val first = incoming.first()
         if (first.index == 0L) {
-            if (incoming.size <= current.size) return Merge.Ignore
+            // 更长，或等长但链尾 hash 不同（同高分叉/换了视角不同的节点）才采纳——严格要求"更长"
+            // 会让同高分叉/换节点后的整链重灌被拒绝，永远卡在旧缓存上刷新不动。
+            val tipDiffers = incoming.size == current.size && incoming.last().hash != current.lastOrNull()?.hash
+            if (incoming.size <= current.size && !tipDiffers) return Merge.Ignore
             return if (verifyChainLink(incoming, afterIndex = -1, tipHash = "")) Merge.Replace(incoming) else Merge.Ignore
         }
         if (current.isEmpty()) return Merge.NeedFull // 没有缓存/链，非整链响应帮不上忙，兜底整链要

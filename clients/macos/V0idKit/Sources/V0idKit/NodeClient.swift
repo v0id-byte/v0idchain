@@ -102,6 +102,10 @@ public actor NodeClient {
               Self.verifyChainLink(cached, afterIndex: -1, tipHash: "")
         else { return }   // 文件不存在/损坏/校验不过：当空缓存处理，退回冷启动整链同步
         chain = cached
+        // 必须现在就把缓存的链广播出去：如果节点已经在这个高度，onOpen 只会发 QUERY_LATEST，
+        // 回来的块 index < chain.count 会被 handleBlocks 忽略、不会再触发一次 emitChain()——
+        // 不在这里主动 emit，AppModel（只从 .chain 事件更新可见状态）就会一直显示空钱包。
+        emitChain()
     }
 
     private func persistChain() {
@@ -304,10 +308,12 @@ public actor NodeClient {
     }
 
     private func handleBlocks(_ blocks: [Block], conn: Conn) {
-        guard let first = blocks.first else { return }
+        guard let first = blocks.first, let last = blocks.last else { return }
         if first.index == 0 {
-            // 整链（QUERY_ALL 回应）：更长 + 哈希链校验通过才采纳，防伪造/损坏数据污染本地缓存。
-            guard blocks.count > chain.count, Self.verifyChainLink(blocks, afterIndex: -1, tipHash: "") else { return }
+            // 整链（QUERY_ALL 回应）：更长，或等长但链尾 hash 不同（同高分叉/换了视角不同的节点）
+            // 才采纳；哈希链校验必须通过，防伪造/损坏数据污染本地缓存。
+            let tipDiffers = blocks.count == chain.count && last.hash != chain.last?.hash
+            guard blocks.count > chain.count || tipDiffers, Self.verifyChainLink(blocks, afterIndex: -1, tipHash: "") else { return }
             chain = blocks
             emitChain(); removeMined(blocks); persistChain()
         } else {
@@ -315,7 +321,14 @@ public actor NodeClient {
             // 不再整链重拉——这是"重开钱包不用每次全量同步"的关键：缺口通常只有几个块。
             var changed = false
             for nb in blocks {
-                if nb.index < chain.count { continue } // 已有，跳过
+                if nb.index < chain.count {
+                    // 已有这个高度：正常应该 hash 相同直接跳过；若对不上，说明我们当前的链尾在一个
+                    // 不同分叉上（同高换节点/分叉），必须整链重拉，否则这个不匹配会每次心跳重现、永远卡住。
+                    if nb.index == chain.count - 1, nb.hash != chain.last?.hash {
+                        Self.rawSend(conn.ws, .queryAll); break
+                    }
+                    continue
+                }
                 if nb.index == chain.count, nb.prevHash == chain.last?.hash, nb.calcHash() == nb.hash {
                     chain.append(nb); changed = true
                 } else if nb.index == chain.count {

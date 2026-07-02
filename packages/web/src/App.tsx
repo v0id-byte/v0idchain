@@ -62,13 +62,24 @@ export default function App() {
   const [cacheReady, setCacheReady] = useState(false);
 
   // 启动时先读本地 IndexedDB 缓存的链，有多少读多少，后续只补缺口——不用每次开钱包都整条链重拉。
+  // 缓存本身也要校验哈希链（万一被篡改/损坏，最后一块碰巧还是 /tip 报的那个，增量同步会误判"无新块"
+  // 而直接信任中间坏掉的数据）；打开失败（隐私模式/配额满）也不能让 cacheReady 卡死、轮询永远不启动。
   useEffect(() => {
-    loadCachedChain().then((cached) => {
-      chainRef.current = cached;
-      setChain(cached);
-      setCacheReady(true);
-    });
+    loadCachedChain()
+      .then((cached) => (verifyBlockChainLink(cached, -1, '') ? cached : []))
+      .catch(() => [])
+      .then((cached) => {
+        chainRef.current = cached;
+        setChain(cached);
+        setCacheReady(true);
+      });
   }, []);
+
+  // 落盘只是优化，不是正确性前提（数据已经过哈希链校验）：写入失败（隐私模式/配额满）不该
+  // 阻断链的展示，也不该被 poll() 的 catch 误判成"连不上节点"。
+  const persistBestEffort = (fn: () => Promise<void>) => {
+    fn().catch(() => {});
+  };
 
   // 整链重灌：本地缓存的链尾接不上节点（分叉/清空/首次同步）时兜底，从创世块逐块校验哈希链。
   const fullResync = useCallback(async (base: string) => {
@@ -77,10 +88,12 @@ export default function App() {
       console.error('v0id: 节点返回的链未通过完整性校验（hash/prevHash 不衔接），本次跳过同步');
       return;
     }
-    await clearCache();
-    await putBlocks(full);
     chainRef.current = full;
     setChain(full);
+    persistBestEffort(async () => {
+      await clearCache();
+      await putBlocks(full);
+    });
   }, []);
 
   // 增量同步：先问 /tip 有没有新块，有才拉缺口区间；拉到的区块必须校验能接上本地链尾（hash 自洽 + prevHash 衔接 + 高度连续），
@@ -98,7 +111,7 @@ export default function App() {
         const merged = [...local, ...fresh];
         chainRef.current = merged;
         setChain(merged);
-        await putBlocks(fresh);
+        persistBestEffort(() => putBlocks(fresh));
         return;
       }
     }

@@ -334,7 +334,10 @@ public final class NodeClient: ObservableObject {
         let nextIndex = chain.count
         if blocks.count >= 2 {
             if first.index == 0 {
-                guard blocks.count > chain.count, Self.verifyChainLink(blocks, afterIndex: -1, tipHash: "") else { return }
+                // 更长，或等长但链尾 hash 不同（同高分叉/换了视角不同的节点）才采纳——严格要求
+                // "更长" 会让同高分叉/换节点后的整链重灌被拒绝，永远卡在旧缓存上刷新不动。
+                let tipDiffers = blocks.count == chain.count && last.hash != chain.last?.hash
+                guard blocks.count > chain.count || tipDiffers, Self.verifyChainLink(blocks, afterIndex: -1, tipHash: "") else { return }
                 adopt(blocks)
             } else if first.index == nextIndex, Self.verifyChainLink(blocks, afterIndex: nextIndex - 1, tipHash: tipHash) {
                 chain.append(contentsOf: blocks)
