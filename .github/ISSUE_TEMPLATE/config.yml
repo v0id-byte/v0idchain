@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "📖 Docs / 文档"
+    url: https://github.com/v0id-byte/v0idchain/tree/main/docs
+    about: "Protocol specs, node guide, tutorials. / 协议规范、开节点、教程。"
+  - name: "🗺 Roadmap / 路线图"
+    url: https://github.com/v0id-byte/v0idchain/blob/main/ROADMAP.md
+    about: "Where the project is going + good first issues. / 项目方向 + 新人任务。"
+  - name: "🔐 Security / 安全"
+    url: https://github.com/v0id-byte/v0idchain/blob/main/DISCLAIMER.md
+    about: "This is an educational testnet — read the disclaimer before reporting. / 教学测试网,报告前先读免责声明。"
