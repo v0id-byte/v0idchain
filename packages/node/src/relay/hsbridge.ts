@@ -22,7 +22,7 @@ import {
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
-import { runPaywallServer, type VoucherAcceptor } from './paywall.js';
+import { runPaywallServer, type VoucherVerifier } from './paywall.js';
 import { RelayReachability } from './reachability.js';
 import type { GuardManager } from './guards.js';
 
@@ -240,8 +240,8 @@ export interface ServeHiddenServiceOptions {
   target: { host: string; port: number }; // 隐藏服务背后的本机 TCP 落地（每个会合通道连一次它）
   deps: HsDeps; // 选路器 + 名录
   numIntros?: number; // 引入点数量（默认 3）
-  price?: number; // 可选：付费墙价格（$V0ID/连接）。设了则每条通道桥接到 target 前先跑付费墙握手（需 acceptor）
-  acceptor?: VoucherAcceptor; // 券受理器（验签+防双花）；price 设了必须提供。operator==mint 时其 spentSerials 应与铸币厂兑现共享
+  price?: number; // 可选：付费墙价格（$V0ID/连接）。设了则每条通道桥接到 target 前先跑付费墙握手（需 verifier）
+  verifier?: VoucherVerifier; // 验券+核销策略；price 设了必须提供。本地 VoucherAcceptor（A.1）或在线 makeOnlineVerifier（A.2 第三方）
   onError?: (err: unknown) => void; // 单个落地连接出错的可观察回调（默认吞掉）
 }
 
@@ -255,8 +255,8 @@ export async function serveHiddenService(
   opts: ServeHiddenServiceOptions,
 ): Promise<{ address: string; stop: () => void; getConnCount: () => number; getPaidCount: () => number }> {
   const priced = !!(opts.price && opts.price > 0);
-  // 设了价必须有受理器：否则描述符对外宣称收费、服务却无人验券 → 忽略价的客户端白嫖、守规客户端因收不到 PAYOK 反而失败。
-  if (priced && !opts.acceptor) throw new Error('serveHiddenService: 设了 price 必须提供 acceptor（否则描述符宣称收费但无人验券）');
+  // 设了价必须有验券器：否则描述符对外宣称收费、服务却无人验券 → 忽略价的客户端白嫖、守规客户端因收不到 PAYOK 反而失败。
+  if (priced && !opts.verifier) throw new Error('serveHiddenService: 设了 price 必须提供 verifier（否则描述符宣称收费但无人验券）');
   const identityFile = opts.identityKey ? `hs-${opts.identityKey}.json` : 'hs.json';
   const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir, identityFile);
   let connCount = 0;
@@ -270,7 +270,7 @@ export async function serveHiddenService(
     sock.on('connect', () => {
       handled = true;
       if (!priced) return void bridgeChannelToSocket(channel, sock);
-      runPaywallServer(channel, opts.price!, opts.acceptor!)
+      runPaywallServer(channel, opts.price!, opts.verifier!)
         .then((res) => {
           if (!res.paid) {
             channel.close();

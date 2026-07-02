@@ -28,10 +28,20 @@ export interface VoucherVerdict {
 }
 
 /**
+ * 付费墙的验券+核销策略（放行热路径调它）。两种实现：
+ * ① 本地 `VoucherAcceptor`（A.1，operator==mint：本地已花集即全局集，零双花）；
+ * ② 在线核销 `makeOnlineVerifier`（A.2，第三方站点：提交给铸币厂 `.v0id` 核销，防跨服务方双花）。
+ * verify 一律返回 Promise，让 runPaywallServer 对两种实现同形处理（本地实现同步完成、包一层 resolved promise）。
+ */
+export interface VoucherVerifier {
+  verify(vouchers: MintToken[], price: number): Promise<VoucherVerdict>;
+}
+
+/**
  * 券受理器（服务方侧）：验签 + 本地防双花。**operator==mint 时本地已花集即全局集 → 零双花**（Phase A.1）；
  * 第三方服务方（A.2）应把 accept 换成「在线核销：提交给铸币厂原子性标记已花」以免跨服务方双花（见 PAYWALL-PROTOCOL §3）。
  */
-export class VoucherAcceptor {
+export class VoucherAcceptor implements VoucherVerifier {
   private readonly mintAddress: string;
   private readonly spent: Set<string>;
   private readonly onAccept?: (vouchers: MintToken[], serials: string[]) => void;
@@ -47,6 +57,10 @@ export class VoucherAcceptor {
   /** 已受理（已花）的券序列号——供 operator==mint 时与铸币厂兑现共享同一集合（构造时传入同一个 Set）。 */
   get spentSerials(): Set<string> {
     return this.spent;
+  }
+  /** VoucherVerifier：本地核销同步完成，包一层 resolved promise 以与在线核销同形。 */
+  verify(vouchers: MintToken[], price: number): Promise<VoucherVerdict> {
+    return Promise.resolve(this.accept(vouchers, price));
   }
   /**
    * 判定一批券是否够付 price。**先只读校验全部（验签/未花/面额）**，全通过才一次性标记已花 →
@@ -137,7 +151,7 @@ export interface PaywallServerResult {
  * 服务方侧握手：等客户端 PAY → 受理 → PAYOK/PAYERR。返回是否放行。放行后调用方再桥接到 --hs-target。
  * 不抛（超时/非法都归一为 paid=false），让调用方统一按"未付费"关闭通道。
  */
-export async function runPaywallServer(channel: RdvChannel, price: number, acceptor: VoucherAcceptor): Promise<PaywallServerResult> {
+export async function runPaywallServer(channel: RdvChannel, price: number, verifier: VoucherVerifier): Promise<PaywallServerResult> {
   let frame: { msg: any; leftover: Uint8Array };
   try {
     frame = await readFrame(channel, HANDSHAKE_TIMEOUT_MS);
@@ -152,7 +166,15 @@ export async function runPaywallServer(channel: RdvChannel, price: number, accep
   const vouchers: MintToken[] = msg.vouchers.map((a: any) =>
     Array.isArray(a) ? { denom: a[0], serial: a[1], sig: a[2] } : a,
   );
-  const verdict = acceptor.accept(vouchers, price);
+  // 验券+核销：本地(VoucherAcceptor)或在线(makeOnlineVerifier 调铸币厂)。在线核销会多一次链下洋葱往返，仍不碰链。
+  let verdict: VoucherVerdict;
+  try {
+    verdict = await verifier.verify(vouchers, price);
+  } catch {
+    // 在线核销通道失败（连不上铸币厂/超时）→ 归一为未付费，让调用方关通道（不误放行）。
+    sendFrame(channel, { t: 'payerr', code: 'invalid' });
+    return { paid: false, gross: 0, leftover: new Uint8Array(0) };
+  }
   if (!verdict.ok) {
     sendFrame(channel, { t: 'payerr', code: verdict.code, need: verdict.need, got: verdict.got });
     return { paid: false, gross: 0, leftover: new Uint8Array(0) };

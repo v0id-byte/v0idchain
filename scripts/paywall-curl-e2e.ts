@@ -139,7 +139,7 @@ async function main() {
   const PRICE = 5;
   const acceptor = new VoucherAcceptor(mint.address);
   const paid = await withTimeout(
-    serveHiddenService({ dataDir: join(tmp, 'hs'), target: { host: '127.0.0.1', port: BACKEND_PORT }, deps: hsDeps, price: PRICE, acceptor }),
+    serveHiddenService({ dataDir: join(tmp, 'hs'), target: { host: '127.0.0.1', port: BACKEND_PORT }, deps: hsDeps, price: PRICE, verifier: acceptor }),
     15000,
     'serveHiddenService',
   );
