@@ -1,4 +1,6 @@
 // 节点 HTTP API 的类型与取数辅助。
+import { calcBlockHash } from '@v0idchain/core/browser';
+
 export const NULL_ADDRESS = '0x' + '0'.repeat(64);
 
 export interface Tx {
@@ -131,6 +133,39 @@ export async function postJSON<T>(base: string, path: string, body: unknown, tok
 }
 
 export const isCoinbase = (tx: Tx) => tx.from === NULL_ADDRESS;
+
+export interface Tip {
+  height: number;
+  hash: string;
+}
+
+export async function getTip(base: string): Promise<Tip> {
+  return getJSON<Tip>(base, '/tip');
+}
+
+/** 拉一段区块（含端点）：闭区间 [from, to]，节点侧会按 MAX_LIGHT_BLOCK_RANGE 截断。 */
+export async function getBlockRange(base: string, from: number, to: number): Promise<Block[]> {
+  const r = await getJSON<{ blocks: Block[] }>(base, `/blocks?from=${from}&to=${to}`);
+  return r.blocks;
+}
+
+/**
+ * 校验一段"新拉到的区块"能接到本地已缓存的链尾上：逐块 hash 自洽（防本地/传输损坏）+
+ * index 连续 + prevHash 衔接上一块（防分叉/伪造）。tipHash 为空串表示从创世块开始接。
+ * 校验失败返回 false，调用方应整链重灌，不能带病拼接。
+ */
+export function verifyBlockChainLink(newBlocks: Block[], afterIndex: number, tipHash: string): boolean {
+  let prevIndex = afterIndex;
+  let prevHash = tipHash;
+  for (const b of newBlocks) {
+    if (b.index !== prevIndex + 1) return false;
+    if (prevHash && b.prevHash !== prevHash) return false;
+    if (calcBlockHash(b) !== b.hash) return false;
+    prevIndex = b.index;
+    prevHash = b.hash;
+  }
+  return true;
+}
 
 // ---- 区块浏览器：客户端检索（数据都在已拉取的 /chain 里）----
 export interface TxRef {
