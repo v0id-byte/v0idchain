@@ -5,6 +5,11 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHs, bridgeChannelToSocket, type HsDeps } from './hsbridge.js';
+import { runPaywallClient } from './paywall.js';
+import type { MintToken } from '../mint/token.js';
+
+/** 券源：某付费 .v0id 站点要价 price 时，从本地钱包取一批面额和 ≥ price 的记名券。不足/无券应抛错（连接将被拒）。 */
+export type VoucherSource = (addr: string, price: number) => Promise<MintToken[]>;
 
 /** 选路器：返回有序 3 跳 [守卫, 中继, 出口]。生产应做 guard 钉固 + 加权随机；v1 由调用方注入。 */
 export type HopPicker = () => HopSpec[];
@@ -53,6 +58,7 @@ export class SocksProxy {
     // 调用方据此把链上目录里连不上/转不动的死中继计入可达性缓存，避免重试时反复挑中同一批死中继（同 hsbridge 的选路收敛）。
     private onHopFail?: (hop: HopSpec, kind: 'middle' | 'exit', middle?: HopSpec) => void,
     private onHopsProven?: (middle: HopSpec) => void, // 三跳全部建成时回调：middle 实测能转发，调用方可将其列为「已证骨干」
+    private voucherSource?: VoucherSource, // 注入则能访问付费 .v0id 站点（自动从钱包取券预付）；不注入时付费站点返回 SOCKS 失败
   ) {
     this.server = createServer((s) => this.handle(s).catch(() => s.destroy()));
     this.server.listen(port, host);
@@ -162,8 +168,9 @@ export class SocksProxy {
       return void sock.destroy();
     }
     let channel;
+    let price: number | undefined;
     try {
-      channel = await connectHs(addr, this.hsDeps);
+      ({ channel, price } = await connectHs(addr, this.hsDeps));
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`[hs-connect] ${addr} 失败: ${reason}`);
@@ -171,7 +178,34 @@ export class SocksProxy {
       sock.write(reply(0x04)); // 主机不可达（服务未发布 / 取不到描述符 / 握手失败）
       return void sock.destroy();
     }
+    // 付费站点（描述符携带 price>0）：在隧道内先跑付费墙握手（乐观预付），**通过后才回 SOCKS 成功**，
+    // 让 curl 的 HTTP 请求只在付款后发出。放行全程链下（验签），不等出块 → 只多一个隧道往返。
+    let payokLeftover: Uint8Array = new Uint8Array(0); // PAYOK 帧后同 cell 里紧跟的服务方响应开头（须写给 sock，不丢）
+    if (price && price > 0) {
+      if (!this.voucherSource) {
+        this.onHsFail?.(addr, `站点需付费 ${price} $V0ID，但未配置券源`);
+        channel.close();
+        sock.write(reply(0x05));
+        return void sock.destroy();
+      }
+      try {
+        const vouchers = await this.voucherSource(addr, price);
+        // 取券可能慢（钱包提示/读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。
+        if (sock.destroyed) {
+          channel.close();
+          return;
+        }
+        payokLeftover = await runPaywallClient(channel, vouchers);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        this.onHsFail?.(addr, `付费失败：${reason}`);
+        channel.close();
+        sock.write(reply(0x05)); // 连接被拒（付费墙未通过）
+        return void sock.destroy();
+      }
+    }
     sock.write(reply(0x00)); // 成功
+    if (payokLeftover.length) sock.write(Buffer.from(payokLeftover)); // 服务方合帧发来的响应开头，先于后续通道字节写给下游
     // 握手阶段读到的残留字节 = 隧道流开头，交给 bridge 在挂好监听后灌入通道（分片 + 字节序由 bridge 负责）。
     const leftover = r.done();
     bridgeChannelToSocket(channel, sock, new Uint8Array(leftover));

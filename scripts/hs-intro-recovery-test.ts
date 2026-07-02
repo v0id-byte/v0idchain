@@ -73,7 +73,7 @@ async function main() {
   check('服务已启动，单引入点已建', svc.introRelayIds.length === 1 && !!intro0);
 
   // ---- 基线：新客户端连通 ----
-  const ch0 = await withTimeout(connectHiddenService(svc.address, buildCircuit, directory), 15000, 'baseline connect');
+  const { channel: ch0 } = await withTimeout(connectHiddenService(svc.address, buildCircuit, directory), 15000, 'baseline connect');
   check('基线：客户端连通隐藏服务', ch0 instanceof RdvChannel);
   ch0.close();
 
@@ -97,7 +97,7 @@ async function main() {
   check('重建后的引入点不是已停的旧中继', svc.introRelayIds[0] !== intro0);
 
   // ---- 决定性判据：重建 + 重推描述符后，**新客户端**照常连通（端到端回显）----
-  const ch1 = await withTimeout(connectHiddenService(svc.address, buildCircuit, directory), 15000, 'post-heal connect');
+  const { channel: ch1 } = await withTimeout(connectHiddenService(svc.address, buildCircuit, directory), 15000, 'post-heal connect');
   check('自愈后：新客户端仍能连通隐藏服务', ch1 instanceof RdvChannel);
   let echoed: string | null = null;
   let resolveEcho: (() => void) | null = null;

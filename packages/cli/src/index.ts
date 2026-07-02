@@ -144,6 +144,7 @@ program
   .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网；亦支持 curl --socks5-hostname … <地址>.v0id）', false)
   .option('--socks-port <port>', 'SOCKS5 监听端口', '9050')
   .option('--hs-target <host:port>', '托管一个 .v0id 隐藏服务，把进来的连接转发到本机 host:port（需链上≥3 中继）')
+  .option('--hs-price <n>', '给托管的隐藏服务设付费墙：每条连接需先递面额和 ≥ n $V0ID 的记名券才放行（放行链下、不等出块）')
   .option('--hs-intros <n>', '隐藏服务引入点数量（默认 3）', '3')
   .action((o) => {
     const dataDir = o.dataDir || defaultDataDir(o.name);
@@ -228,13 +229,19 @@ program
         console.log(`  ${c.red('✖ --hs-target 格式应为 host:port，例如 127.0.0.1:8080')}`);
       } else {
         // 异步启动（建引入电路 + 发布描述符需几跳往返）；成功后打印 .v0id 地址，失败（含链上中继不足）给一行提示而非崩进程。
+        const hsPrice = o.hsPrice !== undefined ? Number(o.hsPrice) : undefined;
+        if (hsPrice !== undefined && (!Number.isInteger(hsPrice) || hsPrice < 1)) {
+          console.log(`  ${c.red('✖ --hs-price 须为正整数（$V0ID/连接）')}`);
+        } else {
         roleManager
-          .startHs({ host: thost, port: tport }, { intros: o.hsIntros ? Number(o.hsIntros) : undefined })
+          .startHs({ host: thost, port: tport }, { intros: o.hsIntros ? Number(o.hsIntros) : undefined, price: hsPrice })
           .then((st) => {
             console.log(`  ${c.dim('隐藏  ')} ${c.green(st.address ?? '?')}  ${c.dim('→ ' + thost + ':' + tport)}`);
+            if (hsPrice !== undefined) console.log(`  ${c.dim('      ')} ${c.dim('付费墙 ' + hsPrice + ' $V0ID/连接（访客需先递记名券；放行链下、不等出块）')}`);
             console.log(`  ${c.dim('      ')} ${c.dim('别人可 curl --socks5-hostname <某节点SOCKS> ' + (st.address ?? '') + ' 访问（双方互不知 IP）')}`);
           })
           .catch((e) => console.log(`  ${c.yellow('⚠ 隐藏服务托管失败：' + (e instanceof Error ? e.message : String(e)) + '（稍后重试 / 确认中继充足）')}`));
+        }
       }
     }
 
