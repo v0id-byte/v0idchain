@@ -15,6 +15,7 @@ import {
   computeReward,
   decideSlashes,
   MintDaemon,
+  PaywallStore,
   type HopSpec,
   type ProbeTarget,
   type MintToken,
@@ -874,6 +875,7 @@ txCmd(mint.command('redeem'))
   .description('兑现：验券 → 成形一笔 REDEEM 交易付给服务方（面额−抽成）。默认只预览；--send 才提交')
   .requiredOption('--to <address>', '收款服务方地址（网站/中继）')
   .option('--tokens <path>', '券文件（JSON 数组；默认 ./.data/mint/tokens.json）')
+  .option('--paywall <path>', '改从付费墙券库(paywall-<id>.json)取已收券兑现（运营者攒够访客付的券后 REDEEM 得款）；与 --tokens 二选一')
   .option('--mint-wallet <path>', '铸币厂签名钱包（默认 ./.data/mint/wallet.json）')
   .option('--send', '真的成形并提交 REDEEM 交易（默认关，只预览、不消耗券）', false)
   .action(async (o) => {
@@ -884,12 +886,37 @@ txCmd(mint.command('redeem'))
       process.exit(1);
     }
     mintAddrWarn(w);
-    const tPath = o.tokens || join(defaultDataDir('mint'), 'tokens.json');
-    if (!existsSync(tPath)) {
-      console.error(c.red(`找不到券文件：${tPath}（先 \`v0id mint issue\` 产出券）`));
+    if (o.paywall && o.tokens) {
+      console.error(c.red('--paywall 与 --tokens 二选一（券来源只能一个）。'));
       process.exit(1);
     }
-    const tokens = JSON.parse(readFileSync(tPath, 'utf8')) as MintToken[];
+    // 券来源：--paywall（付费墙券库里访客付的已收券）或 --tokens（运营者券文件，默认）。
+    let tokens: MintToken[];
+    let store: PaywallStore | undefined;
+    const tPath = o.tokens || join(defaultDataDir('mint'), 'tokens.json');
+    if (o.paywall) {
+      if (!existsSync(String(o.paywall))) {
+        console.error(c.red(`找不到付费墙券库：${o.paywall}（托管付费站点后由节点写出 paywall-<id>.json）`));
+        process.exit(1);
+      }
+      try {
+        store = new PaywallStore(String(o.paywall)); // 完整路径（id 省略）；fail-closed：文件损坏会抛
+      } catch (e) {
+        console.error(c.red('付费墙券库读取失败：' + (e instanceof Error ? e.message : String(e))));
+        process.exit(1);
+      }
+      tokens = store.pending;
+      if (tokens.length === 0) {
+        console.log(c.yellow('付费墙券库暂无待兑现券（还没有访客付费访问过）。'));
+        return;
+      }
+    } else {
+      if (!existsSync(tPath)) {
+        console.error(c.red(`找不到券文件：${tPath}（先 \`v0id mint issue\` 产出券，或用 --paywall 从付费墙券库兑现）`));
+        process.exit(1);
+      }
+      tokens = JSON.parse(readFileSync(tPath, 'utf8')) as MintToken[];
+    }
     const d = new MintDaemon({ dataDir: join(wPath, '..'), mintWallet: w });
     if (!o.send) {
       let dry; // 预览只需券 + 本地已花集合（守护进程状态），无需拉链
@@ -916,19 +943,33 @@ txCmd(mint.command('redeem'))
       console.error(c.red('兑现失败：' + (e instanceof Error ? e.message : String(e))));
       process.exit(1);
     }
-    // 这批券已在守护进程标记已花：从券文件移除、保持文件可用（否则下次 issue 追加后再 redeem 会撞已花券、整批报错）。
-    const redeemed = new Set(tokens.map((t) => t.serial));
-    const remaining = tokens.filter((t) => !redeemed.has(t.serial));
-    writeFileSync(tPath, JSON.stringify(remaining, null, 2), { mode: 0o600 });
-    try { chmodSync(tPath, 0o600); } catch { /* 尽力而为 */ }
+    // 这批券已在守护进程标记已花（防重兑）：从来源移除、保持来源可用（否则下次追加后再 redeem 会撞已花券、整批报错）。
+    const redeemedSerials = tokens.map((t) => t.serial);
+    if (store) {
+      store.markRedeemed(redeemedSerials); // 付费墙券库：删已兑现的 accepted，保留 spentSerials（防访问双花仍生效）
+    } else {
+      const redeemed = new Set(redeemedSerials);
+      const remaining = tokens.filter((t) => !redeemed.has(t.serial));
+      writeFileSync(tPath, JSON.stringify(remaining, null, 2), { mode: 0o600 });
+      try { chmodSync(tPath, 0o600); } catch { /* 尽力而为 */ }
+    }
     console.log(c.bold(`\n兑现  收款=${short(String(o.to))}  面额 ${r.gross} → 实得 ${r.net}（抽成 ${r.fee}）`));
     const res = await api(o, 'POST', '/tx/submit', { tx: r.tx }).catch((e) => ({ error: String(e) }));
     if ((res as { ok?: boolean }).ok) {
       console.log(c.green('✅ REDEEM 已广播'), c.dim('txid=' + r.tx.txid.slice(0, 12) + '…'));
       if (o.wait) await waitConfirm(o, r.tx.txid);
     } else {
+      // 券已核销并从来源移除，但广播失败 → **把待广播 REDEEM 存盘**，供节点恢复后补广播（同 nonce 幂等：没落链则补上、已落链则被拒），不丢款。
+      let saved = '';
+      try {
+        const pendPath = join(wPath, '..', `pending-redeem-${r.tx.txid.slice(0, 12)}.json`);
+        writeFileSync(pendPath, JSON.stringify(r.tx, null, 2), { mode: 0o600 });
+        try { chmodSync(pendPath, 0o600); } catch { /* 尽力而为 */ }
+        saved = pendPath;
+      } catch { /* 存盘失败也别崩 */ }
       console.log(c.red(`✖ 提交失败：${(res as { error?: string }).error}`));
-      console.log(c.dim('  （券已本地标记已花以防重兑、并已从券文件移除；链上兑现需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
+      if (saved) console.log(c.dim(`  券已核销/移除；**待广播 REDEEM 已存到 ${saved}** → 节点恢复后重新 POST /tx/submit（同 nonce 幂等）补广播，不丢款。`));
+      console.log(c.dim('  （链上兑现需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
     }
   });
 
