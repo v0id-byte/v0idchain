@@ -43,10 +43,18 @@ export class PaywallStore {
     return { spentSerials: [], accepted: [] };
   }
 
-  /** 记一批已受理券：并入已花集 + 追加待兑现，落盘。由 VoucherAcceptor 的 onAccept 回调驱动。 */
+  /**
+   * 记一批已受理券：并入已花集 + 追加待兑现，落盘。由 VoucherAcceptor 的 onAccept 回调驱动。
+   * **落盘前重读最新文件**再追加：否则若 `mint redeem --paywall`（独立进程）刚从 accepted 删过已兑现券，
+   * 本地在跑服务用**内存旧数组** persist 会把那些已兑现券**写回 accepted** → 下次兑现整批因已花而失败。
+   * 重读后追加到最新 accepted → 已兑现券不复活（与 markRedeemed 的重读-改-写对称，narrow 跨进程覆盖窗口）。
+   */
   record(vouchers: MintToken[], serials: string[]): void {
-    for (const s of serials) this.spent.add(s);
-    for (const v of vouchers) this.state.accepted.push(v);
+    const fresh = this.load(); // 重读：CLI 兑现可能刚删过 accepted / 加过 spent
+    for (const s of fresh.spentSerials) this.spent.add(s); // 并入文件最新已花（不丢别处加的）
+    for (const s of serials) this.spent.add(s); // 本次新受理
+    fresh.accepted.push(...vouchers); // 追加到**最新** accepted（不复活已被兑现删掉的券）
+    this.state = fresh; // this.spent 保持同一 Set 对象（VoucherAcceptor 持其引用），persist 以 this.spent 落盘
     this.persist();
   }
 

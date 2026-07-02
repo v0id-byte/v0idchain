@@ -954,8 +954,17 @@ txCmd(mint.command('redeem'))
       console.log(c.green('✅ REDEEM 已广播'), c.dim('txid=' + r.tx.txid.slice(0, 12) + '…'));
       if (o.wait) await waitConfirm(o, r.tx.txid);
     } else {
+      // 券已核销并从来源移除，但广播失败 → **把待广播 REDEEM 存盘**，供节点恢复后补广播（同 nonce 幂等：没落链则补上、已落链则被拒），不丢款。
+      let saved = '';
+      try {
+        const pendPath = join(wPath, '..', `pending-redeem-${r.tx.txid.slice(0, 12)}.json`);
+        writeFileSync(pendPath, JSON.stringify(r.tx, null, 2), { mode: 0o600 });
+        try { chmodSync(pendPath, 0o600); } catch { /* 尽力而为 */ }
+        saved = pendPath;
+      } catch { /* 存盘失败也别崩 */ }
       console.log(c.red(`✖ 提交失败：${(res as { error?: string }).error}`));
-      console.log(c.dim('  （券已本地标记已花以防重兑、并已从券文件移除；链上兑现需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
+      if (saved) console.log(c.dim(`  券已核销/移除；**待广播 REDEEM 已存到 ${saved}** → 节点恢复后重新 POST /tx/submit（同 nonce 幂等）补广播，不丢款。`));
+      console.log(c.dim('  （链上兑现需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
     }
   });
 

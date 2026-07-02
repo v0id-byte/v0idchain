@@ -57,6 +57,22 @@ function main() {
   check('跨重启：已兑现券不再出现在 pending', s3.pending.length === 1 && s3.pending[0].serial === v2.serial);
   check('跨重启：已花集仍含两张（含已兑现的）', s3.spent.has(v1.serial) && s3.spent.has(v2.serial));
 
+  // ---- #55-1 回归：在跑服务（旧内存）record 不复活 CLI 刚兑现删掉的券 ----
+  const raceFile = join(tmp, 'paywall-race.json');
+  const live = new PaywallStore(raceFile); // 模拟「在跑的付费服务」实例
+  const a1 = issueToken(10, mint.privateKey);
+  const a2 = issueToken(20, mint.privateKey);
+  const a3 = issueToken(30, mint.privateKey);
+  live.record([a1], [a1.serial]); // 收到访问 → live 内存 accepted=[a1]
+  live.record([a2], [a2.serial]); // 再收 → [a1,a2]
+  const cli = new PaywallStore(raceFile); // 模拟「mint redeem --paywall」独立进程
+  cli.markRedeemed([a1.serial]); // 兑现 a1 → 文件 accepted=[a2]
+  live.record([a3], [a3.serial]); // 在跑服务用旧内存又收一次 → 修复后重读文件、不复活 a1
+  const after = new PaywallStore(raceFile);
+  const afterSerials = new Set(after.pending.map((t) => t.serial));
+  check('#55-1：在跑服务 record 后已兑现券未复活（accepted 不含 a1）', !afterSerials.has(a1.serial));
+  check('#55-1：a2 与新收的 a3 都在 pending（record 追加到最新 accepted）', afterSerials.has(a2.serial) && afterSerials.has(a3.serial) && after.pending.length === 2);
+
   // ---- fail-closed：损坏券库拒读 ----
   const badFile = join(tmp, 'paywall-bad.json');
   writeFileSync(badFile, '{ not json at all', { mode: 0o600 });
