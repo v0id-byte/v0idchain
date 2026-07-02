@@ -36,7 +36,8 @@ export interface MintDaemonState {
   mintAddress: string; // 加载到的钱包地址（应 === MINT_ADDRESS，否则链不接受其 REDEEM）
   allowances: Record<string, number>; // 用户地址 → 可发券额度（= 该用户累计充值 − 累计已发）
   issued: number; // 累计已发券面额（全网）
-  spentSerials: string[]; // 已兑现的券序列号（防双花）
+  spentSerials: string[]; // 已兑现/已核销的券序列号（防双花，redeem 与 spend 共用同一集 = 一张券只走一条路）
+  owed: Record<string, number>; // 服务方地址 → 待结算面额(gross)。A.2 在线核销：spend 累加、settle 清零成形 REDEEM
   scannedHeight: number; // 已扫描到的链高（增量同步充值，避免重复计充值）
 }
 
@@ -96,6 +97,7 @@ export class MintDaemon {
         allowances: d.allowances ?? {},
         issued: d.issued ?? 0,
         spentSerials: Array.isArray(d.spentSerials) ? d.spentSerials : [],
+        owed: d.owed && typeof d.owed === 'object' ? d.owed : {}, // 旧状态文件无 owed → 空账本（向后兼容）
         scannedHeight: d.scannedHeight ?? MINT_ACTIVATION_HEIGHT - 1,
       };
     }
@@ -105,6 +107,7 @@ export class MintDaemon {
       allowances: {},
       issued: 0,
       spentSerials: [],
+      owed: {},
       scannedHeight: MINT_ACTIVATION_HEIGHT - 1,
     };
   }
@@ -197,6 +200,50 @@ export class MintDaemon {
     const tx = createTransaction(this.wallet, providerAddress, 0, mintNonce, `${REDEEM_PREFIX}${gross}`, MIN_FEE);
     this.persist();
     return { tx, gross, net, fee };
+  }
+
+  /** 某服务方当前待结算（已在线核销、尚未 settle）的面额(gross)。 */
+  owedTo(provider: string): number {
+    const v = this.state.owed[provider];
+    return typeof v === 'number' ? v : 0;
+  }
+
+  /**
+   * A.2 在线核销：第三方服务方（≠铸币厂，无 MINT_ADDRESS 私钥）在放行前把访客的券提交给铸币厂 →
+   * **原子性 验签 + 全局标记已花 + 记服务方待结算面额**。全局 spent 集是唯一权威 → 跨服务方双花被拦
+   * （第二个提交同一 serial 的服务方得 `spent` 报错，服务了却收不到重复款的风险归零）。**不碰链**：
+   * 放行热路径只多一次链下铸币厂往返，日后由 settle 批量成形 REDEEM 付款（对齐 PAYWALL-PROTOCOL §3B/§4）。
+   * @returns 本次核销面额(gross)，已累加进 owed[provider]。
+   */
+  spend(vouchers: MintToken[], provider: string): { gross: number } {
+    const { gross, serials } = this.verifyBatch(vouchers, provider); // 验签 + 防双花 + 收款校验（与 redeem 同口径）
+    for (const s of serials) this.spent.add(s); // 全局标记已花（redeem/spend 共用权威集）
+    this.state.owed[provider] = this.owedTo(provider) + gross; // 记服务方待结算（off-chain 欠款账本）
+    this.persist();
+    return { gross };
+  }
+
+  /**
+   * A.2 结算：把某服务方累计待结算(owed)一次性成形 REDEEM 付给它（面额−抽成）。清零在成形后、广播前
+   * （同 redeem 纪律：宁可广播失败也已清零，重发用新 nonce，不冒对同一 owed 成形两笔 REDEEM 而超付）。owed≤0 抛错。
+   */
+  settle(provider: string, mintNonce: number): RedeemResult {
+    if (!isValidAddress(provider)) throw new Error('结算收款地址格式无效');
+    if (SYSTEM_ADDRESSES.has(provider)) throw new Error('结算收款不能是系统/托管地址');
+    const gross = this.owedTo(provider);
+    if (gross <= 0) throw new Error(`服务方 ${provider} 无待结算面额（先经 spend 在线核销）`);
+    const { net, fee } = redeemSplit(gross);
+    const tx = createTransaction(this.wallet, provider, 0, mintNonce, `${REDEEM_PREFIX}${gross}`, MIN_FEE);
+    delete this.state.owed[provider]; // 清零（成形后、广播前）
+    this.persist();
+    return { tx, gross, net, fee };
+  }
+
+  /** 预览某服务方的结算拆分（不清零 owed、不成形交易；供 CLI 预览）。owed≤0 抛错。 */
+  drySettle(provider: string): { gross: number; net: number; fee: number } {
+    const gross = this.owedTo(provider);
+    if (gross <= 0) throw new Error(`服务方 ${provider} 无待结算面额`);
+    return { gross, ...redeemSplit(gross) };
   }
 
   /** 储备/发行/偿付总览（链上储备 + 链下发行账本）。 */
