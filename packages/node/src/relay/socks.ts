@@ -180,6 +180,7 @@ export class SocksProxy {
     }
     // 付费站点（描述符携带 price>0）：在隧道内先跑付费墙握手（乐观预付），**通过后才回 SOCKS 成功**，
     // 让 curl 的 HTTP 请求只在付款后发出。放行全程链下（验签），不等出块 → 只多一个隧道往返。
+    let payokLeftover: Uint8Array = new Uint8Array(0); // PAYOK 帧后同 cell 里紧跟的服务方响应开头（须写给 sock，不丢）
     if (price && price > 0) {
       if (!this.voucherSource) {
         this.onHsFail?.(addr, `站点需付费 ${price} $V0ID，但未配置券源`);
@@ -189,7 +190,12 @@ export class SocksProxy {
       }
       try {
         const vouchers = await this.voucherSource(addr, price);
-        await runPaywallClient(channel, vouchers);
+        // 取券可能慢（钱包提示/读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。
+        if (sock.destroyed) {
+          channel.close();
+          return;
+        }
+        payokLeftover = await runPaywallClient(channel, vouchers);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         this.onHsFail?.(addr, `付费失败：${reason}`);
@@ -199,6 +205,7 @@ export class SocksProxy {
       }
     }
     sock.write(reply(0x00)); // 成功
+    if (payokLeftover.length) sock.write(Buffer.from(payokLeftover)); // 服务方合帧发来的响应开头，先于后续通道字节写给下游
     // 握手阶段读到的残留字节 = 隧道流开头，交给 bridge 在挂好监听后灌入通道（分片 + 字节序由 bridge 负责）。
     const leftover = r.done();
     bridgeChannelToSocket(channel, sock, new Uint8Array(leftover));

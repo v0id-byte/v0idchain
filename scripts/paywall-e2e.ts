@@ -16,7 +16,11 @@ import { CircuitClient } from '../packages/node/src/relay/client.js';
 import { HiddenService } from '../packages/node/src/relay/hsservice.js';
 import { connectHiddenService, RdvChannel } from '../packages/node/src/relay/hsclient.js';
 import { runPaywallServer, runPaywallClient, VoucherAcceptor } from '../packages/node/src/relay/paywall.js';
+import { serveHiddenService } from '../packages/node/src/relay/hsbridge.js';
 import { issueToken } from '../packages/node/src/mint/token.js';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 let failures = 0;
 const check = (name: string, cond: boolean) => {
@@ -143,6 +147,32 @@ async function main() {
   check('无券递空 → 付费被拒（insufficient）', await payFails([], 'empty'));
   check('已花过的券再用 → 被拒（防双花：v5 上面已花）', await payFails([v5], 'double-spend'));
   check('伪券（非铸币厂签发）→ 验签失败被拒', await payFails([forged], 'forged'));
+
+  // ---- P1 回归：backend 宕机时**不应花掉客户端的券**（serveHiddenService 先预连 target 再验券）----
+  {
+    const acc2 = new VoucherAcceptor(mint.address);
+    const vDown = issueToken(5, mint.privateKey);
+    const dataDir = join(tmpdir(), `v0id-paywall-e2e-${process.pid}`);
+    const paidSvc2 = await serveHiddenService({
+      dataDir,
+      target: { host: '127.0.0.1', port: 7998 }, // 无人监听 → 预连必失败
+      deps: { buildCircuit, directory },
+      price: PRICE,
+      acceptor: acc2,
+    });
+    const { channel: cDown } = await withTimeout(connectHiddenService(paidSvc2.address, buildCircuit, directory), 15000, 'connect down-target');
+    let downFailed = false;
+    try {
+      await withTimeout(runPaywallClient(cDown, [vDown]), 12000, 'pay down-target');
+    } catch {
+      downFailed = true;
+    }
+    check('backend 宕机 → 付费握手不成功（未回 PAYOK）', downFailed);
+    check('★ backend 宕机时客户端的券未被花（先预连 target 再验券 → 不白烧券）', !acc2.spentSerials.has(vDown.serial));
+    cDown.close();
+    paidSvc2.stop();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 
   // ---- 免费站点：无 price → 描述符无价、无付费墙、直连回显 ----
   const freeSvc = new HiddenService({

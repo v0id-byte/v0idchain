@@ -82,6 +82,13 @@ function readFrame(channel: RdvChannel, timeoutMs: number): Promise<{ msg: any; 
       done = true;
       reject(new Error('付费握手超时'));
     }, timeoutMs);
+    channel.onClose(() => {
+      // 握手期间通道被销毁（对端关/backend 预连失败即关通道）→ 快速失败，不必干等超时。
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(new Error('付费握手期间通道关闭'));
+    });
     channel.onData((b) => {
       if (done) return;
       const next = new Uint8Array(buf.length + b.length);
@@ -148,11 +155,15 @@ export async function runPaywallServer(channel: RdvChannel, price: number, accep
 
 // ---- 客户端侧 ----
 
-/** 客户端侧握手：把 vouchers 作第一帧 PAY 递上（乐观预付，价已从描述符得知）→ 等 PAYOK。PAYERR/超时 → 抛。 */
-export async function runPaywallClient(channel: RdvChannel, vouchers: MintToken[]): Promise<void> {
+/**
+ * 客户端侧握手：把 vouchers 作第一帧 PAY 递上（乐观预付，价已从描述符得知）→ 等 PAYOK。PAYERR/超时 → 抛。
+ * 返回 **PAYOK 帧之后同 cell 里紧跟的字节**（服务方若把响应开头与 PAYOK 合在一个 cell 发来）——调用方须把它写给下游 sock，
+ * 否则这段响应开头会被静默丢弃。A.1 正常为空。
+ */
+export async function runPaywallClient(channel: RdvChannel, vouchers: MintToken[]): Promise<Uint8Array> {
   sendFrame(channel, { t: 'pay', v: 1, vouchers: vouchers.map((v) => [v.denom, v.serial, v.sig]) });
-  const { msg } = await readFrame(channel, HANDSHAKE_TIMEOUT_MS);
-  if (msg?.t === 'payok') return;
+  const { msg, leftover } = await readFrame(channel, HANDSHAKE_TIMEOUT_MS);
+  if (msg?.t === 'payok') return leftover;
   if (msg?.t === 'payerr') throw new Error(`付费被拒(${msg.code}${msg.need !== undefined ? `：需 ${msg.need}、递了 ${msg.got}` : ''})`);
   throw new Error('付费握手应答异常');
 }

@@ -254,37 +254,43 @@ export interface ServeHiddenServiceOptions {
 export async function serveHiddenService(
   opts: ServeHiddenServiceOptions,
 ): Promise<{ address: string; stop: () => void; getConnCount: () => number; getPaidCount: () => number }> {
+  const priced = !!(opts.price && opts.price > 0);
+  // 设了价必须有受理器：否则描述符对外宣称收费、服务却无人验券 → 忽略价的客户端白嫖、守规客户端因收不到 PAYOK 反而失败。
+  if (priced && !opts.acceptor) throw new Error('serveHiddenService: 设了 price 必须提供 acceptor（否则描述符宣称收费但无人验券）');
   const identityFile = opts.identityKey ? `hs-${opts.identityKey}.json` : 'hs.json';
   const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir, identityFile);
   let connCount = 0;
   let paidCount = 0;
-  // 每个成功会合 → 连一次本机落地；连不上就关通道（服务进程没在监听 target）。
-  const bridgeToTarget = (channel: RdvChannel, leftover?: Uint8Array) => {
-    const sock = connect(opts.target.port, opts.target.host);
-    sock.on('connect', () => {
-      if (leftover && leftover.length) sock.write(Buffer.from(leftover)); // 付费握手后残留(A.1 正常空)→先写目标保字节序
-      bridgeChannelToSocket(channel, sock);
-    });
-    sock.on('error', (e) => {
-      opts.onError?.(e);
-      channel.close();
-      sock.destroy();
-    });
-  };
   const handler: RendezvousHandler = (channel) => {
     connCount++;
-    if (opts.price && opts.price > 0 && opts.acceptor) {
-      // 付费站点：桥接前先在隧道内跑付费墙握手（验券，放行全程链下、不等出块）。未付费 → 关通道，不连 target。
-      runPaywallServer(channel, opts.price, opts.acceptor)
+    // **先连本机 target（预连）再验券**：target 挂了就别验券——否则会花掉客户端的券却给不出服务（backend 宕机时白烧券）。
+    // 免费站点：连上即桥接（行为不变）。付费站点：target 就绪后才跑付费墙握手（验券+PAYOK+核销），backend 未就绪则通道直接关、券未被花。
+    const sock = connect(opts.target.port, opts.target.host);
+    let handled = false;
+    sock.on('connect', () => {
+      handled = true;
+      if (!priced) return void bridgeChannelToSocket(channel, sock);
+      runPaywallServer(channel, opts.price!, opts.acceptor!)
         .then((res) => {
-          if (!res.paid) return void channel.close();
+          if (!res.paid) {
+            channel.close();
+            sock.destroy();
+            return;
+          }
           paidCount++;
-          bridgeToTarget(channel, res.leftover);
+          if (res.leftover.length) sock.write(Buffer.from(res.leftover)); // 付费握手后残留(A.1 正常空)→先写目标保字节序
+          bridgeChannelToSocket(channel, sock);
         })
-        .catch(() => channel.close());
-    } else {
-      bridgeToTarget(channel);
-    }
+        .catch(() => {
+          channel.close();
+          sock.destroy();
+        });
+    });
+    sock.on('error', (e) => {
+      opts.onError?.(e); // target 连不上 → 关通道；付费站点此时**尚未验券** → 客户端的券没被花
+      channel.close();
+      if (!handled) sock.destroy();
+    });
   };
   const svc = new HiddenService({
     seed,
