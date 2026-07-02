@@ -971,8 +971,17 @@ txCmd(mint.command('settle'))
       console.log(c.green('✅ REDEEM 已广播'), c.dim('txid=' + r.tx.txid.slice(0, 12) + '…'));
       if (o.wait) await waitConfirm(o, r.tx.txid);
     } else {
+      // owed 已清零(防重付)但广播失败 → **把待广播 REDEEM 存盘**，供节点恢复后同 nonce 幂等补广播，不丢这笔结算(provider 不至无款可追)。
+      let saved = '';
+      try {
+        const pendPath = join(wPath, '..', `pending-settle-${r.tx.txid.slice(0, 12)}.json`);
+        writeFileSync(pendPath, JSON.stringify(r.tx, null, 2), { mode: 0o600 });
+        try { chmodSync(pendPath, 0o600); } catch { /* 尽力而为 */ }
+        saved = pendPath;
+      } catch { /* 存盘失败也别崩 */ }
       console.log(c.red(`✖ 提交失败：${(res as { error?: string }).error}`));
-      console.log(c.dim('  （owed 已清零以防重付；链上结算需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
+      if (saved) console.log(c.dim(`  owed 已清零(防重付)；**待广播 REDEEM 已存到 ${saved}** → 节点恢复后重新 POST /tx/submit(同 nonce 幂等)补广播，不丢款。`));
+      console.log(c.dim('  （链上结算需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
     }
   });
 
