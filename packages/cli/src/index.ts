@@ -973,6 +973,64 @@ txCmd(mint.command('redeem'))
     }
   });
 
+txCmd(mint.command('settle'))
+  .description('结算（A.2）：把某第三方服务方经在线核销(spend)累计的待结算面额一次性成形 REDEEM 付给它（面额−抽成）。默认只预览；--send 才提交')
+  .requiredOption('--provider <address>', '收款服务方地址（其 owed 累计将被一次性结清）')
+  .option('--mint-wallet <path>', '铸币厂签名钱包（默认 ./.data/mint/wallet.json）')
+  .option('--send', '真的成形并提交 REDEEM 交易（默认关，只预览、不清零 owed）', false)
+  .action(async (o) => {
+    const wPath = o.mintWallet || join(defaultDataDir('mint'), 'wallet.json');
+    const w = loadWalletFile(wPath);
+    if (!w) {
+      console.error(c.red(`找不到铸币厂钱包：${wPath}`));
+      process.exit(1);
+    }
+    mintAddrWarn(w);
+    const d = new MintDaemon({ dataDir: join(wPath, '..'), mintWallet: w });
+    const provider = String(o.provider);
+    if (d.owedTo(provider) <= 0) {
+      console.log(c.yellow(`服务方 ${short(provider)} 无待结算面额（先由其经 /mint/spend 在线核销访客券）。`));
+      return;
+    }
+    if (!o.send) {
+      const dry = d.drySettle(provider); // 预览：算拆分，不清零 owed
+      console.log(c.bold(`\n结算预览  服务方=${short(provider)}`));
+      console.log(`  待结算合计 ${dry.gross} ${SYMBOL} → 服务方实得 ${dry.net}（抽成 ${dry.fee} 回国库）`);
+      console.log(c.cyan('\n  （预览：未提交、未清零 owed。确认后加 --send 才成形并广播 REDEEM。）\n'));
+      return;
+    }
+    const bc = await fetchChain(o);
+    // nonce 须含 mempool 里本钱包待打包交易，否则 nonce 撞车被拒（而 owed 已清零 → 白白报废这笔结算）。
+    const mempool = (await api(o, 'GET', '/mempool').catch(() => [])) as Array<{ from?: string }>;
+    const pending = Array.isArray(mempool) ? mempool.filter((t) => t.from === w.address).length : 0;
+    const nonce = bc.nonceOf(w.address) + pending;
+    let r;
+    try {
+      r = d.settle(provider, nonce); // 清零 owed + 成形 REDEEM
+    } catch (e) {
+      console.error(c.red('结算失败：' + (e instanceof Error ? e.message : String(e))));
+      process.exit(1);
+    }
+    console.log(c.bold(`\n结算  服务方=${short(provider)}  面额 ${r.gross} → 实得 ${r.net}（抽成 ${r.fee}）`));
+    const res = await api(o, 'POST', '/tx/submit', { tx: r.tx }).catch((e) => ({ error: String(e) }));
+    if ((res as { ok?: boolean }).ok) {
+      console.log(c.green('✅ REDEEM 已广播'), c.dim('txid=' + r.tx.txid.slice(0, 12) + '…'));
+      if (o.wait) await waitConfirm(o, r.tx.txid);
+    } else {
+      // owed 已清零(防重付)但广播失败 → **把待广播 REDEEM 存盘**，供节点恢复后同 nonce 幂等补广播，不丢这笔结算(provider 不至无款可追)。
+      let saved = '';
+      try {
+        const pendPath = join(wPath, '..', `pending-settle-${r.tx.txid.slice(0, 12)}.json`);
+        writeFileSync(pendPath, JSON.stringify(r.tx, null, 2), { mode: 0o600 });
+        try { chmodSync(pendPath, 0o600); } catch { /* 尽力而为 */ }
+        saved = pendPath;
+      } catch { /* 存盘失败也别崩 */ }
+      console.log(c.red(`✖ 提交失败：${(res as { error?: string }).error}`));
+      if (saved) console.log(c.dim(`  owed 已清零(防重付)；**待广播 REDEEM 已存到 ${saved}** → 节点恢复后重新 POST /tx/submit(同 nonce 幂等)补广播，不丢款。`));
+      console.log(c.dim('  （链上结算需 mint 钱包 === MINT_ADDRESS，占位密钥未 rotate 会被拒，属部署期。）'));
+    }
+  });
+
 const token = program.command('token').description('铸币厂代金券：充值换额度（token buy）；发券/兑现见 `v0id mint`');
 
 txCmd(token.command('buy'))
