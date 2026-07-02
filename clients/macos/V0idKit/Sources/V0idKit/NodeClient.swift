@@ -17,6 +17,7 @@ public actor NodeClient {
     private static let heartbeat: UInt64 = 5_000_000_000
     private static let maintainEvery: UInt64 = 4_000_000_000
     private static let retryCooldown: TimeInterval = 15   // 连不上的地址冷却多久再重试
+    private static let maxRangeRequest = 5_000            // 单次 QUERY_BLOCK_RANGE 最多补多少块（节点端上限 10_000，留余量分批）
 
     private let bootstrap: [String]
     private let myAddress: String
@@ -71,6 +72,7 @@ public actor NodeClient {
         if let saved = UserDefaults.standard.stringArray(forKey: "v0id-known-peers") {
             for url in saved { if let n = Self.normalize(url) { known.insert(n) } }
         }
+        loadCachedChain() // 读本地已同步的链——重开钱包不用每次都问节点要整条链
         maintainTask = Task { [weak self] in await self?.maintainLoop() }
     }
 
@@ -80,9 +82,46 @@ public actor NodeClient {
         maintainTask?.cancel()
         maintainTask = nil
         for url in Array(conns.keys) { disconnect(url) }
-        chain = []
+        // 注：chain 不再清空——已落盘且经哈希链校验，下次 start() 直接复用，只补新块。
         mempool.removeAll()
         lastPeers = -1
+    }
+
+    // ---- 本地链缓存（落盘）----
+    private static func chainFileURL() -> URL? {
+        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let v0idDir = dir.appendingPathComponent("v0idchain", isDirectory: true)
+        try? FileManager.default.createDirectory(at: v0idDir, withIntermediateDirectories: true)
+        return v0idDir.appendingPathComponent("light-chain.json")
+    }
+
+    private func loadCachedChain() {
+        guard let url = Self.chainFileURL(),
+              let data = try? Data(contentsOf: url),
+              let cached = try? JSONDecoder().decode([Block].self, from: data),
+              Self.verifyChainLink(cached, afterIndex: -1, tipHash: "")
+        else { return }   // 文件不存在/损坏/校验不过：当空缓存处理，退回冷启动整链同步
+        chain = cached
+    }
+
+    private func persistChain() {
+        guard let url = Self.chainFileURL(), let data = try? JSONEncoder().encode(chain) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// 校验一段区块能接到 afterIndex/tipHash 指定的链尾上：高度连续 + prevHash 衔接 + 逐块哈希自洽。
+    /// tipHash 为空串＝从创世块开始验（不查第一块的 prevHash）。用于本地缓存读回校验，也用于收到的新块。
+    private nonisolated static func verifyChainLink(_ blocks: [Block], afterIndex: Int, tipHash: String) -> Bool {
+        var prevIndex = afterIndex
+        var prevHash = tipHash
+        for b in blocks {
+            guard b.index == prevIndex + 1 else { return false }
+            if !prevHash.isEmpty, b.prevHash != prevHash { return false }
+            guard b.calcHash() == b.hash else { return false }
+            prevIndex = b.index
+            prevHash = b.hash
+        }
+        return true
     }
 
     /// 广播一笔已签名交易给**所有已建立**的连接。无可用连接则抛错。
@@ -267,19 +306,27 @@ public actor NodeClient {
     private func handleBlocks(_ blocks: [Block], conn: Conn) {
         guard let first = blocks.first else { return }
         if first.index == 0 {
-            // 整链（QUERY_ALL 回应）：更长则采纳（信任所连节点，符合规范 MVP）。
-            if blocks.count > chain.count { chain = blocks; emitChain(); removeMined(blocks) }
+            // 整链（QUERY_ALL 回应）：更长 + 哈希链校验通过才采纳，防伪造/损坏数据污染本地缓存。
+            guard blocks.count > chain.count, Self.verifyChainLink(blocks, afterIndex: -1, tipHash: "") else { return }
+            chain = blocks
+            emitChain(); removeMined(blocks); persistChain()
         } else {
-            // 增量 / 探测：能干净接到链顶则追加；否则若对方更高 → 只向该节点补拉整链。
+            // 增量 / 探测：能干净接到链顶且哈希自洽则追加；有缺口则只问缺的那一段（QUERY_BLOCK_RANGE），
+            // 不再整链重拉——这是"重开钱包不用每次全量同步"的关键：缺口通常只有几个块。
             var changed = false
             for nb in blocks {
-                if nb.index == chain.count && nb.prevHash == chain.last?.hash {
+                if nb.index < chain.count { continue } // 已有，跳过
+                if nb.index == chain.count, nb.prevHash == chain.last?.hash, nb.calcHash() == nb.hash {
                     chain.append(nb); changed = true
-                } else if nb.index >= chain.count {
-                    Self.rawSend(conn.ws, .queryAll); break
+                } else if nb.index == chain.count {
+                    break // 衔接不上或哈希校验失败：疑似分叉/篡改，本批停止
+                } else {
+                    let to = min(nb.index, chain.count + Self.maxRangeRequest - 1)
+                    Self.rawSend(conn.ws, .queryBlockRange(from: chain.count, to: to))
+                    break
                 }
             }
-            if changed { emitChain(); removeMined(blocks) }
+            if changed { emitChain(); removeMined(blocks); persistChain() }
         }
     }
 
@@ -338,10 +385,11 @@ private enum OutMsg: Encodable {
     case queryAll
     case queryLatest
     case queryPeers
+    case queryBlockRange(from: Int, to: Int)
     case tx(Transaction)
     case blocks([Block])
 
-    enum CodingKeys: String, CodingKey { case type, address, height, listen, tx, blocks }
+    enum CodingKeys: String, CodingKey { case type, address, height, listen, tx, blocks, from, to }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -354,6 +402,10 @@ private enum OutMsg: Encodable {
         case .queryAll:    try c.encode("QUERY_ALL", forKey: .type)
         case .queryLatest: try c.encode("QUERY_LATEST", forKey: .type)
         case .queryPeers:  try c.encode("QUERY_PEERS", forKey: .type)
+        case .queryBlockRange(let from, let to):
+            try c.encode("QUERY_BLOCK_RANGE", forKey: .type)
+            try c.encode(from, forKey: .from)
+            try c.encode(to, forKey: .to)
         case .tx(let tx):
             try c.encode("TX", forKey: .type)
             try c.encode(tx, forKey: .tx)

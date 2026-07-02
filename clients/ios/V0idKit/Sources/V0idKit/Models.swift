@@ -44,6 +44,20 @@ public struct Block: Codable, Identifiable, Hashable {
     public var hash: String
 
     public var id: Int { index }
+
+    /// 区块哈希：覆盖头部所有字段，与 packages/core/src/block.ts 的 calcBlockHash 逐字节一致。
+    /// 交易通过 merkleRoot 间接承诺。用于本地缓存/收到的新块的完整性校验。
+    public func calcHash() -> String {
+        Crypto.sha256Hex(CanonicalJSON.array([
+            .int(index),
+            .int(timestamp),
+            .string(prevHash),
+            .string(merkleRoot),
+            .int(difficulty),
+            .int(nonce),
+            .string(miner),
+        ]))
+    }
 }
 
 public extension Transaction {
