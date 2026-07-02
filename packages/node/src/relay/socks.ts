@@ -5,6 +5,24 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHs, bridgeChannelToSocket, type HsDeps } from './hsbridge.js';
+import { runPaywallClient } from './paywall.js';
+import type { MintToken } from '../mint/token.js';
+
+/**
+ * 一次选券结果：这批券（已在钱包内**内存预留**，并发连接不会再选到它们）+ commit/rollback。
+ * **券只有付款成功后才移出钱包**：调用方在 runPaywallClient 成功后 await commit()（落盘移出）；
+ * 付款失败/访客中断则 await rollback()（仅释放预留，券留钱包可重试）。二者互斥、各只调一次。
+ */
+export interface VoucherSelection {
+  vouchers: MintToken[];
+  /** 付款成功（收到 PAYOK）后调用：把这批券从钱包落盘移出。 */
+  commit(): Promise<void>;
+  /** 付款失败/中断后调用：释放这批券的预留（文件未改 → 券留钱包）。 */
+  rollback(): Promise<void>;
+}
+
+/** 券源：某付费 .v0id 站点要价 price 时，从本地钱包选一批面额和 ≥ price 的记名券。不足/无券应抛错（连接将被拒、不动券）。 */
+export type VoucherSource = (addr: string, price: number) => Promise<VoucherSelection>;
 
 /** 选路器：返回有序 3 跳 [守卫, 中继, 出口]。生产应做 guard 钉固 + 加权随机；v1 由调用方注入。 */
 export type HopPicker = () => HopSpec[];
@@ -48,6 +66,12 @@ export class SocksProxy {
     readonly host = '127.0.0.1',
     private hsDeps?: HsDeps, // 注入则 <地址>.v0id 经 rendezvous 连隐藏服务；不注入则 .v0id 返回 SOCKS 失败
     private onGuardFail?: (guard: HopSpec) => void, // 连守卫(hop0)失败时回调 → 调用方据此把该守卫标记不可达、下次切备份
+    private onHsFail?: (addr: string, reason: string) => void, // .v0id 连接失败时回调 → 调用方记下具体原因，供 GET /hs/lasterror 查询
+    // middle/exit EXTEND 失败时回调（kind 区分哪一跳；exit 失败时附上 middle 供调用方消歧「怪 middle 还是怪 exit」）——
+    // 调用方据此把链上目录里连不上/转不动的死中继计入可达性缓存，避免重试时反复挑中同一批死中继（同 hsbridge 的选路收敛）。
+    private onHopFail?: (hop: HopSpec, kind: 'middle' | 'exit', middle?: HopSpec) => void,
+    private onHopsProven?: (middle: HopSpec) => void, // 三跳全部建成时回调：middle 实测能转发，调用方可将其列为「已证骨干」
+    private voucherSource?: VoucherSource, // 注入则能访问付费 .v0id 站点（自动从钱包取券预付）；不注入时付费站点返回 SOCKS 失败
   ) {
     this.server = createServer((s) => this.handle(s).catch(() => s.destroy()));
     this.server.listen(port, host);
@@ -103,8 +127,19 @@ export class SocksProxy {
           this.onGuardFail?.(hops[0]); // 仅当连守卫(hop0)失败才回报 → 下次 pickHops 自动切钉住备份（不误伤并发新连接的钉固）
           throw e;
         }
-        await c.extend(hops[1]);
-        await c.extend(hops[2]);
+        try {
+          await c.extend(hops[1]);
+        } catch (e) {
+          this.onHopFail?.(hops[1], 'middle');
+          throw e;
+        }
+        try {
+          await c.extend(hops[2]);
+        } catch (e) {
+          this.onHopFail?.(hops[2], 'exit', hops[1]);
+          throw e;
+        }
+        this.onHopsProven?.(hops[1]); // 三跳建成：middle 实测能转发到 exit
         const ok = await c.beginStream(target, port);
         if (ok) {
           client = c;
@@ -146,13 +181,61 @@ export class SocksProxy {
       return void sock.destroy();
     }
     let channel;
+    let price: number | undefined;
     try {
-      channel = await connectHs(addr, this.hsDeps);
-    } catch {
+      ({ channel, price } = await connectHs(addr, this.hsDeps));
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`[hs-connect] ${addr} 失败: ${reason}`);
+      this.onHsFail?.(addr, reason);
       sock.write(reply(0x04)); // 主机不可达（服务未发布 / 取不到描述符 / 握手失败）
       return void sock.destroy();
     }
+    // 付费站点（描述符携带 price>0）：在隧道内先跑付费墙握手（乐观预付），**通过后才回 SOCKS 成功**，
+    // 让 curl 的 HTTP 请求只在付款后发出。放行全程链下（验签），不等出块 → 只多一个隧道往返。
+    let payokLeftover: Uint8Array = new Uint8Array(0); // PAYOK 帧后同 cell 里紧跟的服务方响应开头（须写给 sock，不丢）
+    if (price && price > 0) {
+      if (!this.voucherSource) {
+        this.onHsFail?.(addr, `站点需付费 ${price} $V0ID，但未配置券源`);
+        channel.close();
+        sock.write(reply(0x05));
+        return void sock.destroy();
+      }
+      let sel: VoucherSelection;
+      try {
+        sel = await this.voucherSource(addr, price); // 选券 + 内存预留（余额不足/钱包损坏→抛，未预留 → 无需 rollback）
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        this.onHsFail?.(addr, `付费失败：${reason}`);
+        channel.close();
+        sock.write(reply(0x05));
+        return void sock.destroy();
+      }
+      // 取券可能慢（读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。释放预留（券留钱包）。
+      if (sock.destroyed) {
+        await sel.rollback();
+        channel.close();
+        return;
+      }
+      try {
+        payokLeftover = await runPaywallClient(channel, sel.vouchers); // PAYERR/超时→抛
+      } catch (e) {
+        await sel.rollback(); // 付款被拒/超时 → 释放预留，券留钱包（服务方未核销）
+        const reason = e instanceof Error ? e.message : String(e);
+        this.onHsFail?.(addr, `付费失败：${reason}`);
+        channel.close();
+        sock.write(reply(0x05)); // 连接被拒（付费墙未通过）
+        return void sock.destroy();
+      }
+      // 付款成功（PAYOK）才把券落盘移出钱包。落盘失败不撤销放行（款已付）——只是钱包没更新，下次复用该券会被服务方双花拦截，自纠。
+      try {
+        await sel.commit();
+      } catch (e) {
+        console.error(`[voucher] 券钱包更新失败（已付款、仍放行 ${addr}）：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     sock.write(reply(0x00)); // 成功
+    if (payokLeftover.length) sock.write(Buffer.from(payokLeftover)); // 服务方合帧发来的响应开头，先于后续通道字节写给下游
     // 握手阶段读到的残留字节 = 隧道流开头，交给 bridge 在挂好监听后灌入通道（分片 + 字节序由 bridge 负责）。
     const leftover = r.done();
     bridgeChannelToSocket(channel, sock, new Uint8Array(leftover));

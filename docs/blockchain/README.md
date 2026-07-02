@@ -149,14 +149,14 @@ v0idchain/packages/
 └── web/    Vite + React 仪表盘 + 区块浏览器
 ```
 
-CLI 是**瘦客户端**：`start` 把节点跑起来，其余子命令通过节点的**本地 HTTP API**（仅 `127.0.0.1`，写接口需 Bearer 令牌 `api.token`，`0600`）操作运行中的节点。整链同步走 WebSocket（`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`，单帧 ≤ 64MB）。
+CLI 是**瘦客户端**：`start` 把节点跑起来，其余子命令通过节点的**本地 HTTP API**（仅 `127.0.0.1`，写接口需 Bearer 令牌 `api.token`，`0600`）操作运行中的节点。全节点整链同步仍走 WebSocket（`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`，单帧 ≤ 64MB）；钱包/索引器可用 `QUERY_HEADERS`、`QUERY_RECENT`、`QUERY_TX_PROOF`、`QUERY_ADDRESS_PROOFS` 做非共识的轻同步与按需历史回填。
 
 ### 延伸阅读
 
 - **[CLIENT-PROTOCOL.md](CLIENT-PROTOCOL.md)** — 跨实现互操作规范 + **金标准测试向量**（写任何非 Node 客户端必读：txid 预映像、签名、加密私信向量）。
 - **[WEBRTC-MESH-DESIGN.md](WEBRTC-MESH-DESIGN.md)** — 浏览器原生 P2P（WebRTC mesh）设计。
 - **[LABS.md](LABS.md)** — 6 个攻防动手实验。
-- **[RUNNING-A-NODE.md](RUNNING-A-NODE.md)** · **[TUTORIAL.md](TUTORIAL.md)**（[English](TUTORIAL.en.md)）。
+- **[RUNNING-A-NODE.md](RUNNING-A-NODE.md)**（[English](RUNNING-A-NODE.en.md)）· **[TUTORIAL.md](TUTORIAL.md)**（[English](TUTORIAL.en.md)）。
 
 ---
 

@@ -1,0 +1,60 @@
+name: "🐛 Bug report / 缺陷报告"
+description: "Report something that's broken / 报告一个坏掉的东西"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please search existing issues first.
+        感谢报告缺陷!请先搜一下已有 issue。
+  - type: dropdown
+    id: module
+    attributes:
+      label: "Module / 模块"
+      description: "Which part is affected? / 哪个部分受影响?"
+      options:
+        - "blockchain / 区块链 (packages/core, node, cli)"
+        - "v0idnet / 匿名网络 (onion, hidden service, relay)"
+        - "game / 链上游戏 (game-server, game-web)"
+        - "client / 客户端 (v0id Browser, wallet)"
+        - "docs / 文档"
+        - "other / 其他 / not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: "What happened? / 发生了什么?"
+      description: "What did you expect, and what happened instead? / 你期望什么,实际发生了什么?"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: "Steps to reproduce / 复现步骤"
+      description: "The exact commands / actions. / 精确的命令或操作。"
+      placeholder: |
+        1. corepack pnpm dev:node1
+        2. ...
+        3. see error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: "Node version & commit / 节点版本与 commit"
+      description: "Output of `node -v` and `git rev-parse --short HEAD` (or the release tag). / `node -v` 和 `git rev-parse --short HEAD`(或 release tag)。"
+      placeholder: "node v22.13.0 · abc1234 · v0id Browser 0.2.6"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: "OS / 操作系统"
+      placeholder: "macOS 15 / Ubuntu 24.04 / Windows 11"
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Logs / 日志"
+      description: "Relevant log output. Redact any private keys or tokens. / 相关日志。请抹掉私钥和 token。"
+      render: shell

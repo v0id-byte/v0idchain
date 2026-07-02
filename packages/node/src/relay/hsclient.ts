@@ -92,6 +92,10 @@ export class RdvChannel {
     this.dataCb = cb;
     for (const b of this.queue.splice(0)) cb(b);
   }
+  /** 摘除数据回调 → 后续 cell 重新入队（缓冲）。付费墙握手读完控制帧后调用，把信道无损交还给随后的字节桥接。 */
+  detachData(): void {
+    this.dataCb = null;
+  }
   /** 通道关闭（底层电路被销毁）通知。 */
   onClose(cb: () => void): void {
     this.closeCb = cb;
@@ -118,7 +122,7 @@ export async function connectHiddenService(
   build: BuildCircuit,
   dir: RelayDirectory,
   now: () => number = () => Math.floor(Date.now() / 1000),
-): Promise<RdvChannel> {
+): Promise<{ channel: RdvChannel; price?: number }> {
   const A = decodeV0idAddress(addr);
   if (!A) throw new Error('非法 .v0id 地址');
   const TP = timePeriod(now());
@@ -170,13 +174,14 @@ export async function connectHiddenService(
   const cookie = randomBytes(RDV_COOKIE_LEN);
   let rpCirc: CircuitClient | null = null;
   let rpRelayId = '';
-  for (const cand of rpOrder(relays, inner.introPoints)) {
+  const rpCandidates = rpOrder(relays, inner.introPoints);
+  for (const cand of rpCandidates) {
     try {
       rpCirc = await build(cand);
       rpRelayId = cand;
       break;
     } catch {
-      // 此 RP 建不通（死中继）→ 试下一个
+      // dead relay → try next
     }
   }
   if (!rpCirc) throw new Error('无可用会合点（RP 均不可达）');
@@ -225,7 +230,8 @@ export async function connectHiddenService(
       throw new Error('会合 ntor 认证失败（服务身份未通过）');
     }
     // 客户端：发用 encForward，收用 encBackward（与中继侧 forward=客户端→服务 一致）。
-    return new RdvChannel(rpCirc, keys.encForward, keys.encBackward);
+    // price 来自已验签的描述符内层（缺省=免费站点）→ 上层据此决定是否先跑付费墙握手。
+    return { channel: new RdvChannel(rpCirc, keys.encForward, keys.encBackward), price: inner.price };
   } catch (err) {
     for (const ic of introCircs) ic.close();
     rpCirc.close();

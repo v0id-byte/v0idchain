@@ -13,6 +13,7 @@ import {
   REFUND_PREFIX,
   UNSTAKE_PREFIX,
   SLASH_PREFIX,
+  REDEEM_PREFIX,
 } from './config.js';
 import type { Wallet } from './wallet.js';
 
@@ -29,17 +30,21 @@ export interface Transaction {
   txid: string; // = sha256(规范化 payload)
 }
 
-type TxPayload = Pick<Transaction, 'from' | 'to' | 'amount' | 'fee' | 'nonce' | 'timestamp' | 'memo' | 'burn'>;
+export type TransactionPayload = Pick<Transaction, 'from' | 'to' | 'amount' | 'fee' | 'nonce' | 'timestamp' | 'memo' | 'burn'>;
 
 /**
  * 参与签名 / txid 计算的规范化字段（顺序固定，保证各节点算出一致的 hash）。fee 一并计入 → 篡改手续费即破坏 txid。
  * burn **仅在 >0 时追加**到末尾：这样所有历史交易（无 burn 字段的转账/coinbase/创世）算出的哈希与升级前**逐字节一致**，
  * 创世 hash 与既有 checkpoint 全部不变 —— 既不重置链，又把销毁额牢牢绑进新消息交易的 txid（篡改销毁额即破 txid）。
  */
-function payloadHash(t: TxPayload): string {
+export function transactionPreimage(t: TransactionPayload): string {
   const fields: unknown[] = [t.from, t.to, t.amount, t.fee, t.nonce, t.timestamp, t.memo];
   if ((t.burn ?? 0) > 0) fields.push(t.burn);
-  return sha256Hex(JSON.stringify(fields));
+  return JSON.stringify(fields);
+}
+
+export function transactionPayloadHash(t: TransactionPayload): string {
+  return sha256Hex(transactionPreimage(t));
 }
 
 /** 普通转账：由钱包签名。fee 省略时自动按比例计算（minFeeFor(amount)），给多了打包更优先。 */
@@ -52,8 +57,8 @@ export function createTransaction(
   fee?: number,
 ): Transaction {
   const actualFee = fee ?? minFeeFor(amount);
-  const base: TxPayload = { from: wallet.address, to, amount, fee: actualFee, nonce, timestamp: Date.now(), memo };
-  const txid = payloadHash(base);
+  const base: TransactionPayload = { from: wallet.address, to, amount, fee: actualFee, nonce, timestamp: Date.now(), memo };
+  const txid = transactionPayloadHash(base);
   return { ...base, signature: sign(txid, wallet.privateKey), txid };
 }
 
@@ -69,15 +74,15 @@ export function createMessage(
   burn = MESSAGE_BURN,
   fee = MIN_FEE,
 ): Transaction {
-  const base: TxPayload = { from: wallet.address, to, amount: 0, fee, nonce, timestamp: Date.now(), memo: text, burn };
-  const txid = payloadHash(base);
+  const base: TransactionPayload = { from: wallet.address, to, amount: 0, fee, nonce, timestamp: Date.now(), memo: text, burn };
+  const txid = transactionPayloadHash(base);
   return { ...base, signature: sign(txid, wallet.privateKey), txid };
 }
 
 /** coinbase：每个区块第一笔，矿工收入 = 出块奖励 + 本块手续费总额（fees），无签名、自身不付费 */
 export function createCoinbase(minerAddress: string, blockIndex: number, fees = 0): Transaction {
   // nonce 用 blockIndex，保证不同高度的 coinbase txid 不同
-  const base: TxPayload = {
+  const base: TransactionPayload = {
     from: NULL_ADDRESS,
     to: minerAddress,
     amount: BLOCK_REWARD + fees,
@@ -86,12 +91,12 @@ export function createCoinbase(minerAddress: string, blockIndex: number, fees = 
     timestamp: Date.now(),
     memo: '',
   };
-  return { ...base, signature: '', txid: payloadHash(base) };
+  return { ...base, signature: '', txid: transactionPayloadHash(base) };
 }
 
 /** 创世预挖交易：固定参数 → 所有节点算出完全相同的 txid 与创世 hash */
 export function createGenesisTx(premineAddress: string): Transaction {
-  const base: TxPayload = {
+  const base: TransactionPayload = {
     from: NULL_ADDRESS,
     to: premineAddress,
     amount: GENESIS_PREMINE,
@@ -100,7 +105,7 @@ export function createGenesisTx(premineAddress: string): Transaction {
     timestamp: GENESIS_TIMESTAMP,
     memo: 'v0idChain genesis',
   };
-  return { ...base, signature: '', txid: payloadHash(base) };
+  return { ...base, signature: '', txid: transactionPayloadHash(base) };
 }
 
 export function isCoinbase(t: Transaction): boolean {
@@ -118,13 +123,14 @@ export function verifyTransaction(t: Transaction): boolean {
   if (!Number.isInteger(t.amount) || t.amount < 0 || t.amount > Number.MAX_SAFE_INTEGER) return false;
   if (!Number.isInteger(burn) || burn < 0 || burn > Number.MAX_SAFE_INTEGER) return false;
   // 空操作交易（既不转账 amount=0 又不销毁 burn=0）一律拒：转账须 amount>0，消息须 burn>0。
-  // 例外：红包 CLAIM/REFUND 与质押 UNSTAKE/SLASH 都是 amount=0（由共识从托管池支付/移交，不在本交易里转币）。
+  // 例外：红包 CLAIM/REFUND、质押 UNSTAKE/SLASH、铸币 REDEEM 都是 amount=0（由共识从托管池支付/移交，不在本交易里转币）。
   const zeroOk =
     typeof t.memo === 'string' &&
     (t.memo.startsWith(CLAIM_PREFIX) ||
       t.memo.startsWith(REFUND_PREFIX) ||
       t.memo.startsWith(UNSTAKE_PREFIX) ||
-      t.memo.startsWith(SLASH_PREFIX));
+      t.memo.startsWith(SLASH_PREFIX) ||
+      t.memo.startsWith(REDEEM_PREFIX));
   if (t.amount === 0 && burn === 0 && !zeroOk) return false;
   // 手续费同样必须是整数且在安全范围内（同样的浮点累积误差会撕裂共识）。此处只判范围，最低值按类型在下方判。
   if (!Number.isInteger(t.fee) || t.fee < 0 || t.fee > Number.MAX_SAFE_INTEGER) return false;
@@ -133,7 +139,7 @@ export function verifyTransaction(t: Transaction): boolean {
   if (typeof t.memo !== 'string' || t.memo.length > MAX_MEMO * 2 || [...t.memo].length > MAX_MEMO) {
     return false;
   }
-  if (payloadHash(t) !== t.txid) return false; // txid 必须等于内容哈希（含 fee/burn），篡改金额/手续费/销毁额即被识破
+  if (transactionPayloadHash(t) !== t.txid) return false; // txid 必须等于内容哈希（含 fee/burn），篡改金额/手续费/销毁额即被识破
   // coinbase / 创世：无签名，金额>0，且自身既不付手续费也不销毁（fee 与 burn 必须为 0）
   if (isCoinbase(t)) return t.fee === 0 && burn === 0 && t.amount > 0;
   if (t.fee < minFeeFor(t.amount)) return false; // 普通交易：强制比例+保底手续费

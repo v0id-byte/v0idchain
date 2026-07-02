@@ -22,6 +22,7 @@ import {
 import { CircuitClient, type HopSpec } from './client.js';
 import { connectHiddenService, RdvChannel, type BuildCircuit, type RelayDirectory } from './hsclient.js';
 import { HiddenService, type RendezvousHandler } from './hsservice.js';
+import { runPaywallServer, type VoucherVerifier } from './paywall.js';
 import { RelayReachability } from './reachability.js';
 import type { GuardManager } from './guards.js';
 import { resolveRelayWsUrl } from './relaynode.js';
@@ -41,6 +42,19 @@ const HOP_TIMEOUT_MS = 6000;
 export interface HsDeps {
   buildCircuit: BuildCircuit;
   directory: RelayDirectory;
+}
+
+/**
+ * 私有/回环 IP 的中继（如浏览器守护进程注册的 127.0.0.1）本机 WS 探测通过，但外部 AWS 中继无法拨通对方的
+ * localhost，进入 pool 会虚增 usableCount → markBad 误判良好中继。仅限电路构建过滤；directory() 仍返回全量。
+ * 导出供 rolemanager.ts 的 SOCKS pickHops 复用同一份过滤逻辑（两处选路必须同款口径，避免各判各的漂移）。
+ */
+export function isRoutableHost(host: string): boolean {
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false;
+  const p = host.split('.');
+  if (p.length !== 4) return true; // IPv6 or hostname → keep
+  const [a, b] = p.map(Number);
+  return !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
 }
 
 /**
@@ -75,9 +89,9 @@ export function makeHsDeps(
   const buildCircuit: BuildCircuit = async (exitRelayId: string) => {
     // 链上目录会**永久**累积历史中继注册（latest-wins，无法注销）：含本机自测发布的 127.0.0.1、早下线 / 被防火墙挡的
     // 公网中继等纯污染。随机选路一旦撞上死中继，EXTEND 即被守卫秒拆(DESTROY)或拨号黑洞挂死 → 浏览失败。两道防线：
-    // ① 主动探测 + 实测转发判负，缓存出“真能转发”的可达集（reachability：WS 探测剔连不通的，建路失败回灌剔转不动的）；
+    // ① 主动探测 + 实测转发判负，缓存出”真能转发”的可达集（reachability：WS 探测剔连不通的，建路失败回灌剔转不动的）；
     // ② 可达集内仍可能有 hairpin/瞬断 → 逐个试 middle、坏的靠 HOP_TIMEOUT 快速放弃换下一个，直到拼出活电路。
-    const pool = dir();
+    const pool = dir().filter((d) => isRoutableHost(d.host));
     await reachability.refresh(pool); // 探测可达性（暖缓存即时返回，冷缓存一次并行探测 ~5s）
     const sanitizedPool = await sanitizedRelayPool(pool, opts?.allowPrivateHosts ?? false);
     const all = reachability.knownUsable(sanitizedPool);
@@ -109,6 +123,7 @@ export function makeHsDeps(
       // 中段候选：除 guard、exit 外的可达中继，洗牌后逐个试。死/防火墙/hairpin 中继靠 HOP_TIMEOUT 快速放弃换下一个。
       const middles = shuffle(all.filter((d) => d.address !== guard.address && d.address !== exitRelayId));
       let guardDead = false;
+      let exitFails = 0; // 「已证骨干」middle 仍到不了 exit 的次数 → 多次即判 exit 端点本身死（防火墙/下线），换守卫无益
       for (const middle of middles.slice(0, MIDDLE_TRIES)) {
         const c = new CircuitClient();
         try {
@@ -143,9 +158,18 @@ export function makeHsDeps(
           // 走通再回头判负（见上）；整条建路都没走通则不冤枉任何 middle（避免一个坏 exit 把好 middle 逐个误剔，最终把
           // 可达集压到只剩坏 exit、令到好 exit 的建路也失败）。
           exitExtendFailed.add(middle.address);
+          // middle 连得上但到不了 exit。**消歧**（关键修复）：若 middle 是**已证骨干**(能转发) → 问题在 exit 端点(死/被防火墙挡)，
+          // 计 exitFails 但**绝不**误判负这个好 middle；否则 middle 自身可疑(连得上但转不动 hairpin/旧版) → 判负它。
+          if (reachability.isProven(middle.address)) exitFails++;
+          else if (reachability.usableCount(pool) > 3) reachability.markBad(middle.address);
           lastErr = e;
           c.close();
         }
+      }
+      // ≥2 个已证骨干 middle 都到不了这个 exit → 基本是 exit 端点死了 → 判负 exit（让上层快速换 HSDir/intro/RP），换守卫无益。
+      if (exitFails >= 2) {
+        if (reachability.usableCount(pool) > 3) reachability.markBad(exit.address);
+        break;
       }
       if (!guardDead) failed.add(guard.address); // 这个守卫把 middle 都试遍仍不成 → 换守卫
     }
@@ -199,13 +223,21 @@ const HS_CONNECT_ATTEMPTS = 4;
  * 单次尝试封顶 HS_ATTEMPT_TIMEOUT_MS（杜绝半死服务吊死 SOCKS 连接），失败则换新电路重试至多 HS_CONNECT_ATTEMPTS 次
  * （多步会合经 CF 隧道偶发抖动 → 重来一次大概率即通）。全部失败才抛错（上层回 SOCKS 失败）。
  */
-export async function connectHs(addr: string, deps: HsDeps): Promise<RdvChannel> {
+export async function connectHs(
+  addr: string,
+  deps: HsDeps,
+  opts?: { deadlineMs?: number }, // 可选总预算：多次重试合计不超过它（付费墙在线核销热路径用它把总时长压到客户端付费超时之内，防慢速会合迟到成功后已花券却无人接）
+): Promise<{ channel: RdvChannel; price?: number }> {
+  const start = Date.now();
   let lastErr: unknown;
   for (let attempt = 0; attempt < HS_CONNECT_ATTEMPTS; attempt++) {
+    // 有总预算时：单次尝试封顶取 min(常规单次上限, 剩余预算)；预算耗尽则停止重试（不再新起一轮可能迟到成功的会合）。
+    const remaining = opts?.deadlineMs !== undefined ? opts.deadlineMs - (Date.now() - start) : HS_ATTEMPT_TIMEOUT_MS;
+    if (remaining <= 0) break;
     try {
       return await withAttemptTimeout(
         connectHiddenService(addr, deps.buildCircuit, deps.directory),
-        HS_ATTEMPT_TIMEOUT_MS,
+        Math.min(HS_ATTEMPT_TIMEOUT_MS, remaining),
       );
     } catch (e) {
       lastErr = e; // 本次（新电路）失败 → 重试
@@ -254,6 +286,8 @@ export interface ServeHiddenServiceOptions {
   target: { host: string; port: number }; // 隐藏服务背后的本机 TCP 落地（每个会合通道连一次它）
   deps: HsDeps; // 选路器 + 名录
   numIntros?: number; // 引入点数量（默认 3）
+  price?: number; // 可选：付费墙价格（$V0ID/连接）。设了则每条通道桥接到 target 前先跑付费墙握手（需 verifier）
+  verifier?: VoucherVerifier; // 验券+核销策略；price 设了必须提供。本地 VoucherAcceptor（A.1）或在线 makeOnlineVerifier（A.2 第三方）
   onError?: (err: unknown) => void; // 单个落地连接出错的可观察回调（默认吞掉）
 }
 
@@ -265,19 +299,43 @@ export interface ServeHiddenServiceOptions {
  */
 export async function serveHiddenService(
   opts: ServeHiddenServiceOptions,
-): Promise<{ address: string; stop: () => void; getConnCount: () => number }> {
+): Promise<{ address: string; stop: () => void; getConnCount: () => number; getPaidCount: () => number }> {
+  const priced = !!(opts.price && opts.price > 0);
+  // 设了价必须有验券器：否则描述符对外宣称收费、服务却无人验券 → 忽略价的客户端白嫖、守规客户端因收不到 PAYOK 反而失败。
+  if (priced && !opts.verifier) throw new Error('serveHiddenService: 设了 price 必须提供 verifier（否则描述符宣称收费但无人验券）');
   const identityFile = opts.identityKey ? `hs-${opts.identityKey}.json` : 'hs.json';
   const { seed, onion } = loadOrCreateHsIdentity(opts.dataDir, identityFile);
   let connCount = 0;
+  let paidCount = 0;
   const handler: RendezvousHandler = (channel) => {
     connCount++;
-    // 每个成功会合 → 连一次本机落地；连不上就关通道（服务进程没在监听 target）。
+    // **先连本机 target（预连）再验券**：target 挂了就别验券——否则会花掉客户端的券却给不出服务（backend 宕机时白烧券）。
+    // 免费站点：连上即桥接（行为不变）。付费站点：target 就绪后才跑付费墙握手（验券+PAYOK+核销），backend 未就绪则通道直接关、券未被花。
     const sock = connect(opts.target.port, opts.target.host);
-    sock.on('connect', () => bridgeChannelToSocket(channel, sock));
+    let handled = false;
+    sock.on('connect', () => {
+      handled = true;
+      if (!priced) return void bridgeChannelToSocket(channel, sock);
+      runPaywallServer(channel, opts.price!, opts.verifier!)
+        .then((res) => {
+          if (!res.paid) {
+            channel.close();
+            sock.destroy();
+            return;
+          }
+          paidCount++;
+          if (res.leftover.length) sock.write(Buffer.from(res.leftover)); // 付费握手后残留(A.1 正常空)→先写目标保字节序
+          bridgeChannelToSocket(channel, sock);
+        })
+        .catch(() => {
+          channel.close();
+          sock.destroy();
+        });
+    });
     sock.on('error', (e) => {
-      opts.onError?.(e);
+      opts.onError?.(e); // target 连不上 → 关通道；付费站点此时**尚未验券** → 客户端的券没被花
       channel.close();
-      sock.destroy();
+      if (!handled) sock.destroy();
     });
   };
   const svc = new HiddenService({
@@ -287,9 +345,10 @@ export async function serveHiddenService(
     dir: opts.deps.directory,
     handler,
     numIntros: opts.numIntros,
+    price: opts.price,
   });
   await svc.start();
-  return { address: svc.address, stop: () => svc.stop(), getConnCount: () => connCount };
+  return { address: svc.address, stop: () => svc.stop(), getConnCount: () => connCount, getPaidCount: () => paidCount };
 }
 
 /** 从 <dataDir>/<filename> 读回 hs 身份（种子 + 服务 onion 私钥）；不存在则生成并落盘（0600）。 */

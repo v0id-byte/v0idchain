@@ -4,11 +4,14 @@
 // 落盘由各端自理（浏览器用 localStorage，见客户端），不依赖 storage 模块。
 export * from './config.js';
 export * from './crypto.js';
+export * from './bdhke.js';
 export * from './onion.js';
 export * from './onioncell.js';
 export * from './wallet.js';
 export * from './transaction.js';
 export * from './block.js';
+export * from './light.js';
+export * from './client-protocol.js';
 export * from './blockchain.js';
 export * from './market.js';
 export * from './messages.js';

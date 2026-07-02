@@ -1,9 +1,13 @@
 // 本地 HTTP 控制接口：CLI 子命令（send/balance/mine…）通过它和运行中的节点对话。
 // 用 node:http，零额外依赖。只监听 127.0.0.1。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor } from '@v0idchain/core';
+import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor, computeMintState } from '@v0idchain/core';
 import type { V0idNode } from './node.js';
 import type { RoleManager } from './relay/rolemanager.js';
+
+const MAX_LIGHT_BLOCK_RANGE = 10_000;
+const MAX_HEADER_RANGE = 100_000;
+const MAX_ADDRESS_PROOF_SPAN = 100_000;
 
 function readBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve) => {
@@ -57,6 +61,41 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             return json(200, node.info());
           case '/chain':
             return json(200, node.bc.chain);
+          case '/tip':
+            // 轻量高度探针（无需令牌，与 /info 同级）：客户端本地已缓存区块时，
+            // 用它判断有没有新块，而不必每次都拉整条链或整段 headers。
+            return json(200, { height: node.bc.height, hash: node.bc.chain[node.bc.height]?.hash ?? '' });
+          case '/headers': {
+            const from = Number(url.searchParams.get('from') ?? 0);
+            const requestedTo = url.searchParams.has('to') ? Number(url.searchParams.get('to')) : node.bc.height;
+            if (!Number.isInteger(from) || !Number.isInteger(requestedTo) || from < 0 || requestedTo < from) {
+              return json(400, { error: 'from/to 必须是合法高度范围' });
+            }
+            const to = Math.min(requestedTo, from + MAX_HEADER_RANGE - 1);
+            return json(200, { from, to, total: node.bc.chain.length, headers: node.headers(from, to) });
+          }
+          case '/blocks': {
+            const from = Number(url.searchParams.get('from'));
+            const to = Number(url.searchParams.get('to'));
+            if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) {
+              return json(400, { error: 'from/to 必须是合法高度范围' });
+            }
+            const cappedTo = Math.min(to, from + MAX_LIGHT_BLOCK_RANGE - 1);
+            return json(200, { from, to: cappedTo, total: node.bc.chain.length, blocks: node.blockRange(from, cappedTo) });
+          }
+          case '/recent': {
+            const maxBlocks = Number(url.searchParams.get('maxBlocks') ?? 10_000);
+            const minTimestamp = Number(url.searchParams.get('minTimestamp') ?? 0);
+            if (!Number.isInteger(maxBlocks) || maxBlocks < 1 || !Number.isFinite(minTimestamp)) {
+              return json(400, { error: 'maxBlocks 必须是正整数，minTimestamp 必须是数字' });
+            }
+            return json(200, {
+              maxBlocks: Math.min(maxBlocks, MAX_LIGHT_BLOCK_RANGE),
+              minTimestamp,
+              total: node.bc.chain.length,
+              blocks: node.recentBlocks(Math.min(maxBlocks, MAX_LIGHT_BLOCK_RANGE), minTimestamp),
+            });
+          }
           case '/mempool':
             return json(200, node.bc.mempool);
           case '/peers':
@@ -73,17 +112,34 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             return json(200, node.names());
           case '/relays':
             return json(200, node.relays());
+          case '/relays/count': {
+            // 中继数量（只读、无需令牌，与 /relays 同级）：区分「链上注册数」与「当前可达数」，
+            // 前者只增不减（早下线的中继无法从 latest-wins 目录里注销），单独展示会显得虚高。
+            // 未接 RoleManager（无可达性探测缓存）→ 只报注册数，reachable 给 null（前端据此不展示第二个数字）。
+            if (!roles) return json(200, { registered: node.relays().length, reachable: null });
+            return json(200, await roles.liveRelayCount());
+          }
           case '/roles':
             // 角色状态（只读、无需令牌，与 /info 同级）：GUI 据此渲染中继/隐藏服务/挖矿开关。
             // 未接 RoleManager 时回全 off 的占位形，调用方无须区分。
             return json(200, roles?.status() ?? {
               socks: { on: false, port: null },
-              relay: { on: false, port: null, address: null, circuits: 0, published: false },
+              relay: { on: false, port: null, address: null, circuits: 0, published: false, reachableSelf: null, reachableSelfAt: null, advertiseHost: '127.0.0.1', advertisePort: 0 },
               hsList: [],
               mine: { on: false, intervalMs: null },
             });
+          case '/hs/lasterror': {
+            // 最近一次 .v0id SOCKS 连接失败的具体原因（只读、无需令牌，与 /roles 同级）：GUI 拿 ERR_SOCKS_CONNECTION_FAILED
+            // 后查它、把 Chromium 通用错误页换成中文原因。未接 RoleManager 或无记录 → 404。
+            const addr = url.searchParams.get('addr') || '';
+            const err = roles?.hsError(addr);
+            return err ? json(200, err) : json(404, { error: 'not found' });
+          }
           case '/redpackets':
             return json(200, node.redPackets());
+          case '/mint/reserve':
+            // 铸币厂链上储备（只读、无需令牌）：累计充值 − 累计兑现 = 偿付能力证明，任何人可核（见 MINT-PROTOCOL）。
+            return json(200, computeMintState(node.bc.chain));
           case '/balance': {
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
@@ -99,6 +155,23 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             const txid = url.searchParams.get('txid') || '';
             if (!txid) return json(400, { error: '缺少 txid 参数' });
             return json(200, node.txStatus(txid));
+          }
+          case '/tx-proof': {
+            const txid = url.searchParams.get('txid') || '';
+            if (!/^[0-9a-f]{64}$/.test(txid)) return json(400, { error: 'txid 必须是 64 位 hex' });
+            const proof = node.txProof(txid);
+            return proof ? json(200, proof) : json(404, { error: 'not found' });
+          }
+          case '/address-proofs': {
+            const address = url.searchParams.get('address') || '';
+            if (!isValidAddress(address)) return json(400, { error: 'address 必须是合法地址' });
+            const from = Number(url.searchParams.get('from') ?? 0);
+            const requestedTo = url.searchParams.has('to') ? Number(url.searchParams.get('to')) : node.bc.height;
+            if (!Number.isInteger(from) || !Number.isInteger(requestedTo) || from < 0 || requestedTo < from) {
+              return json(400, { error: 'from/to 必须是合法高度范围' });
+            }
+            const to = Math.min(requestedTo, from + MAX_ADDRESS_PROOF_SPAN - 1);
+            return json(200, { address, from, to, proofs: node.addressProofs(address, from, to) });
           }
         }
       }
@@ -202,12 +275,27 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           case '/relay/stop':
             if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
             try { return json(200, await roles.stopRelay()); } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
+          case '/relay/selfcheck':
+            // 令牌门控（与其它角色控制同级）：会触发一次真实出站探测，不应任何本机进程都能不经授权触发。
+            if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
+            try { const ok = await roles.selfCheckReachable(); return json(200, { ok, ...roles.status() }); }
+            catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
           case '/hs/start': {
             if (!roles) return json(400, { error: '本节点未启用角色控制（RoleManager 未接线）' });
-            const host = String(body.host ?? '');
-            const hport = Number(body.port);
-            if (!host || !Number.isInteger(hport) || hport < 1 || hport > 65535) {
-              return json(400, { error: 'hs 需合法 host 与 port（如 {"host":"127.0.0.1","port":8080}）' });
+            // 落地二选一：{host,port} 外部后端，或 staticDir 零后端（内置静态文件夹托管，见 staticserve.ts）。
+            const hasHostPort = body.host !== undefined || body.port !== undefined;
+            const staticDir = typeof body.staticDir === 'string' && body.staticDir ? body.staticDir : undefined;
+            if (hasHostPort === !!staticDir) {
+              return json(400, { error: '需二选一：{"host","port"}（外部后端）或 {"staticDir"}（本地文件夹零后端）' });
+            }
+            let target: { host: string; port: number } | undefined;
+            if (hasHostPort) {
+              const host = String(body.host ?? '');
+              const hport = Number(body.port);
+              if (!host || !Number.isInteger(hport) || hport < 1 || hport > 65535) {
+                return json(400, { error: 'hs 需合法 host 与 port（如 {"host":"127.0.0.1","port":8080}）' });
+              }
+              target = { host, port: hport };
             }
             let intros: number | undefined;
             if (body.intros !== undefined) {
@@ -216,7 +304,7 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             }
             const hsName = typeof body.name === 'string' ? body.name : '';
             try {
-              const { id, address } = await roles.startHs({ host, port: hport }, { name: hsName, intros });
+              const { id, address } = await roles.startHs(target, { name: hsName, intros, staticDir });
               return json(200, { id, address });
             } catch (e) { return json(409, { error: e instanceof Error ? e.message : String(e) }); }
           }

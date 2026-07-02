@@ -193,6 +193,7 @@ export interface IntroPoint {
 interface DescInner {
   introPoints: IntroPoint[];
   serviceOnionPubHex: string;
+  price?: number; // 可选：付费墙价格（$V0ID/连接）。缺省=免费站点。进签名 → 价格对该 .v0id 地址可信、不可篡改。
 }
 
 /** 链上/DHT 里流通的描述符外壳（全 hex/数字，可 JSON 序列化）。 */
@@ -236,10 +237,13 @@ export function buildDescriptor(
   introPoints: IntroPoint[],
   serviceOnionPubHex: string,
   rev = 0,
+  price?: number,
 ): Descriptor {
   const A = identityPub(seed);
   const { Ap } = blindSecret(seed, TP);
-  const inner = utf8ToBytes(JSON.stringify({ introPoints, serviceOnionPubHex }));
+  const inner = utf8ToBytes(
+    JSON.stringify({ introPoints, serviceOnionPubHex, ...(price !== undefined ? { price } : {}) }),
+  );
   const descKey = descKeyFrom(A, TP);
   const nonce = randomBytes(24);
   const ct = xchacha20poly1305(descKey, nonce).encrypt(inner);

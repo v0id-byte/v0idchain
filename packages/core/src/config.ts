@@ -130,6 +130,10 @@ export const RED_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '1';
 /** 质押托管地址：STAKE 锁定的押金记到这里（不可花，等价于“质押合约账户”）。与红包托管 '…1' 区分（'…2'）。 */
 export const STAKE_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '2';
 
+// ---- 央行电子现金铸币厂托管（Phase A：中继激励 + 代币价值扩展的统一支付层，软分叉）----
+/** 铸币厂托管地址（金库/储备）：充值锁进这里、兑现从这里出。与红包 …1 / 质押 …2 区分（…3）。详见下方 MINT_* 常量。 */
+export const MINT_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '3';
+
 /**
  * 质押共识激活高度。该高度前，`STAKE|`/`UNSTAKE|`/`SLASH|` 备注和 `…2` 托管地址都按历史普通交易处理
  * （amount=0 的新边界仍拒绝），避免升级节点重放老链时把历史普通 memo/转账 retroactive 地解释成质押操作。
@@ -138,10 +142,10 @@ export const STAKE_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '2';
 export const STAKING_ACTIVATION_HEIGHT = 16_000;
 
 /**
- * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址。
+ * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址 + 铸币厂托管地址。
  * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”）。
  */
-export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS, STAKE_ESCROW_ADDRESS]);
+export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS, STAKE_ESCROW_ADDRESS, MINT_ESCROW_ADDRESS]);
 /** 三种红包操作的 memo 前缀。RED 是“自转 amount=总额 + memo”；CLAIM/REFUND 是 amount=0 + memo。 */
 export const RED_PREFIX = 'RED|'; // 发红包：RED|<份数>|<r|e>（r=拼手气随机, e=均分）
 export const CLAIM_PREFIX = 'CLAIM|'; // 抢红包：CLAIM|<红包txid>
@@ -232,3 +236,39 @@ export const SLASH_FRACTION = 0.1;
  * 主网经济体量上来后按需调大；它不进共识、改它不分叉。
  */
 export const REWARD_EPOCH_POOL = 5;
+
+// ---- 央行电子现金铸币厂（Phase A：中继激励 + 代币价值扩展的统一支付层，软分叉）----
+// 资金流：用户充值(链上→托管) → 央行发券(链下无 gas) → 用户交券给服务方(链下·加密隧道内) → 服务方兑现(链上·抽成回国库)。
+// 链上共识只管一个「余额公开的金库」：充值进托管、兑现从托管出、抽成回国库，并强制「兑现总额 ≤ 储备」→ 偿付能力链上可验证。
+// 发券/验券在链下守护进程（Phase A 记名券；Phase B 升级 BDHKE 盲签 → 运营者密码学上无法关联充值者↔兑现券 = 匿名优先）。
+// 两种操作（建在普通交易 + memo 之上，旧节点不认 → 软分叉，边界同红包/质押）：
+//   充值 DEPOSIT：转给托管地址（to==MINT_ESCROW_ADDRESS）amount=充值额，memo `MINT|DEPOSIT`。
+//                 旧节点当普通转账锁进托管（余额效果一致）→ 不静默分叉。
+//   兑现 REDEEM ：amount=0，memo `REDEEM|<面额>`，收款=tx.to。**仅 MINT_ADDRESS 签发**（同 SLASH 仅度量者）。
+//                 从托管付「面额 − 抽成」给服务方、抽成回国库；amount=0 新边界，旧节点直接拒。
+/** 充值备注：转给 MINT_ESCROW_ADDRESS + 此备注（精确匹配、不带关联数据 → 利于匿名）。 */
+export const MINT_DEPOSIT_PREFIX = 'MINT|DEPOSIT';
+/** 兑现备注前缀：REDEEM|<面额>（amount=0，仅 MINT_ADDRESS 签发，收款=tx.to）。 */
+export const REDEEM_PREFIX = 'REDEEM|';
+
+/**
+ * 铸币厂发行/兑现授权地址（央行签发者）。谁持有其私钥，谁就能从托管兑现（= 有权支配全部储备），
+ * 故这里只放**地址/公钥**，其**私钥绝不进仓库**——纪律同 MEASURER_ADDRESS / 国库，但风险更高（掌钥即可提走全部储备）。
+ * ⚠️ 当前为**占位地址**（生成时即弃私钥 → 激活前无人可兑现，是安全默认）。启用真网前，运营者须生成离线钱包并 rotate 本常量（全网一致）。
+ */
+export const MINT_ADDRESS = '0x4d3ea042ecf06ba86cc5366e048cebd0f7d63a7592fce3f7d5cb7592cb952732';
+
+/**
+ * 兑现抽成率（基点，10000 bps = 100%）：服务方兑现面额 X 时，floor(X × MINT_FEE_BPS / 10000) 回流国库
+ * （→ reward-epoch 养中继，实现「用量手续费回流中继」闭环），服务方实得 X − 抽成。取 500（5%）小额平台费起步。
+ * 这是**共识常量**（进 applyTx 的兑现拆分），改它即软分叉（全网须一致）。
+ */
+export const MINT_FEE_BPS = 500;
+
+/**
+ * 铸币厂共识激活高度。该高度前，`MINT|DEPOSIT`/`REDEEM|` 备注与 `…3` 托管地址一律按历史普通交易处理
+ * （amount=0 的 REDEEM 新边界仍拒），避免升级节点重放老链时把历史交易 retroactive 误判成铸币操作。
+ * ⚠️ 占位值 30000 —— **合并/部署前必须确认它 ≥ 当前实时链高 + 升级窗口**（同 STAKING_ACTIVATION_HEIGHT=16000 的选法）；
+ * 否则若已被链高越过会有 retroactive 激活风险（尽管 …3 与这些 memo 历史上从未出现，实际风险极小）。
+ */
+export const MINT_ACTIVATION_HEIGHT = 30_000;

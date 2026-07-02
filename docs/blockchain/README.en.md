@@ -30,7 +30,7 @@ A small chain that genuinely networks and lets you transfer with friends. Coins 
 
 ### Quick start
 
-> **Full install steps (incl. Node.js upgrade) → [RUNNING-A-NODE.md](RUNNING-A-NODE.md); a command-by-command walkthrough of transfers / marketplace / encrypted DMs / red packets / wallet backup → [TUTORIAL.en.md](TUTORIAL.en.md).** Below is the cheat-sheet version.
+> **Full install steps (incl. Node.js upgrade) → [RUNNING-A-NODE.en.md](RUNNING-A-NODE.en.md); a command-by-command walkthrough of transfers / marketplace / encrypted DMs / red packets / wallet backup → [TUTORIAL.en.md](TUTORIAL.en.md).** Below is the cheat-sheet version.
 
 **Prereq: Node.js ≥ v22.13** (required by `pnpm@9.15.0`).
 
@@ -149,14 +149,14 @@ v0idchain/packages/
 └── web/    Vite + React dashboard + block explorer
 ```
 
-The CLI is a **thin client**: `start` runs a node; the other subcommands drive a running node through its **local HTTP API** (`127.0.0.1` only; mutating endpoints require a Bearer token `api.token`, `0600`). Full-chain sync rides WebSocket (`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`, single frame ≤ 64MB).
+The CLI is a **thin client**: `start` runs a node; the other subcommands drive a running node through its **local HTTP API** (`127.0.0.1` only; mutating endpoints require a Bearer token `api.token`, `0600`). Full nodes still sync full chains over WebSocket (`HELLO` / `QUERY_ALL` / `BLOCKS` / `TX` / `PEERS`, single frame ≤ 64MB); wallets/indexers can use `QUERY_HEADERS`, `QUERY_RECENT`, `QUERY_TX_PROOF`, and `QUERY_ADDRESS_PROOFS` for non-consensus light sync and on-demand historical backfill.
 
 ### Further reading
 
 - **[CLIENT-PROTOCOL.md](CLIENT-PROTOCOL.md)** — cross-implementation interop spec + **golden test vectors** (required for any non-Node client: the txid preimage, signing, encrypted-DM vectors).
 - **[WEBRTC-MESH-DESIGN.md](WEBRTC-MESH-DESIGN.md)** — browser-native P2P (WebRTC mesh) design.
 - **[LABS.md](LABS.md)** — 6 hands-on attack/defense experiments.
-- **[RUNNING-A-NODE.md](RUNNING-A-NODE.md)** · **[TUTORIAL.en.md](TUTORIAL.en.md)** ([中文](TUTORIAL.md)).
+- **[RUNNING-A-NODE.en.md](RUNNING-A-NODE.en.md)** ([中文](RUNNING-A-NODE.md)) · **[TUTORIAL.en.md](TUTORIAL.en.md)** ([中文](TUTORIAL.md)).
 
 ---
 

@@ -91,7 +91,7 @@ async function main() {
   const sentPlaintext = 'hello hidden service';
 
   // ---- 客户端侧：只知 address ----
-  const ch = await withTimeout(connectHiddenService(svc.address, buildCircuit, directory), 15000, 'connectHiddenService');
+  const { channel: ch } = await withTimeout(connectHiddenService(svc.address, buildCircuit, directory), 15000, 'connectHiddenService');
   check('客户端仅凭 .v0id 地址建立会合通道', ch instanceof RdvChannel);
 
   // 收集服务回显

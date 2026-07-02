@@ -6,7 +6,7 @@
 // 安全：所有 webview 都在 'v0id' partition（无 persist 前缀），main.js 已对它 setProxy(socks5://…) +
 // deny-all 权限 + WebRTC 加固 + 拒绝弹窗；webview 无 Node、无 preload。地址校验经 window.v0id.validate
 //（主进程的 normalizeTarget）。书签经 window.v0id.bookmarks.*（主进程文件 I/O）。浏览历史默认不落盘。
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 let TAB_SEQ = 1;
 const newTab = () => ({
@@ -92,6 +92,27 @@ export function Browser({ status }) {
           loading: false,
           error: { code: e.errorCode, desc: e.errorDescription || '' },
         });
+        // -120 = ERR_SOCKS_CONNECTION_FAILED：.v0id 连接失败的具体原因（取不到描述符/无可用引入点/
+        // 会合超时/ntor 认证失败……）由守护进程记着，这里查一次拿真实原因，换掉下面那句通用猜测文案。
+        // 守护记录先于 SOCKS 失败应答写出（socks.ts 的 catch 里先 record 后 sock.write），故这里查询时记录必已就绪。
+        if (e.errorCode === -120 && window.v0id?.api?.hsLastError) {
+          let host = '';
+          try {
+            host = new URL(e.validatedURL).hostname;
+          } catch {
+            /* 解析失败就跳过，保留通用文案 */
+          }
+          if (host.endsWith('.v0id')) {
+            window.v0id.api
+              .hsLastError(host)
+              .then((res) => {
+                if (res?.ok && res.data?.reason) {
+                  patchTab(id, { error: { code: e.errorCode, desc: e.errorDescription || '', reason: res.data.reason } });
+                }
+              })
+              .catch(() => {});
+          }
+        }
       };
       const onNav = (e) => {
         // 页面内导航（含 SPA pushState）后刷新地址与前进/后退态。
@@ -224,11 +245,79 @@ export function Browser({ status }) {
     }
   };
 
+  // ---- 地址栏自动补全：按输入前缀/包含匹配书签 + 本次会话最近访问，书签优先 ----
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(-1);
+  const suggestions = useMemo(() => {
+    const q = activeTab.input.trim().toLowerCase();
+    if (!q) return [];
+    const bm = bookmarks
+      .filter((b) => b.url.toLowerCase().includes(q) || (b.title || '').toLowerCase().includes(q))
+      .map((b) => ({ url: b.url, title: b.title || b.url, star: true }));
+    const seen = new Set(bm.map((s) => s.url));
+    const rec = recent
+      .filter((u) => !seen.has(u) && u.toLowerCase().includes(q))
+      .map((u) => ({ url: u, title: u, star: false }));
+    return [...bm, ...rec].slice(0, 8);
+  }, [activeTab.input, bookmarks, recent]);
+
   // 地址栏受控输入
-  const onAddrChange = (e) => patchTab(activeId, { input: e.target.value });
-  const onAddrKey = (e) => {
-    if (e.key === 'Enter') navigate(activeTab.input);
+  const onAddrChange = (e) => {
+    patchTab(activeId, { input: e.target.value });
+    setShowSuggest(true);
+    setHighlightIdx(-1);
   };
+  const onAddrFocus = () => setShowSuggest(true);
+  // 延迟关闭：让下拉项的 onClick 先于 blur 触发（下拉项额外用 onMouseDown 阻止 blur 抢跑）。
+  const onAddrBlur = () => setTimeout(() => setShowSuggest(false), 120);
+  const onAddrKey = (e) => {
+    const list = showSuggest ? suggestions : [];
+    if (e.key === 'ArrowDown' && list.length) {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.min(i + 1, list.length - 1));
+      return;
+    }
+    if (e.key === 'ArrowUp' && list.length) {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.max(i - 1, -1));
+      return;
+    }
+    if (e.key === 'Escape') {
+      setShowSuggest(false);
+      return;
+    }
+    if (e.key === 'Enter') {
+      const pick = highlightIdx >= 0 ? list[highlightIdx] : null;
+      setShowSuggest(false);
+      navigate(pick ? pick.url : activeTab.input);
+    }
+  };
+  const pickSuggestion = (item) => {
+    setShowSuggest(false);
+    navigate(item.url);
+  };
+
+  // ---- 书签菜单（工具栏悬浮面板，任意标签页可用，不必回起始页）----
+  const [showBmMenu, setShowBmMenu] = useState(false);
+  const bmMenuRef = useRef(null);
+  useEffect(() => {
+    if (!showBmMenu) return undefined;
+    const onDocMouseDown = (e) => {
+      if (bmMenuRef.current && !bmMenuRef.current.contains(e.target)) setShowBmMenu(false);
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [showBmMenu]);
+  const openFromBmMenu = (url) => {
+    setShowBmMenu(false);
+    navigate(url);
+  };
+
+  // Electron 的 <webview> 是独立合成层，无论 CSS z-index 多高，只要它的区域和别的元素重叠，
+  // webview 永远画在最上面——书签悬浮面板 / 地址栏自动补全下拉都会向下延伸到 webview 舞台区域，
+  // 结果是「弹出来了但下半截被网页盖住看不见」。这里在下拉/面板打开期间临时隐藏当前 webview
+  // （复用非活动标签页已有的 .hidden 处理），关闭后恢复，而不是徒劳地调 CSS 层级。
+  const dropdownOpen = showBmMenu || (showSuggest && suggestions.length > 0);
 
   const showStart = !activeTab.url && !activeTab.error;
   const showError = !!activeTab.error;
@@ -278,15 +367,35 @@ export function Browser({ status }) {
         >
           {activeTab.loading ? '✕' : '⟲'}
         </button>
-        <input
-          className="addr"
-          value={activeTab.input}
-          onChange={onAddrChange}
-          onKeyDown={onAddrKey}
-          placeholder="xxxxx.v0id 或 http(s):// 链接"
-          spellCheck={false}
-          autoComplete="off"
-        />
+        <div className="addr-wrap">
+          <input
+            className="addr"
+            value={activeTab.input}
+            onChange={onAddrChange}
+            onKeyDown={onAddrKey}
+            onFocus={onAddrFocus}
+            onBlur={onAddrBlur}
+            placeholder="xxxxx.v0id 或 http(s):// 链接"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {showSuggest && suggestions.length > 0 && (
+            <div className="addr-suggest">
+              {suggestions.map((s, i) => (
+                <div
+                  key={s.url}
+                  className={'addr-suggest-item' + (i === highlightIdx ? ' active' : '')}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickSuggestion(s)}
+                >
+                  {s.star && <span className="as-star">★</span>}
+                  <span className="as-title">{s.title}</span>
+                  <span className="as-url">{s.url}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           className={'star' + (isBookmarked ? ' on' : '')}
           onClick={toggleBookmark}
@@ -295,6 +404,25 @@ export function Browser({ status }) {
         >
           {isBookmarked ? '★' : '☆'}
         </button>
+        <div className="bm-menu-wrap" ref={bmMenuRef}>
+          <button className="nav-btn" onClick={() => setShowBmMenu((v) => !v)} title="书签列表">
+            ☰
+          </button>
+          {showBmMenu && (
+            <div className="bookmark-popover">
+              <BookmarkList
+                bookmarks={bookmarks}
+                onOpen={openFromBmMenu}
+                onRemove={removeBookmark}
+                emptyText={
+                  <>
+                    还没有书签。访问一个 <code>.v0id</code> 地址后，点地址栏右侧的 <b>☆</b> 即可收藏。
+                  </>
+                }
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* webview 舞台：每个 tab 一个 webview，非活动的 CSS 隐藏 */}
@@ -303,7 +431,7 @@ export function Browser({ status }) {
           <webview
             key={t.id}
             ref={(el) => setViewRef(t.id, el)}
-            className={t.id === activeId ? '' : 'hidden'}
+            className={t.id === activeId && !dropdownOpen ? '' : 'hidden'}
             // partition 必须与 main.js 的 PARTITION 完全一致（'v0id'，内存型、无 persist 前缀），
             // 这样 main.js 给这个 session 设的 SOCKS 代理 + deny-all 权限 + WebRTC 加固才作用到它身上。
             partition="v0id"
@@ -333,7 +461,7 @@ export function Browser({ status }) {
               <p>{activeTab.error.desc}</p>
             ) : (
               <>
-                <p>未发布 / 取不到描述符 / 守护未就绪 / 链上中继不足。</p>
+                <p>{activeTab.error.reason || '未发布 / 取不到描述符 / 守护未就绪 / 链上中继不足。'}</p>
                 <p className="mono-err">
                   ({activeTab.error.code} {activeTab.error.desc})
                 </p>
@@ -349,10 +477,39 @@ export function Browser({ status }) {
         <span className={status.phase === 'error' ? 'err-text' : 'phase'}>{status.phaseText}</span>
         {status.chain && (
           <span>
-            {status.chain.syncing ? '同步中 · ' : ''}链高 {status.chain.height} · 对等 {status.chain.peers}
+            {status.chain.syncing ? '同步中 · ' : ''}链高 {status.chain.height} ·{' '}
+            <span title="对等＝当前连着的 P2P 广播连接数（同步区块/交易用，独立机制）；跟「中继」板块的可达数是两回事——开中继不会让这个数变大">
+              对等 {status.chain.peers}
+            </span>
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- 书签列表（起始页大网格 + 工具栏悬浮面板共用），空态文案由调用方传入 ----
+function BookmarkList({ bookmarks, onOpen, onRemove, emptyText }) {
+  if (bookmarks.length === 0) {
+    return <div className="empty">{emptyText}</div>;
+  }
+  return (
+    <div className="bm-list">
+      {bookmarks.map((b) => (
+        <div className="bm-card" key={b.url} onClick={() => onOpen(b.url)} title={b.url}>
+          <span
+            className="bm-del"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(b.url);
+            }}
+          >
+            ✕
+          </span>
+          <div className="bm-title">{b.title || b.url}</div>
+          <div className="bm-url">{b.url}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -365,29 +522,16 @@ function StartPage({ bookmarks, recent, externalMode, onOpen, onRemoveBookmark }
       <div className="sp-tag">匿名 · 去中心 · 隐藏服务浏览器</div>
 
       <h3>书签</h3>
-      {bookmarks.length === 0 ? (
-        <div className="empty">
-          还没有书签。访问一个 <code>.v0id</code> 地址后，点地址栏右侧的 <b>☆</b> 即可收藏到这里。
-        </div>
-      ) : (
-        <div className="bm-list">
-          {bookmarks.map((b) => (
-            <div className="bm-card" key={b.url} onClick={() => onOpen(b.url)} title={b.url}>
-              <span
-                className="bm-del"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemoveBookmark(b.url);
-                }}
-              >
-                ✕
-              </span>
-              <div className="bm-title">{b.title || b.url}</div>
-              <div className="bm-url">{b.url}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <BookmarkList
+        bookmarks={bookmarks}
+        onOpen={onOpen}
+        onRemove={onRemoveBookmark}
+        emptyText={
+          <>
+            还没有书签。访问一个 <code>.v0id</code> 地址后，点地址栏右侧的 <b>☆</b> 即可收藏到这里。
+          </>
+        }
+      />
 
       <h3>开始浏览</h3>
       <div className="empty">
