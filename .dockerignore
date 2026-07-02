@@ -1,0 +1,15 @@
+# Never copy host build artifacts or runtime state into the image
+node_modules
+**/node_modules
+dist
+**/dist
+.data
+.git
+.github
+.claude
+*.log
+.DS_Store
+audits/**/tmp
+
+# Not needed to run a node (large Electron client)
+clients

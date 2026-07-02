@@ -39,3 +39,12 @@ jobs:
 
       - name: Relay anti-replay test
         run: pnpm exec tsx scripts/antireplay-test.ts
+
+  docker:
+    name: docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build node image
+        run: docker build -t v0idchain:ci .
