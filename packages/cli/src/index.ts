@@ -7,6 +7,7 @@ import {
   V0idNode,
   startHttpApi,
   SocksProxy,
+  VoucherWallet,
   loadOrCreateOnionKey,
   RoleManager,
   Measurer,
@@ -143,6 +144,7 @@ program
   .option('--mixnet', 'Mixnet 模式(实验)：本中继逐跳混入随机延迟，抗全局被动观察者的时序相关（默认关；客户端 cover 暂需库级 startCover）', false)
   .option('--socks', '启动本地 SOCKS5 前端（普通程序经洋葱电路出网；亦支持 curl --socks5-hostname … <地址>.v0id）', false)
   .option('--socks-port <port>', 'SOCKS5 监听端口', '9050')
+  .option('--vouchers <path>', '给 SOCKS 前端配一个券钱包（JSON 数组 MintToken[]，即 `mint issue --out` 的产物）：访问付费 .v0id 站点时自动从中预付；不配则付费站点连接被拒')
   .option('--hs-target <host:port>', '托管一个 .v0id 隐藏服务，把进来的连接转发到本机 host:port（需链上≥3 中继）')
   .option('--hs-price <n>', '给托管的隐藏服务设付费墙：每条连接需先递面额和 ≥ n $V0ID 的记名券才放行（放行链下、不等出块）')
   .option('--hs-intros <n>', '隐藏服务引入点数量（默认 3）', '3')
@@ -216,9 +218,12 @@ program
       const socksPort = Number(o.socksPort);
       // SOCKS 仍是「启动即常开」的轻量基座：用 roleManager 提供的 pickHops/hsDeps/守卫失败回调拉起，再登记回 roleManager 供 /roles 展示。
       const w = roleManager.socksWiring();
-      const socks = new SocksProxy(w.pickHops, socksPort, '127.0.0.1', w.hsDeps, w.onGuardFail, w.onHsFail, w.onHopFail, w.onHopsProven);
+      // 券钱包（--vouchers）：注入后 SOCKS 访问付费 .v0id 站点会自动从券文件预付；不配则付费站点连接被拒。券只在付款成功后移出钱包。
+      const voucherSource = o.vouchers ? new VoucherWallet(String(o.vouchers), MINT_ADDRESS).source() : undefined;
+      const socks = new SocksProxy(w.pickHops, socksPort, '127.0.0.1', w.hsDeps, w.onGuardFail, w.onHsFail, w.onHopFail, w.onHopsProven, voucherSource);
       roleManager.attachSocks(socks, socksPort);
       console.log(`  ${c.dim('SOCKS ')} 127.0.0.1:${socksPort}  ${c.dim('（curl --socks5 …/--socks5-hostname … <地址>.v0id 经洋葱出网；需链上≥3 中继）')}`);
+      if (o.vouchers) console.log(`  ${c.dim('      ')} ${c.dim('券钱包 ' + String(o.vouchers) + '（访问付费站点自动预付；付款成功才扣券）')}`);
     }
     // ---- 托管 .v0id 隐藏服务：把进来的会合连接转发到本机 host:port ----
     if (o.hsTarget) {

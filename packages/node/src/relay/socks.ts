@@ -8,8 +8,15 @@ import { connectHs, bridgeChannelToSocket, type HsDeps } from './hsbridge.js';
 import { runPaywallClient } from './paywall.js';
 import type { MintToken } from '../mint/token.js';
 
-/** 券源：某付费 .v0id 站点要价 price 时，从本地钱包取一批面额和 ≥ price 的记名券。不足/无券应抛错（连接将被拒）。 */
-export type VoucherSource = (addr: string, price: number) => Promise<MintToken[]>;
+/** 一次选券结果：这批券 + 一个 commit()。**券只有付款成功后才移出钱包**——调用方在 runPaywallClient 成功后才 await commit()。 */
+export interface VoucherSelection {
+  vouchers: MintToken[];
+  /** 付款成功（收到 PAYOK）后调用：把这批券从钱包移出。幂等、可安全省略（省略=券留钱包，服务方双花拦截兜底）。 */
+  commit(): Promise<void>;
+}
+
+/** 券源：某付费 .v0id 站点要价 price 时，从本地钱包选一批面额和 ≥ price 的记名券。不足/无券应抛错（连接将被拒、不动券）。 */
+export type VoucherSource = (addr: string, price: number) => Promise<VoucherSelection>;
 
 /** 选路器：返回有序 3 跳 [守卫, 中继, 出口]。生产应做 guard 钉固 + 加权随机；v1 由调用方注入。 */
 export type HopPicker = () => HopSpec[];
@@ -188,20 +195,27 @@ export class SocksProxy {
         sock.write(reply(0x05));
         return void sock.destroy();
       }
+      let sel: VoucherSelection;
       try {
-        const vouchers = await this.voucherSource(addr, price);
-        // 取券可能慢（钱包提示/读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。
+        sel = await this.voucherSource(addr, price); // 只挑不删（余额不足→抛→按下面统一拒绝，券未动）
+        // 取券可能慢（钱包提示/读盘）。若此间 curl 已断开，别再递券——否则服务方核销掉券却无人接收（白烧券）。此路径未 commit → 券留钱包。
         if (sock.destroyed) {
           channel.close();
           return;
         }
-        payokLeftover = await runPaywallClient(channel, vouchers);
+        payokLeftover = await runPaywallClient(channel, sel.vouchers); // PAYERR/超时→抛→券留钱包（服务方未核销）
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         this.onHsFail?.(addr, `付费失败：${reason}`);
         channel.close();
         sock.write(reply(0x05)); // 连接被拒（付费墙未通过）
         return void sock.destroy();
+      }
+      // 付款成功（PAYOK）才把券移出钱包。落盘失败不撤销放行（款已付）——只是钱包没更新，下次复用该券会被服务方双花拦截，自纠。
+      try {
+        await sel.commit();
+      } catch (e) {
+        console.error(`[voucher] 券钱包更新失败（已付款、仍放行 ${addr}）：${e instanceof Error ? e.message : String(e)}`);
       }
     }
     sock.write(reply(0x00)); // 成功
