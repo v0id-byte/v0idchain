@@ -2,7 +2,13 @@
 
 **English | [中文](README.md)**
 
-A from-scratch, hand-rolled TypeScript project that grew three working things: a **Tor-style onion anonymity network (v0idnet)**, the **home-grown blockchain ($V0ID)** it runs on, and a **fully on-chain pixel game**. A pnpm monorepo; `tsx` runs the `.ts` directly, no build step.
+[![CI](https://github.com/v0id-byte/v0idchain/actions/workflows/ci.yml/badge.svg)](https://github.com/v0id-byte/v0idchain/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A522.13-brightgreen)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub stars](https://img.shields.io/github/stars/v0id-byte/v0idchain?style=social)](https://github.com/v0id-byte/v0idchain/stargazers)
+
+A from-scratch, hand-rolled TypeScript project that grew three working things: a **Tor-style onion anonymity network (v0idnet)**, the **home-grown blockchain ($V0ID)** it runs on, and a **fully on-chain pixel game**. A pnpm monorepo; `tsx` runs the `.ts` directly, no build step — **a whole system you can read end to end**.
 
 > Honest up front: this is a **hand-rolled / educational-grade** implementation (not audited production crypto). The anonymity network is real in design, but a small network = weak anonymity. Each module is described at its true maturity.
 
@@ -38,14 +44,18 @@ A **fully on-chain pixel social world**: collect creatures/NFTs, farm, fish, and
 ## Quick start
 
 ```bash
-corepack pnpm install                 # Node 18+, pnpm ships with the repo
+corepack pnpm install                 # Node ≥ 22.13, pnpm ships with the repo
 # Run a node + mine (see each module's docs)
 corepack pnpm exec tsx packages/cli/src/index.ts start --mine --peers ws://mc.void1211.com:6001
+
+# Or one command with Docker — start a node that joins the live net:
+docker build -t v0idchain . && docker run --rm v0idchain
 ```
 
 - **Want anonymous browsing** → [v0idnet quick start](docs/v0idnet/README.en.md)
 - **Want the chain / to build** → [blockchain quick start](docs/blockchain/README.en.md) + [tutorial](docs/blockchain/TUTORIAL.en.md)
 - **Want to play the game** → [game docs](docs/game/README.en.md)
+- **Want to contribute** → [ROADMAP.md](ROADMAP.md) + [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Repo layout
 
@@ -57,6 +67,14 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --mine --peers ws://mc.vo
 | `packages/game-server` · `game-web` · `web` | game backend/frontend · web wallet |
 | `clients/desktop` | the v0id Browser (Electron) |
 | `docs/{v0idnet,blockchain,game}/` | the three module docs |
+
+## Contributing
+
+Want to join? Start with [ROADMAP.md](ROADMAP.md) — it lays out the **direction, the token-value thesis ($V0ID = the economic layer that lets an open anonymity network resist abuse, Sybils, and censorship without surveillance), and good first issues**. Dev setup, tests, and the module map are in [CONTRIBUTING.md](CONTRIBUTING.md). **You don't need to understand consensus to help** — docs, i18n, tests, Docker, and pixel art are all welcome. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## ⚠️ Disclaimer
+
+v0idChain is an **experimental, educational testnet**: the **token has no monetary value and is not an investment**; the anonymity network is a research-grade implementation (not audited production crypto, small network = weak anonymity); **you are responsible for local-law compliance**; the project **does not host, endorse, or facilitate** any illegal content. Full text in [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Honest boundaries & attribution
 

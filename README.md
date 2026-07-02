@@ -2,7 +2,13 @@
 
 **[English](README.en.md) | 中文**
 
-一个从零手搓的 TypeScript 项目,长出了三块能跑的东西:一个 **Tor 式洋葱匿名网络(v0idnet)**、它脚下的**自建区块链($V0ID)**、以及一个**全链上的像素游戏**。pnpm monorepo,`tsx` 直跑、无构建步。
+[![CI](https://github.com/v0id-byte/v0idchain/actions/workflows/ci.yml/badge.svg)](https://github.com/v0id-byte/v0idchain/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A522.13-brightgreen)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub stars](https://img.shields.io/github/stars/v0id-byte/v0idchain?style=social)](https://github.com/v0id-byte/v0idchain/stargazers)
+
+一个从零手搓的 TypeScript 项目,长出了三块能跑的东西:一个 **Tor 式洋葱匿名网络(v0idnet)**、它脚下的**自建区块链($V0ID)**、以及一个**全链上的像素游戏**。pnpm monorepo,`tsx` 直跑、无构建步——**一整套系统可从头读到尾**。
 
 > 诚实说在前:这是**自建/学习级**实现(不是经过审计的生产密码学)。匿名网络在设计上是真的、但规模小=匿名弱。各模块按真实成熟度诚实介绍。
 
@@ -44,14 +50,18 @@
 ## 快速上手
 
 ```bash
-corepack pnpm install                 # Node 18+，仓库自带 pnpm
+corepack pnpm install                 # Node ≥ 22.13，仓库自带 pnpm
 # 跑一个节点 + 挖矿(详见各模块文档)
 corepack pnpm exec tsx packages/cli/src/index.ts start --mine --peers ws://mc.void1211.com:6001
+
+# 或用 Docker 一条命令起节点接入实网:
+docker build -t v0idchain . && docker run --rm v0idchain
 ```
 
 - **想匿名上网** → [v0idnet 上手](docs/v0idnet/README.md)
 - **想玩链 / 开发** → [区块链上手](docs/blockchain/README.md) + [教程](docs/blockchain/TUTORIAL.md)
 - **想玩游戏** → [游戏文档](docs/game/README.md)
+- **想参与贡献** → [ROADMAP.md](ROADMAP.md) + [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## 仓库结构
 
@@ -63,6 +73,14 @@ corepack pnpm exec tsx packages/cli/src/index.ts start --mine --peers ws://mc.vo
 | `packages/game-server` · `game-web` · `web` | 游戏服务/前端 · web 钱包 |
 | `clients/desktop` | v0id 浏览器(Electron) |
 | `docs/{v0idnet,blockchain,game}/` | 三大模块文档 |
+
+## 参与贡献
+
+想加入?先看 [ROADMAP.md](ROADMAP.md)——它讲**项目方向 + 代币价值主线($V0ID = 让开放匿名网络不靠监控就能抵御滥用/女巫/审查的经济层)+ 新人任务**。开发环境、跑测试、模块地图见 [CONTRIBUTING.md](CONTRIBUTING.md)。**不懂共识也能贡献**:文档、i18n、测试、Docker、像素美术都欢迎。参与请遵守[行为准则](CODE_OF_CONDUCT.md)。
+
+## ⚠️ 免责声明
+
+v0idChain 是**实验性、教学性测试网**:**代币无货币价值、非投资标的**;匿名网是研究级实现(非审计生产密码学,小规模 = 弱匿名);用户**自负本地合规责任**;项目**不托管、不背书、不促成**任何非法内容。完整声明见 [DISCLAIMER.md](DISCLAIMER.md)。
 
 ## 诚实边界与署名
 
