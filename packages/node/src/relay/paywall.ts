@@ -15,7 +15,11 @@ import { isValidAddress, utf8ToBytes } from '@v0idchain/core';
 import type { RdvChannel } from './hsclient.js';
 
 const RDV_CHUNK = 400; // 与 hsbridge 一致：单 cell 净荷上限 ~461B，取 400 留余量
-const HANDSHAKE_TIMEOUT_MS = 10_000; // 付费握手封顶（防半死对端吊死连接）；纯隧道往返，正常几百 ms 内完成
+const HANDSHAKE_TIMEOUT_MS = 10_000; // 服务方读 PAY 帧 / 本地握手封顶（防半死对端吊死连接）；纯隧道往返，正常几百 ms 内完成
+// 客户端等 PAYOK 的超时：必须 ≥ 服务方最坏**验券**时长。在线核销(A.2)服务方要再连一次铸币厂 .v0id 核销（有界预算 ≤22s，
+// 见 spend-service ONLINE_* 常量），故给 30s（>22s + PAYOK 回程余量）。这样即便会合慢，客户端也会**等到**服务方基于本次核销
+// 发出的 PAYOK/PAYERR，而不会中途超时、回滚那张其实已被铸币厂核销掉的券（丢券又拿不到访问）。本地受理(A.1)几乎瞬时，此超时只在服务方静默慢时才触及。
+const PAID_PAYOK_TIMEOUT_MS = 30_000;
 const MAX_FRAME_BYTES = 16 * 1024; // 单帧上限（一次最多递几十张券，够用且防内存滥用）
 
 /** 服务方对递进来的券做的判定：验签（对 MINT_ADDRESS）+ 未花过 + 面额和 ≥ price。 */
@@ -192,7 +196,7 @@ export async function runPaywallServer(channel: RdvChannel, price: number, verif
  */
 export async function runPaywallClient(channel: RdvChannel, vouchers: MintToken[]): Promise<Uint8Array> {
   sendFrame(channel, { t: 'pay', v: 1, vouchers: vouchers.map((v) => [v.denom, v.serial, v.sig]) });
-  const { msg, leftover } = await readFrame(channel, HANDSHAKE_TIMEOUT_MS);
+  const { msg, leftover } = await readFrame(channel, PAID_PAYOK_TIMEOUT_MS); // 等 PAYOK 要给足在线核销的时间（见常量注释）
   if (msg?.t === 'payok') return leftover;
   if (msg?.t === 'payerr') throw new Error(`付费被拒(${msg.code}${msg.need !== undefined ? `：需 ${msg.need}、递了 ${msg.got}` : ''})`);
   throw new Error('付费握手应答异常');

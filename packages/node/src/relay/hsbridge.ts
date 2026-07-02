@@ -198,13 +198,21 @@ const HS_CONNECT_ATTEMPTS = 4;
  * 单次尝试封顶 HS_ATTEMPT_TIMEOUT_MS（杜绝半死服务吊死 SOCKS 连接），失败则换新电路重试至多 HS_CONNECT_ATTEMPTS 次
  * （多步会合经 CF 隧道偶发抖动 → 重来一次大概率即通）。全部失败才抛错（上层回 SOCKS 失败）。
  */
-export async function connectHs(addr: string, deps: HsDeps): Promise<{ channel: RdvChannel; price?: number }> {
+export async function connectHs(
+  addr: string,
+  deps: HsDeps,
+  opts?: { deadlineMs?: number }, // 可选总预算：多次重试合计不超过它（付费墙在线核销热路径用它把总时长压到客户端付费超时之内，防慢速会合迟到成功后已花券却无人接）
+): Promise<{ channel: RdvChannel; price?: number }> {
+  const start = Date.now();
   let lastErr: unknown;
   for (let attempt = 0; attempt < HS_CONNECT_ATTEMPTS; attempt++) {
+    // 有总预算时：单次尝试封顶取 min(常规单次上限, 剩余预算)；预算耗尽则停止重试（不再新起一轮可能迟到成功的会合）。
+    const remaining = opts?.deadlineMs !== undefined ? opts.deadlineMs - (Date.now() - start) : HS_ATTEMPT_TIMEOUT_MS;
+    if (remaining <= 0) break;
     try {
       return await withAttemptTimeout(
         connectHiddenService(addr, deps.buildCircuit, deps.directory),
-        HS_ATTEMPT_TIMEOUT_MS,
+        Math.min(HS_ATTEMPT_TIMEOUT_MS, remaining),
       );
     } catch (e) {
       lastErr = e; // 本次（新电路）失败 → 重试

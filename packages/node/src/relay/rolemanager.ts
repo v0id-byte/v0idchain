@@ -14,6 +14,9 @@ import {
   bytesToHex,
   hexToBytes,
   MINT_ADDRESS,
+  SYSTEM_ADDRESSES,
+  isValidAddress,
+  decodeV0idAddress,
   type OnionKeypair,
 } from '@v0idchain/core';
 import { isIP } from 'node:net';
@@ -372,10 +375,12 @@ export class RoleManager {
     if (opts?.price !== undefined) {
       if (!Number.isInteger(opts.price) || opts.price < 1) throw new Error('hs price 非法：须为正整数（$V0ID/连接）');
       if (opts.mint) {
-        // fail-fast：程序化调用方（HTTP API/GUI）若误传钱包地址而非核销服务的 .v0id 地址，这里就报错，
-        // 而不是等到首次付费访问才在 connect 阶段挂（站点看着起来了却每次付费都失败）。
-        if (!opts.mint.endsWith('.v0id')) throw new Error('hs mint 非法：须是铸币厂在线核销服务的 .v0id 地址');
+        // fail-fast：程序化调用方（HTTP API/GUI）若误传地址，这里就报错，而不是等到首次付费访问才在 connect/核销 阶段挂
+        // （站点看着起来了却每次付费都失败）。用**完整 .v0id 自认证解码**（校验 base32/校验和/版本），不只看后缀。
+        if (!decodeV0idAddress(opts.mint)) throw new Error('hs mint 非法：须是合法的铸币厂在线核销服务 .v0id 地址（校验和/版本不符）');
         const provider = opts.provider ?? this.node.wallet.address; // 收款地址默认本节点钱包
+        // provider 须是合法非系统地址（同 mint spend/settle 口径）：否则铸币厂 spend 会拒记 owed → 站点每笔付费经洋葱往返后仍被拒。
+        if (!isValidAddress(provider) || SYSTEM_ADDRESSES.has(provider)) throw new Error('hs provider 非法：须是合法且非系统/托管的收款地址');
         verifier = makeOnlineVerifier(opts.mint, this.hsDeps, provider);
       } else {
         const store = new PaywallStore(this.dataDir, id);
