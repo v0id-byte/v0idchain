@@ -1,5 +1,5 @@
 import type { Block } from './block.js';
-import { genesisBlock } from './blockchain.js';
+import { expectedDifficulty, genesisBlock } from './blockchain.js';
 import { CHECKPOINTS, NULL_ADDRESS } from './config.js';
 import { isValidAddress } from './crypto.js';
 import { blockHeader, blockMerkleRootMatches, type BlockHeader, type TxInclusionProof, verifyHeaderChain, verifyTxInclusionProof } from './light.js';
@@ -137,6 +137,15 @@ export function verifyClientHeaders(
 
   const checked = verifyHeaderChain(headers);
   if (!checked.ok || checked.work === undefined) return { ok: false, error: checked.error ?? 'header 链校验失败' };
+
+  if (headers[0].index === 0) {
+    for (let i = 0; i < headers.length; i++) {
+      const expected = expectedDifficulty(headers as unknown as Block[], i);
+      if (headers[i].difficulty !== expected) {
+        return { ok: false, error: `#${headers[i].index} 难度不符（期望 ${expected}）` };
+      }
+    }
+  }
 
   const byHeight = new Map(headers.map((h) => [h.index, h]));
   for (const cp of opts.checkpoints ?? CHECKPOINTS) {

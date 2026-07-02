@@ -12,6 +12,8 @@ import {
   replayAddressProofs,
   replayClientState,
   verifyLightSyncSnapshot,
+  verifyClientHeaders,
+  calcHeaderHash,
   type TxInclusionProof,
 } from '../packages/core/src/index.js';
 import { V0idNode, startHttpApi } from '../packages/node/src/index.js';
@@ -89,6 +91,15 @@ check(
     minTimestamp,
   }).ok,
 );
+
+const loweredDifficultyHeaders = headersRes.body.headers.map((h) => ({ ...h }));
+if (loweredDifficultyHeaders.length > 1) {
+  const last = loweredDifficultyHeaders[loweredDifficultyHeaders.length - 1];
+  last.difficulty = 0;
+  last.hash = calcHeaderHash(last);
+}
+const loweredDifficultyCheck = verifyClientHeaders(loweredDifficultyHeaders);
+check('client-protocol 拒绝私自降低难度的 header 链', !loweredDifficultyCheck.ok && loweredDifficultyCheck.error.includes('难度不符'));
 
 const defaultWindow = recentSyncWindow(1_700_000_000_000);
 check('client-protocol 默认 recent 窗口 = 10000 blocks + 3 days', defaultWindow.maxBlocks === 10_000 && defaultWindow.minTimestamp === 1_699_740_800_000);
