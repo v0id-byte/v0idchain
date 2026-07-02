@@ -1,6 +1,7 @@
 // @v0idchain/core 公共出口
 export * from './config.js';
 export * from './crypto.js';
+export * from './bdhke.js';
 export * from './onion.js';
 export * from './onioncell.js';
 export * from './mixnet.js';
