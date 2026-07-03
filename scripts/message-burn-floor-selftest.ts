@@ -1,7 +1,9 @@
 // 消息防刷底线自检（Phase：消息销毁额随备注长度递增）。跑：corepack pnpm exec tsx scripts/message-burn-floor-selftest.ts
-// 覆盖：minMessageBurnFor 公式（边界/单调/整数）、isRealMessage 分类（协议层 memo 绝不受约束，含身份 IDCLAIM/IDRELEASE
-//       交叉wiring）、激活高度门控（forge-chain 便宜锻造）、mempool 与选包两条路径一致拒绝、协议层低销毁操作不受影响、
-//       分叉安全（computeState ≡ validateChain ≡ replaceChain）、供应量守恒。
+// 覆盖：minMessageBurnFor 公式（边界/单调/整数）、isRealMessage 分类（真正合法的协议层操作绝不受约束，
+//       含身份 IDCLAIM/IDRELEASE 交叉wiring；**套壳攻击——前缀匹配但 payload/burn 不合法——必须受约束**，
+//       这是 isProtocolMemo 从纯 startsWith 收紧为「payload 格式 + 精确/达标烧币值」双重校验的核心回归测试）、
+//       激活高度门控（forge-chain 便宜锻造）、mempool 与选包两条路径一致拒绝、分叉安全
+//       （computeState ≡ validateChain ≡ replaceChain）、供应量守恒。
 import {
   Blockchain,
   Wallet,
@@ -15,6 +17,8 @@ import {
   MAX_MEMO,
   FISH_PREFIX,
   PET_PREFIX,
+  PETBREED_PREFIX,
+  PET_BREED_COST,
   IDCLAIM_PREFIX,
   IDRELEASE_PREFIX,
   STAKE_PREFIX,
@@ -79,20 +83,38 @@ async function main() {
     check('minMessageBurnFor 在抽样长度上全整数输出（禁浮点跨节点分叉）', allInt);
   }
 
-  console.log(`\n— isRealMessage 分类：协议层 memo（含身份 IDCLAIM/IDRELEASE）绝不算真消息，即便 burn 很低 —`);
-  check('PET| 前缀不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${PET_PREFIX}egg1` }));
-  check('FISH| 前缀不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${FISH_PREFIX}1` }));
-  check('STAKE| 前缀（形态测试）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard` }));
-  check('RED| 前缀（形态测试）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r` }));
+  console.log(`\n— isRealMessage 分类：真正合法的协议层操作不算真消息（精确 payload + 达标烧币值）—`);
+  check('PET| 精确孵化 memo（无后缀）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: PET_PREFIX }));
+  check('FISH| 精确铸渔获 memo（无后缀）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: FISH_PREFIX }));
   check(
-    'IDCLAIM| 前缀不算真消息（Feature A×B 交叉wiring）',
+    'PETBREED|<64hex>|<64hex> 且 burn=PET_BREED_COST 不算真消息',
+    !isRealMessage({ amount: 0, burn: PET_BREED_COST, memo: `${PETBREED_PREFIX}${fakeId}|${fakeId}` }),
+  );
+  check('STAKE| 前缀（形态测试，共识层已保护）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard` }));
+  check('RED| 前缀（形态测试，共识层已保护）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r` }));
+  check(
+    'IDCLAIM| 前缀不算真消息（Feature A×B 交叉wiring，共识层已保护）',
     !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice` }),
   );
   check(
-    'IDRELEASE| 前缀不算真消息（Feature A×B 交叉wiring）',
+    'IDRELEASE| 前缀不算真消息（Feature A×B 交叉wiring，共识层已保护）',
     !isRealMessage({ amount: 0, burn: 1, memo: `${IDRELEASE_PREFIX}${fakeId}` }),
   );
   check('普通正文才算真消息', isRealMessage({ amount: 0, burn: 5, memo: 'hello there' }));
+
+  console.log(`\n— 核心回归：套壳攻击（前缀匹配但 payload 是垃圾或 burn 不达标）必须算真消息、受烧币下限约束 —`);
+  check(
+    'FISH| 后面接垃圾内容（非精确匹配）算真消息（旧漏洞：曾被 startsWith 误放行）',
+    isRealMessage({ amount: 0, burn: 1, memo: `${FISH_PREFIX}${'x'.repeat(300)}` }),
+  );
+  check(
+    'PET| 后面接垃圾内容（非精确匹配）算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${PET_PREFIX}${'x'.repeat(300)}` }),
+  );
+  check(
+    'PETBREED| 格式合法但 burn 不等于 PET_BREED_COST 时算真消息（套壳想蹭排除但没付真实协议成本）',
+    isRealMessage({ amount: 0, burn: 1, memo: `${PETBREED_PREFIX}${fakeId}|${fakeId}` }),
+  );
 
   console.log(`\n— 激活门控：激活前旧规则放行低销毁长消息，不 retroactive 拒绝已广播交易 —`);
   {
@@ -148,13 +170,13 @@ async function main() {
   check('消息场景后全链守恒', conserved(bc));
   check('含消息的链整链校验通过', Blockchain.validateChain(bc.chain).ok);
 
-  console.log(`\n— 协议层低销毁操作不受消息防刷影响（isProtocolMemo 排除生效）—`);
+  console.log(`\n— 协议层低销毁操作不受消息防刷影响（真正合法的 memo，isProtocolMemo 精确匹配放行）—`);
   const bob = Wallet.generate();
   await fund(bc, bob.address, 100);
-  // 形态同「链上消息」（amount=0+burn>0）但 memo 走协议前缀，且 burn=2 远低于 MESSAGE_BURN=5：
-  // 若 isRealMessage 排除失效，这笔会被 Feature A 的门槛误杀。
-  const fishTx = createMessage(bob, bob.address, `${FISH_PREFIX}1`, bc.nonceOf(bob.address), 2, MIN_FEE);
-  check('FISH| 协议层操作（burn=2，远低于消息门槛）激活后依然被接受', bc.addTransaction(fishTx).ok);
+  // 形态同「链上消息」（amount=0+burn>0）但 memo **精确等于** FISH_PREFIX（真实铸渔获的合法形态，无后缀），
+  // 且 burn=2 远低于 MESSAGE_BURN=5：若 isRealMessage 排除失效，这笔会被 Feature A 的门槛误杀。
+  const fishTx = createMessage(bob, bob.address, FISH_PREFIX, bc.nonceOf(bob.address), 2, MIN_FEE);
+  check('FISH| 真实协议操作（精确 memo，burn=2，远低于消息门槛）激活后依然被接受', bc.addTransaction(fishTx).ok);
   await bc.mine(bob.address);
   check('协议层操作场景后全链守恒', conserved(bc));
 
