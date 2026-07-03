@@ -44,6 +44,12 @@ import {
   computeStakeMin,
   STAKE_ESCROW_ADDRESS,
   UNSTAKE_PREFIX,
+  makeIdentityClaim,
+  computeIdentityState,
+  resolveIdentityOwner,
+  IDENTITY_ESCROW_ADDRESS,
+  IDENTITY_STAKE_MIN,
+  IDRELEASE_PREFIX,
   writeWalletFile,
   blockHeaders,
   recentBlockWindow,
@@ -256,6 +262,32 @@ export class V0idNode {
     return [...computeStakeState(this.bc.chain).entries()]
       .filter(([, p]) => p.staker === me)
       .map(([id, p]) => ({ id, ...p }));
+  }
+
+  // ---- 质押身份（Phase 3B：纯资金锁仓反女巫，无罚没、无仲裁者）----
+  /** 认领：转给身份托管地址 + memo `IDCLAIM|<pseudonym>`，锁定 IDENTITY_STAKE_MIN 押金。 */
+  claimIdentity(pseudonym: string): { ok: boolean; tx?: Transaction; error?: string } {
+    const r = makeIdentityClaim(pseudonym);
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, IDENTITY_ESCROW_ADDRESS, IDENTITY_STAKE_MIN, r.memo!, minFeeFor(IDENTITY_STAKE_MIN));
+  }
+
+  /** 解锁：发 IDRELEASE 交易（amount=0），过锁定期后取回全部本金（无罚没）。claimTxid = IDCLAIM 交易 txid。 */
+  releaseIdentity(claimTxid: string): { ok: boolean; tx?: Transaction; error?: string } {
+    return this.submit(this.wallet, this.wallet.address, 0, `${IDRELEASE_PREFIX}${claimTxid}`, MIN_FEE);
+  }
+
+  /** 本节点地址名下的身份质押列表（只读，从链上身份状态过滤出 staker=本地址）。 */
+  myIdentityClaims() {
+    const me = this.wallet.address;
+    return [...computeIdentityState(this.bc.chain).claims.entries()]
+      .filter(([, c]) => c.staker === me)
+      .map(([id, c]) => ({ id, ...c }));
+  }
+
+  /** 公开查询：假名 → 当前持有者地址（无活跃质押则 undefined）。 */
+  resolveIdentity(pseudonym: string): string | undefined {
+    return resolveIdentityOwner(computeIdentityState(this.bc.chain), pseudonym);
   }
 
   /**

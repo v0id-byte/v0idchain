@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getJSON, postJSON, getTip, getBlockRange, verifyBlockChainLink, isCoinbase, search, findTx, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket } from './api';
+import { getJSON, postJSON, getTip, getBlockRange, verifyBlockChainLink, isCoinbase, search, findTx, type Block, type Info, type Listing, type Tx, type TxRef, type Messages, type Newcomer, type NameRegistry, type RedPacket, type IdentityClaim } from './api';
 import { loadCachedChain, putBlocks, clearCache } from './chainCache';
 
 const short = (a: string) => (a && a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-6)}` : a || '');
@@ -54,6 +54,7 @@ export default function App() {
   const [newcomers, setNewcomers] = useState<Newcomer[]>([]);
   const [names, setNames] = useState<NameRegistry>({ nameToOwner: {}, addressToName: {} });
   const [redPackets, setRedPackets] = useState<RedPacket[]>([]);
+  const [identityClaims, setIdentityClaims] = useState<IdentityClaim[]>([]);
   const [up, setUp] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const apiRef = useRef(api);
@@ -121,7 +122,7 @@ export default function App() {
   const poll = useCallback(async () => {
     const base = apiRef.current;
     try {
-      const [i, m, mk, msg, nc, nm, rps] = await Promise.all([
+      const [i, m, mk, msg, nc, nm, rps, ids] = await Promise.all([
         getJSON<Info>(base, '/info'),
         getJSON<Tx[]>(base, '/mempool'),
         getJSON<Listing[]>(base, '/market'),
@@ -129,6 +130,7 @@ export default function App() {
         getJSON<Newcomer[]>(base, '/newcomers'),
         getJSON<NameRegistry>(base, '/names'),
         getJSON<RedPacket[]>(base, '/redpackets'),
+        getJSON<IdentityClaim[]>(base, '/identity'),
       ]);
       await syncChain(base);
       setInfo(i);
@@ -139,6 +141,7 @@ export default function App() {
       NAMES = nm.addressToName || {}; // 刷新模块级显示名缓存（disp 读它）
       setNames(nm);
       setRedPackets(rps);
+      setIdentityClaims(ids);
       setUp(true);
     } catch {
       setUp(false);
@@ -210,6 +213,8 @@ export default function App() {
       <Explorer chain={chain} me={me} />
 
       <RedPackets packets={redPackets} chain={chain} api={api} token={token} onDone={poll} />
+
+      <IdentityPanel claims={identityClaims} height={info?.height ?? 0} chain={chain} api={api} token={token} onDone={poll} />
 
       <Marketplace market={market} chain={chain} api={api} token={token} onDone={poll} />
 
@@ -697,6 +702,98 @@ function RedPackets({ packets, chain, api, token, onDone }: { packets: RedPacket
           {done.slice(0, 8).map((p) => (
             <span key={p.id} className="mkt-doneitem">
               {p.refunded ? '↩️ 已退' : '✓ 抢完'} {p.total} $V0ID/{p.count}份
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IdentityPanel({
+  claims,
+  height,
+  chain,
+  api,
+  token,
+  onDone,
+}: {
+  claims: IdentityClaim[];
+  height: number;
+  chain: Block[];
+  api: string;
+  token: string;
+  onDone: () => void;
+}) {
+  const [pseudonym, setPseudonym] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState<Banner>(null);
+  const [pending, track] = usePending(chain);
+
+  const act = async (path: string, body: unknown, okMsg: string): Promise<boolean> => {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const r = await postJSON<{ txid: string }>(api, path, body, token);
+      setBanner({ kind: 'ok', text: okMsg });
+      track(r.txid);
+      onDone();
+      return true;
+    } catch (e) {
+      setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const claim = async () => {
+    if (await act('/identity/claim', { pseudonym }, '🪪 已提交认领（打包确认后生效）')) setPseudonym('');
+  };
+
+  const active = claims.filter((c) => !c.released);
+  const released = claims.filter((c) => c.released);
+
+  return (
+    <div className="panel" style={{ marginBottom: 24 }}>
+      <h2>质押身份 🪪 · 纯资金锁仓反女巫，无罚没</h2>
+      <div className="row2">
+        <div className="field">
+          <label>想认领的假名</label>
+          <input value={pseudonym} onChange={(e) => setPseudonym(e.target.value)} placeholder="alice" spellCheck={false} />
+        </div>
+      </div>
+      <div className="btns">
+        <button disabled={busy || !pseudonym} onClick={claim}>
+          认领身份
+        </button>
+      </div>
+      {banner && <div className={`msg ${banner.kind}`}>{banner.text}</div>}
+      <PendingBadge pending={pending} />
+
+      <div className="mkt-grid">
+        {active.length === 0 && <div className="empty">还没有活跃的身份质押</div>}
+        {active.map((c) => {
+          const unlockable = height >= c.lockedUntil;
+          return (
+            <div className="mkt-item" key={c.id}>
+              <div className="mkt-top">
+                <span className="mkt-price">#{c.pseudonym}</span>
+                <span className="tag me">押金 {c.amount} $V0ID</span>
+              </div>
+              <div className="mkt-title">锁至 #{c.lockedUntil}（当前 #{height}）</div>
+              <div className="mkt-seller">{c.id.slice(0, 12)}…</div>
+              <button className="ghost mini" disabled={busy || !unlockable} onClick={() => act('/identity/release', { claimTxid: c.id }, '🔓 已提交解锁')}>
+                {unlockable ? '解锁取回押金' : '锁定中'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {released.length > 0 && (
+        <div className="mkt-done">
+          {released.slice(0, 8).map((c) => (
+            <span key={c.id} className="mkt-doneitem">
+              🔓 已解锁 #{c.pseudonym}（{c.amount} $V0ID）
             </span>
           ))}
         </div>

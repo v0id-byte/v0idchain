@@ -1,7 +1,7 @@
 // 本地 HTTP 控制接口：CLI 子命令（send/balance/mine…）通过它和运行中的节点对话。
 // 用 node:http，零额外依赖。只监听 127.0.0.1。
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { STAKING_ACTIVATION_HEIGHT, isValidAddress, minFeeFor, computeMintState } from '@v0idchain/core';
+import { STAKING_ACTIVATION_HEIGHT, IDENTITY_ACTIVATION_HEIGHT, isValidAddress, minFeeFor, computeMintState } from '@v0idchain/core';
 import type { V0idNode } from './node.js';
 import type { RoleManager } from './relay/rolemanager.js';
 
@@ -147,6 +147,16 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           case '/stake':
             // 本节点自己的质押池（只读、无需令牌）：含锁定高度 / 已罚没 / 是否已赎回。GUI 中继板块据此展示。
             return json(200, node.stakes());
+          case '/identity':
+            // 本节点自己的身份质押（只读、无需令牌）：含锁定高度 / 是否已解锁。无罚没字段（本机制不罚没）。
+            return json(200, node.myIdentityClaims());
+          case '/identity/resolve': {
+            // 公开查询：假名 → 当前持有者地址（只读、无需令牌，任何人可核）。
+            const pseudonym = url.searchParams.get('pseudonym') || '';
+            if (!pseudonym) return json(400, { error: '缺少 pseudonym 参数' });
+            const owner = node.resolveIdentity(pseudonym);
+            return json(200, { pseudonym, owner: owner ?? null });
+          }
           case '/rewards':
             // 本节点收到的中继激励发放（只读）。引导期暂不发放 → 多半为空数组（见 INCENTIVE-PROTOCOL）。
             return json(200, node.rewards());
@@ -229,6 +239,21 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           case '/unstake': {
             // 赎回：amount=0 + memo UNSTAKE|<stakeId>，过锁定期后取回本金-已罚没。
             const r = node.unstake(String(body.stakeId ?? ''));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/identity/claim': {
+            // 认领：转给身份托管地址 + memo IDCLAIM|<pseudonym>，锁定 IDENTITY_STAKE_MIN。
+            // 激活高度前 `IDCLAIM|` 转托管仍会被旧/未激活共识当作普通转账，
+            // 所以 API 必须先挡住，避免 Bearer 客户端把押金转进托管却不生成质押记录。
+            if (node.bc.height < IDENTITY_ACTIVATION_HEIGHT) {
+              return json(400, { error: `身份质押尚未激活（当前高度 ${node.bc.height}，激活高度 ${IDENTITY_ACTIVATION_HEIGHT}）` });
+            }
+            const r = node.claimIdentity(String(body.pseudonym ?? ''));
+            return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
+          }
+          case '/identity/release': {
+            // 解锁：amount=0 + memo IDRELEASE|<claimTxid>，过锁定期后取回全部本金（无罚没）。
+            const r = node.releaseIdentity(String(body.claimTxid ?? ''));
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/mine': {
