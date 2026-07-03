@@ -17,12 +17,17 @@ import {
   MAX_MEMO,
   FISH_PREFIX,
   PET_PREFIX,
+  PETX_PREFIX,
   PETBREED_PREFIX,
   PET_BREED_COST,
+  LAND_PREFIX,
   IDCLAIM_PREFIX,
   IDRELEASE_PREFIX,
   STAKE_PREFIX,
+  STAKE_ESCROW_ADDRESS,
   RED_PREFIX,
+  RED_ESCROW_ADDRESS,
+  IDENTITY_ESCROW_ADDRESS,
   GENESIS_PREMINE,
   BLOCK_REWARD,
   MIN_FEE,
@@ -83,37 +88,83 @@ async function main() {
     check('minMessageBurnFor 在抽样长度上全整数输出（禁浮点跨节点分叉）', allInt);
   }
 
-  console.log(`\n— isRealMessage 分类：真正合法的协议层操作不算真消息（精确 payload + 达标烧币值）—`);
-  check('PET| 精确孵化 memo（无后缀）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: PET_PREFIX }));
-  check('FISH| 精确铸渔获 memo（无后缀）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: FISH_PREFIX }));
+  console.log(`\n— isRealMessage 分类：真正合法的协议层操作不算真消息（精确 payload + 达标烧币值 + from/to/amount 语境）—`);
+  const selfAddr = '0x' + '1'.repeat(64);
+  const otherAddr = '0x' + '2'.repeat(64);
   check(
-    'PETBREED|<64hex>|<64hex> 且 burn=PET_BREED_COST 不算真消息',
-    !isRealMessage({ amount: 0, burn: PET_BREED_COST, memo: `${PETBREED_PREFIX}${fakeId}|${fakeId}` }),
-  );
-  check('STAKE| 前缀（形态测试，共识层已保护）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard` }));
-  check('RED| 前缀（形态测试，共识层已保护）不算真消息', !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r` }));
-  check(
-    'IDCLAIM| 前缀不算真消息（Feature A×B 交叉wiring，共识层已保护）',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice` }),
+    'PET| 精确孵化 memo（自转、无后缀）不算真消息',
+    !isRealMessage({ amount: 0, burn: 1, memo: PET_PREFIX, from: selfAddr, to: selfAddr }),
   );
   check(
-    'IDRELEASE| 前缀不算真消息（Feature A×B 交叉wiring，共识层已保护）',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${IDRELEASE_PREFIX}${fakeId}` }),
+    'FISH| 精确铸渔获 memo（自转、无后缀）不算真消息',
+    !isRealMessage({ amount: 0, burn: 1, memo: FISH_PREFIX, from: selfAddr, to: selfAddr }),
   );
-  check('普通正文才算真消息', isRealMessage({ amount: 0, burn: 5, memo: 'hello there' }));
+  check(
+    'PETBREED|<64hex>|<64hex>（自转）且 burn=PET_BREED_COST 不算真消息',
+    !isRealMessage({ amount: 0, burn: PET_BREED_COST, memo: `${PETBREED_PREFIX}${fakeId}|${fakeId}`, from: selfAddr, to: selfAddr }),
+  );
+  check(
+    'PETX|<64hex>（转移给别人 + amount>0）不算真消息',
+    !isRealMessage({ amount: 1, burn: 1, memo: `${PETX_PREFIX}${fakeId}`, from: selfAddr, to: otherAddr }),
+  );
+  check(
+    'LAND|<n>（自转）不算真消息',
+    !isRealMessage({ amount: 0, burn: 999, memo: `${LAND_PREFIX}0`, from: selfAddr, to: selfAddr }),
+  );
+  check(
+    'STAKE| 真发往质押托管地址不算真消息',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: STAKE_ESCROW_ADDRESS }),
+  );
+  check(
+    'RED| 真发往红包托管地址不算真消息',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: RED_ESCROW_ADDRESS }),
+  );
+  check(
+    'IDCLAIM| 真发往身份托管地址不算真消息（Feature A×B 交叉wiring，共识层已保护）',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS }),
+  );
+  check(
+    'IDRELEASE| 前缀不算真消息（id 引用类，consensus 不看 to，共识层已保护）',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${IDRELEASE_PREFIX}${fakeId}`, from: selfAddr, to: otherAddr }),
+  );
+  check('普通正文才算真消息', isRealMessage({ amount: 0, burn: 5, memo: 'hello there', from: selfAddr, to: otherAddr }));
 
-  console.log(`\n— 核心回归：套壳攻击（前缀匹配但 payload 是垃圾或 burn 不达标）必须算真消息、受烧币下限约束 —`);
+  console.log(`\n— 核心回归：套壳攻击必须算真消息、受烧币下限约束 —`);
   check(
-    'FISH| 后面接垃圾内容（非精确匹配）算真消息（旧漏洞：曾被 startsWith 误放行）',
-    isRealMessage({ amount: 0, burn: 1, memo: `${FISH_PREFIX}${'x'.repeat(300)}` }),
+    'FISH| 后面接垃圾内容（非精确匹配）算真消息（旧漏洞①：曾被 startsWith 误放行）',
+    isRealMessage({ amount: 0, burn: 1, memo: `${FISH_PREFIX}${'x'.repeat(300)}`, from: selfAddr, to: selfAddr }),
   );
   check(
     'PET| 后面接垃圾内容（非精确匹配）算真消息',
-    isRealMessage({ amount: 0, burn: 1, memo: `${PET_PREFIX}${'x'.repeat(300)}` }),
+    isRealMessage({ amount: 0, burn: 1, memo: `${PET_PREFIX}${'x'.repeat(300)}`, from: selfAddr, to: selfAddr }),
   );
   check(
     'PETBREED| 格式合法但 burn 不等于 PET_BREED_COST 时算真消息（套壳想蹭排除但没付真实协议成本）',
-    isRealMessage({ amount: 0, burn: 1, memo: `${PETBREED_PREFIX}${fakeId}|${fakeId}` }),
+    isRealMessage({ amount: 0, burn: 1, memo: `${PETBREED_PREFIX}${fakeId}|${fakeId}`, from: selfAddr, to: selfAddr }),
+  );
+  check(
+    'PET| payload 精确但 from!==to（非自转）算真消息（旧漏洞②：曾不查 from/to 语境）',
+    isRealMessage({ amount: 0, burn: 1, memo: PET_PREFIX, from: selfAddr, to: otherAddr }),
+  );
+  check(
+    'LAND|<n> 但 from!==to（非自转）算真消息——真实买地要求自转烧币',
+    isRealMessage({ amount: 0, burn: 999, memo: `${LAND_PREFIX}0`, from: selfAddr, to: otherAddr }),
+  );
+  check(
+    'STAKE|guard 但 to 不是质押托管地址算真消息（旧漏洞③：曾只看前缀不看 to，consensus 也不会把它当质押）',
+    isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: otherAddr }),
+  );
+  check(
+    'RED|10|r 但 to 不是红包托管地址算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: otherAddr }),
+  );
+  check(
+    'IDCLAIM|alice 但 to 不是身份托管地址算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: otherAddr }),
+  );
+  check(
+    'PETX|<64hex> 但 amount=0（没真转账）算真消息——真实送崽要求转 1 币',
+    isRealMessage({ amount: 0, burn: 1, memo: `${PETX_PREFIX}${fakeId}`, from: selfAddr, to: otherAddr }),
   );
 
   console.log(`\n— 激活门控：激活前旧规则放行低销毁长消息，不 retroactive 拒绝已广播交易 —`);

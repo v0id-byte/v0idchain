@@ -5,12 +5,15 @@ import type { Block } from './block.js';
 import {
   NULL_ADDRESS,
   RED_PREFIX,
+  RED_ESCROW_ADDRESS,
   CLAIM_PREFIX,
   REFUND_PREFIX,
   STAKE_PREFIX,
+  STAKE_ESCROW_ADDRESS,
   UNSTAKE_PREFIX,
   SLASH_PREFIX,
   IDCLAIM_PREFIX,
+  IDENTITY_ESCROW_ADDRESS,
   IDRELEASE_PREFIX,
 } from './config.js';
 import {
@@ -63,58 +66,72 @@ const HEX64 = /^[0-9a-f]{64}$/;
  * 与链上消息的形态撞型 → 不排除的话会被 parseMessages 误收进收件箱。消息防刷底线上线后，这个判定还多了一层
  * 经济含义：被排除的交易不受烧币下限约束，故此处按两类前缀区别对待：
  *
- * ① STAKE/UNSTAKE/SLASH/RED/CLAIM/REFUND/IDCLAIM/IDRELEASE：**共识层**（blockchain.ts redOpError）已原生
- *    校验合法性，篡改 burn/payload 的交易根本进不了链，`startsWith` 足够，不构成绕过消息门槛的风险。
- * ② PET/FISH/LAND/ZONE/PLANT/HARVEST/CROPX/MINE 系：共识层完全不管，合法性全靠各自 parseXxx(chain) 在
- *    展示层重放判定——纯 `startsWith` 会被“前缀相同、payload 塞垃圾”套壳绕过消息烧币下限（新增的经济边界），
- *    故逐一核对 payload 格式 + 该操作要求的精确/达标烧币额，**复用各模块导出的现成常量/函数**而非在此重复
- *    定义一套规则，避免与游戏模块演进脱节。
+ * ① CLAIM/REFUND/UNSTAKE/SLASH/IDRELEASE（id 引用类，amount=0）：**共识层**（blockchain.ts redOpError）
+ *    校验时完全不看 `to`（只认 memo 里引用的 id + 发起人权限），不合法形态（id 不存在/格式错/权限不对）
+ *    根本进不了链，`startsWith` 足够，不构成绕过消息门槛的风险。
+ * ② STAKE/RED/IDCLAIM（转托管创建类）：consensus 只在 `to === 对应托管地址` 时才校验其合法性——若发往
+ *    别的地址，redOpError 的对应分支根本不会触发，交易会落到 NORMAL 兜底，此时若仍判定为“协议层”会让它
+ *    绕过消息门槛。故必须额外核对 `to === 对应托管地址`。
+ * ③ PET/FISH/LAND/ZONE/PLANT/HARVEST/CROPX/MINE 系：共识层完全不管，合法性全靠各自 parseXxx(chain) 在
+ *    展示层重放判定，且几乎全部要求 `from === to`（自转烧币，见各模块 `selfBurn`/`tx.from!==tx.to` 判断），
+ *    `PETX`（送崽转移）例外——要求 `to !== from` 且 `amount>0`（转账）。纯 `startsWith` 或只核对 payload/
+ *    烧币额仍不够：不满足自转/转移语境的“伪装成协议操作的普通转账”也会被误判排除，故这里同时核对
+ *    payload 格式 + 该操作要求的精确/达标烧币额 + `from`/`to`/`amount` 语境，**复用各模块导出的现成
+ *    常量/函数**而非在此重复定义一套规则，避免与游戏模块演进脱节。
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）与 `NAME|`（抢注是 burn=0 的自转，
  * 形态上压根不是消息，isMessageTx 已天然排除，无需也不该在此列）。
  */
-export function isProtocolMemo(tx: { memo: string; burn?: number }): boolean {
-  const { memo } = tx;
+export function isProtocolMemo(tx: { memo: string; burn?: number; from?: string; to?: string; amount?: number }): boolean {
+  const { memo, from, to } = tx;
   const burn = tx.burn ?? 0;
+  const amount = tx.amount ?? 0;
+  const selfTransfer = from !== undefined && to !== undefined && from === to;
 
-  // ① 共识层已原生校验，不合法形态进不了链，startsWith 足够
+  // ① id 引用类：consensus 不看 to，不合法形态进不了链，startsWith 足够
   if (
-    memo.startsWith(STAKE_PREFIX) ||
     memo.startsWith(UNSTAKE_PREFIX) ||
     memo.startsWith(SLASH_PREFIX) ||
-    memo.startsWith(RED_PREFIX) ||
     memo.startsWith(CLAIM_PREFIX) ||
     memo.startsWith(REFUND_PREFIX) ||
-    memo.startsWith(IDCLAIM_PREFIX) ||
     memo.startsWith(IDRELEASE_PREFIX)
   ) {
     return true;
   }
 
-  // ② 仅应用层校验，逐一核对 payload + 烧币额，防「前缀相同+塞垃圾」绕过消息门槛
-  if (memo === PET_PREFIX) return true; // 孵化：memo 精确、burn 只要求 >0（无固定值），无 payload 可塞
-  if (memo === FISH_PREFIX) return true; // 铸渔获：同上
-  if (memo === CROPX_PREFIX) return true; // 预留前缀（尚未实现转移逻辑），无已知格式，精确匹配最保守
+  // ② 转托管创建类：只有真的发往对应托管地址，consensus 才会校验/接纳，其余地址等于普通转账
+  if (memo.startsWith(STAKE_PREFIX)) return to === STAKE_ESCROW_ADDRESS;
+  if (memo.startsWith(RED_PREFIX)) return to === RED_ESCROW_ADDRESS;
+  if (memo.startsWith(IDCLAIM_PREFIX)) return to === IDENTITY_ESCROW_ADDRESS;
 
-  if (memo.startsWith(PETX_PREFIX)) return HEX64.test(memo.slice(PETX_PREFIX.length)); // 送崽：amount>0 不烧币，payload=petId
-  if (memo.startsWith(PETUNSTATION_PREFIX)) return HEX64.test(memo.slice(PETUNSTATION_PREFIX.length)); // 召回：免费，payload=petId
+  // ③ 仅应用层校验的游戏前缀：payload 格式 + 烧币额 + from/to/amount 语境，防「伪装成协议操作」绕过消息门槛
+  if (memo === PET_PREFIX) return selfTransfer; // 孵化：memo 精确、自转、burn 只要求 >0（无固定值），无 payload 可塞
+  if (memo === FISH_PREFIX) return selfTransfer; // 铸渔获：同上
+  if (memo === CROPX_PREFIX) return selfTransfer; // 预留前缀（尚未实现转移逻辑），无已知格式，精确匹配最保守
+
+  if (memo.startsWith(PETX_PREFIX)) {
+    // 送崽：转移给别人（非自转）+ 真的转了币，payload=petId。amount=0 的「转移」不是真实语义，不豁免。
+    return !selfTransfer && amount > 0 && HEX64.test(memo.slice(PETX_PREFIX.length));
+  }
+  if (memo.startsWith(PETUNSTATION_PREFIX)) return selfTransfer && HEX64.test(memo.slice(PETUNSTATION_PREFIX.length)); // 召回：自转、免费，payload=petId
   if (memo.startsWith(PETBREED_PREFIX)) {
     const parts = memo.slice(PETBREED_PREFIX.length).split('|');
-    return parts.length === 2 && parts.every((p) => HEX64.test(p)) && burn === PET_BREED_COST;
+    return selfTransfer && parts.length === 2 && parts.every((p) => HEX64.test(p)) && burn === PET_BREED_COST;
   }
   if (memo.startsWith(PETEVO_PREFIX)) {
-    return HEX64.test(memo.slice(PETEVO_PREFIX.length)) && burn === PET_EVO_COST;
+    return selfTransfer && HEX64.test(memo.slice(PETEVO_PREFIX.length)) && burn === PET_EVO_COST;
   }
   if (memo.startsWith(PETFARM_PREFIX)) {
     const parts = memo.slice(PETFARM_PREFIX.length).split('|');
-    return parts.length === 2 && parts.every((p) => HEX64.test(p)) && burn === PETFARM_COST;
+    return selfTransfer && parts.length === 2 && parts.every((p) => HEX64.test(p)) && burn === PETFARM_COST;
   }
   if (memo.startsWith(LAND_PREFIX)) {
     // 地价随链上状态浮动（下限需重放 soldTotal/velocity 才能算出），此处无法精确核验金额；
-    // 但 payload 收紧为纯数字已杜绝夹带任意字符串，真实地价下限仍由 parseFarm/共识层的经济防线把关。
-    return /^\d+$/.test(memo.slice(LAND_PREFIX.length));
+    // 但 payload 收紧为纯数字 + 自转要求已杜绝夹带任意字符串，真实地价下限仍由 parseFarm/共识层的经济防线把关。
+    return selfTransfer && /^\d+$/.test(memo.slice(LAND_PREFIX.length));
   }
   if (memo.startsWith(ZONE_PREFIX)) {
+    if (!selfTransfer) return false;
     const rest = memo.slice(ZONE_PREFIX.length);
     const sep = rest.indexOf('|');
     if (sep < 0) return false;
@@ -123,6 +140,7 @@ export function isProtocolMemo(tx: { memo: string; burn?: number }): boolean {
     return /^\d+$/.test(plotN) && (ZONE_TYPES as readonly string[]).includes(type) && burn === ZONE_COST;
   }
   if (memo.startsWith(PLANT_PREFIX)) {
+    if (!selfTransfer) return false;
     const parts = memo.slice(PLANT_PREFIX.length).split('|');
     if (parts.length !== 3) return false;
     const [zoneId, crop, slot] = parts;
@@ -130,9 +148,10 @@ export function isProtocolMemo(tx: { memo: string; burn?: number }): boolean {
     return burn === SEED_COST[crop as Crop];
   }
   if (memo.startsWith(HARVEST_PREFIX)) {
-    return HEX64.test(memo.slice(HARVEST_PREFIX.length)) && burn === HARVEST_BURN;
+    return selfTransfer && HEX64.test(memo.slice(HARVEST_PREFIX.length)) && burn === HARVEST_BURN;
   }
   if (memo.startsWith(MINE_PREFIX)) {
+    if (!selfTransfer) return false;
     const m = parseMineMemo(memo);
     if (!m) return false;
     const needed = m.type === 'discovery' ? mineDiscoveryBurn(m.depth, m.kind) : mineMaterialBurn(m.kind, m.count);
@@ -143,7 +162,7 @@ export function isProtocolMemo(tx: { memo: string; burn?: number }): boolean {
 }
 
 /** 是否“真实消息”（应受消息防刷底线约束，见 config.ts minMessageBurnFor）：amount=0+burn>0 且非协议层 memo。 */
-export function isRealMessage(tx: { amount: number; burn?: number; memo: string }): boolean {
+export function isRealMessage(tx: { amount: number; burn?: number; memo: string; from: string; to: string }): boolean {
   return isMessageTx(tx) && !isProtocolMemo(tx);
 }
 
