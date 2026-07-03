@@ -10,6 +10,7 @@ import {
   FEE_RATE_BPS,
   minFeeFor,
   MESSAGE_BURN,
+  minMessageBurnFor,
   MAX_MEMO,
   NULL_ADDRESS,
   SYSTEM_ADDRESSES,
@@ -158,11 +159,13 @@ export class V0idNode {
   /**
    * 给某地址发一条链上消息：不转币、烧 burn 个 $V0ID 进虚空、付 fee 给矿工。算好 nonce、签名、进池、广播。
    * encrypt=true → 用收件人公钥端到端加密正文（只有收发双方能解），密文以 `ENC|` 上链。
+   * burn 省略（undefined）时按**最终上链 memo 长度**（加密后是密文长度，不是明文长度）算默认值——
+   * 必须在这里算，不能用固定参数默认值：消息防刷底线激活后，固定默认值对稍长的消息会不够烧、被 mempool 拒收。
    */
   message(
     to: string,
     text: string,
-    burn = MESSAGE_BURN,
+    burn?: number,
     fee = MIN_FEE,
     encrypt = false,
   ): { ok: boolean; tx?: Transaction; error?: string } {
@@ -173,9 +176,10 @@ export class V0idNode {
         return { ok: false, error: `加密后超长（${[...body].length}>${MAX_MEMO}），消息太长` };
       }
     }
+    const actualBurn = burn ?? minMessageBurnFor([...body].length);
     const pending = this.bc.mempool.filter((t) => t.from === this.wallet.address).length;
     const nonce = this.bc.nonceOf(this.wallet.address) + pending;
-    const tx = createMessage(this.wallet, to, body, nonce, burn, fee);
+    const tx = createMessage(this.wallet, to, body, nonce, actualBurn, fee);
     const r = this.bc.addTransaction(tx);
     if (!r.ok) return { ok: false, error: r.error };
     this.markSeen(tx.txid);

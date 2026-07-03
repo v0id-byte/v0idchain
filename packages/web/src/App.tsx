@@ -510,7 +510,9 @@ function Messaging({
 }) {
   const [to, setTo] = useState('');
   const [text, setText] = useState('');
-  const [burn, setBurn] = useState(String(defaultBurn));
+  // 留空 = 让节点按最终 memo 长度（加密则是密文长度）自动算烧币额；不预填固定默认值——
+  // 消息防刷底线激活后，固定默认值对长消息会不够烧、被拒收。placeholder 仍展示起步参考值。
+  const [burn, setBurn] = useState('');
   const [enc, setEnc] = useState(false);
   const [tab, setTab] = useState<'in' | 'out'>('in');
   const [busy, setBusy] = useState(false);
@@ -521,12 +523,13 @@ function Messaging({
     setBusy(true);
     setBanner(null);
     try {
-      const r = await postJSON<{ txid: string }>(api, '/message', { to: to.trim(), text, burn: Number(burn), fee: minFee, encrypt: enc }, token);
-      setBanner({ kind: 'ok', text: `已广播${enc ? ' 🔒加密' : ''} · 烧 ${burn} 🔥 · txid ${r.txid.slice(0, 20)}…` });
+      const burnValue = burn.trim() === '' ? undefined : Number(burn);
+      const r = await postJSON<{ txid: string }>(api, '/message', { to: to.trim(), text, burn: burnValue, fee: minFee, encrypt: enc }, token);
+      setBanner({ kind: 'ok', text: `已广播${enc ? ' 🔒加密' : ''} · 烧 ${burnValue ?? '(按长度自动)'} 🔥 · txid ${r.txid.slice(0, 20)}…` });
       track(r.txid);
       setTo('');
       setText('');
-      setBurn(String(defaultBurn));
+      setBurn('');
       onDone();
     } catch (e) {
       setBanner({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
@@ -550,13 +553,13 @@ function Messaging({
           <input value={text} onChange={(e) => setText(e.target.value)} placeholder="在链上给 TA 留句话…" maxLength={512} />
         </div>
         <div className="field">
-          <label>烧 🔥（销毁，≥1）</label>
-          <input value={burn} onChange={(e) => setBurn(e.target.value)} placeholder={String(defaultBurn)} inputMode="numeric" />
+          <label>烧 🔥（销毁，留空按长度自动）</label>
+          <input value={burn} onChange={(e) => setBurn(e.target.value)} placeholder={`自动（起步 ${defaultBurn}）`} inputMode="numeric" />
         </div>
       </div>
       <div className="btns" style={{ alignItems: 'center', gap: 12 }}>
         <button disabled={busy || !to || !text} onClick={send}>
-          发送（烧 {burn || 0} $V0ID + {minFee} gas）
+          发送（烧 {burn.trim() === '' ? '按长度自动' : burn} $V0ID + {minFee} gas）
         </button>
         <label className="linklike" style={{ fontSize: 13, userSelect: 'none' }}>
           <input type="checkbox" checked={enc} onChange={(e) => setEnc(e.target.checked)} style={{ marginRight: 4 }} />
