@@ -37,6 +37,7 @@ import {
   isMemoSpamCandidate,
   buildNameMemo,
   buildListMemo,
+  DEL_PREFIX,
   buildRelayMemo,
   transactionPayloadHash,
   sign,
@@ -258,6 +259,34 @@ async function main() {
       from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
     }),
   );
+  check(
+    'DEL|<64hex>（自转、burn=0，V0idNode.marketDelist() 的真实形态）不算真消息',
+    !isRealMessage({ amount: 1, burn: 0, memo: `${DEL_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'DEL| 但 burn>0（不是真实撤单形态）算真消息',
+    isRealMessage({ amount: 1, burn: 1, memo: `${DEL_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+
+  console.log(`\n— 核心回归⑥：IDRELEASE 拒绝条件依赖 amount，未激活+amount≠0 这个组合不能豁免（旧漏洞⑦）—`);
+  check(
+    'IDRELEASE|<64hex> 已激活 + amount=0（真实解锁形态）不算真消息',
+    !isRealMessage({ amount: 0, burn: 0, memo: `${IDRELEASE_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'IDRELEASE|<64hex> 未激活 + amount=0：redOpError 会直接拒绝这笔交易（consensus 层面早已挡住），' +
+      '但 isProtocolMemo 仍应保守地判定为真消息（协议未激活时它就不该被当协议操作豁免）',
+    isRealMessage({ amount: 0, burn: 1, memo: `${IDRELEASE_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'IDRELEASE|<64hex> 未激活 + amount=1（旧漏洞⑦核心场景：redOpError 的未激活门控只拦 amount=0，' +
+      'amount≠0 会被漏判成普通转账接受）现在正确算真消息，受消息门槛约束',
+    isRealMessage({ amount: 1, burn: 0, memo: `${IDRELEASE_PREFIX}${'x'.repeat(500)}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'IDRELEASE|<64hex> 已激活但 amount≠0（不是真实解锁形态，会被 redOpError 拒绝）算真消息',
+    isRealMessage({ amount: 1, burn: 0, memo: `${IDRELEASE_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
+  );
 
   console.log(`\n— 激活门控：激活前旧规则放行低销毁长消息，不 retroactive 拒绝已广播交易 —`);
   {
@@ -332,8 +361,8 @@ async function main() {
   const smuggleMemo = 'y'.repeat(512);
   // createTransaction/createMessage 都不支持「amount>0 且 burn>0」这种组合（前者不接受 burn 参数，
   // 后者 amount 固定 0），故这里直接用底层 payload+签名手动构造，模拟“有人手写了这样一笔交易”。
-  const selfMemoTx = (amount: number, burn: number, nonce: number) => {
-    const base = { from: carol2.address, to: carol2.address, amount, fee: MIN_FEE, nonce, timestamp: Date.now(), memo: smuggleMemo, burn };
+  const selfMemoTx = (amount: number, burn: number, nonce: number, memo = smuggleMemo) => {
+    const base = { from: carol2.address, to: carol2.address, amount, fee: MIN_FEE, nonce, timestamp: Date.now(), memo, burn };
     const txid = transactionPayloadHash(base);
     return { ...base, signature: sign(txid, carol2.privateKey), txid };
   };
@@ -350,6 +379,20 @@ async function main() {
   );
   await bc.mine(carol2.address);
   check('NAME/套壳场景后全链守恒', conserved(bc));
+
+  console.log(`\n— 端到端：DEL 撤单不受影响、IDRELEASE「未激活+amount≠0」套壳被真实拒绝 —`);
+  const delTx = createTransaction(carol2, carol2.address, 1, bc.nonceOf(carol2.address), `${DEL_PREFIX}${fakeId}`, MIN_FEE);
+  check('DEL| 真实撤单（自转 1 币 + burn=0）激活后依然被接受，不需要额外销毁费', bc.addTransaction(delTx).ok);
+  await bc.mine(carol2.address);
+  // IDRELEASE 尚未到 IDENTITY_ACTIVATION_HEIGHT（本链当前链高远低于它），amount≠0 套壳按旧漏洞⑦
+  // 本该被误判成协议操作豁免；现在必须受消息门槛约束。
+  const idreleaseSmuggleTx = selfMemoTx(1, 0, bc.nonceOf(carol2.address), `${IDRELEASE_PREFIX}${'z'.repeat(500)}`);
+  check(
+    'IDRELEASE| 未激活 + amount=1 + burn=0 套壳（旧漏洞⑦）真实提交时被拒绝',
+    !bc.addTransaction(idreleaseSmuggleTx).ok,
+  );
+  await bc.mine(carol2.address);
+  check('DEL/IDRELEASE 套壳场景后全链守恒', conserved(bc));
 
   console.log(`\n— mempool 与选包两条路径一致拒绝：绕过 addTransaction 直塞进 mempool 也不会被打包 —`);
   {

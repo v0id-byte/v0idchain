@@ -45,7 +45,7 @@ import {
 } from './farm.js';
 import { MINE_PREFIX, parseMineMemo, mineDiscoveryBurn, mineMaterialBurn } from './mining.js';
 import { NAME_PREFIX, isValidName } from './names.js';
-import { MKT_PREFIX, MAX_TITLE } from './market.js';
+import { MKT_PREFIX, DEL_PREFIX, MAX_TITLE } from './market.js';
 import { RELAY_PREFIX, parseRelayMemo } from './relays.js';
 
 export interface ChainMessage {
@@ -96,16 +96,22 @@ const DIGITS = /^\d{1,9}$/;
  * 而非真人私信正文。这些子系统也会发出与链上消息撞型的交易——不排除的话会被 parseMessages 误收进
  * 收件箱，激活消息防刷底线后还会被误判成可以豁免烧币下限。此处按四类前缀区别对待：
  *
- * ① CLAIM/REFUND/UNSTAKE/SLASH/IDRELEASE（id 引用类，amount=0）：**共识层**（blockchain.ts redOpError）
- *    校验时完全不看 `to`（只认 memo 里引用的 id + 发起人权限），不合法形态（id 不存在/格式错/权限不对）
- *    根本进不了链，`startsWith` 足够，不构成绕过消息门槛的风险。这几个各自也有“激活前 amount=0 新边界
- *    直接拒绝”的门控（见 blockchain.ts redOpError 早期分支），不需要在此重复判断高度。
+ * ① CLAIM/REFUND/UNSTAKE/SLASH（id 引用类，amount=0，consensus 拒绝条件不依赖 amount）：**共识层**
+ *    （blockchain.ts redOpError）校验时完全不看 `to`（只认 memo 里引用的 id + 发起人权限），且未激活/
+ *    格式错/权限不对时**无条件**拒绝（不看 amount 是多少），不合法形态根本进不了链，`startsWith` 足够。
  * ② STAKE/RED/IDCLAIM（转托管创建类）：consensus 只在 `to === 对应托管地址` 时才校验其合法性——若发往
  *    别的地址，redOpError 的对应分支根本不会触发，交易会落到 NORMAL 兜底，此时若仍判定为“协议层”会让它
  *    绕过消息门槛。故必须额外核对 `to === 对应托管地址`。STAKE/IDCLAIM 还各自有共识激活高度（RED 从创世
  *    即生效，没有）——**激活前它们是 amount>0 的普通转账，会被 consensus 直接接受但不会被当协议操作**，
  *    此时仍判定为协议层会让它免费绕过消息门槛，故还需核对 `atHeight >= 对应激活高度`。
- * ③ PET/FISH/LAND/ZONE/PLANT/HARVEST/CROPX/MINE 系：共识层完全不管，合法性全靠各自 parseXxx(chain) 在
+ * ③ IDRELEASE（id 引用类，但拒绝条件依赖 amount，单独一类，不能归进①）：**redOpError 的未激活门控只在
+ *    `tx.amount === 0` 时才触发**（`!identityActive && startsWith(IDRELEASE) && amount===0` 才拒绝），
+ *    这是刻意设计——避免 retroactive 拒绝激活前 amount>0 的历史普通转账。副作用是「amount≠0 + 未激活」
+ *    这个组合会漏过 redOpError 所有 IDRELEASE 专属分支、落到 NORMAL 当普通转账接受，此时若 isProtocolMemo
+ *    仍无条件按前缀判定为协议操作，就会被免费用来绕过消息门槛（自转 1 币 + 超长 IDRELEASE| 内容 + burn=0）。
+ *    故必须核对 `atHeight >= IDENTITY_ACTIVATION_HEIGHT && amount === 0`——真正会被 consensus 当解锁
+ *    处理的唯一形态。
+ * ④ PET/FISH/LAND/ZONE/PLANT/HARVEST/CROPX/MINE 系：共识层完全不管，合法性全靠各自 parseXxx(chain) 在
  *    展示层重放判定，且几乎全部要求 `from === to`（自转烧币，见各模块 `selfBurn`/`tx.from!==tx.to` 判断），
  *    `PETX`（送崽转移）例外——要求 `to !== from` 且 `amount>0`（转账）。纯 `startsWith` 或只核对 payload/
  *    烧币额仍不够：不满足自转/转移语境的“伪装成协议操作的普通转账”也会被误判排除；数字类 payload
@@ -113,11 +119,11 @@ const DIGITS = /^\d{1,9}$/;
  *    范围校验在 parseFarm 里，此处只做“像不像一个正常数字标识符”的语法粗筛，用 DIGITS 卡位数上限）。
  *    故这里同时核对 payload 格式 + 该操作要求的精确/达标烧币额 + `from`/`to`/`amount` 语境，**复用各
  *    模块导出的现成常量/函数**而非在此重复定义一套规则，避免与游戏模块演进脱节。
- * ④ NAME/MKT/RELAY（自转、burn 恒为 0 的纯展示层约定）：昵称抢注/集市上架/中继发布都是“自转 1 币 +
- *    memo，burn=0”。isMemoSpamCandidate 收紧为“自转+memo 非空”（不再要求 amount=0）后，这三个不能
- *    再像旧版那样靠“burn=0 被 isMessageTx 天然排除”蒙混过关，必须显式核对 payload 格式（复用
- *    names.ts/market.ts/relays.ts 的现成校验）+ `burn === 0`（真实形态恒定，容不得套壳夹带垃圾还
- *    绕开门槛——套壳者只要 burn>0 就已经不是这三个协议的合法形态，会落回消息门槛）。
+ * ⑤ NAME/MKT/DEL/RELAY（自转、burn 恒为 0 的纯展示层约定）：昵称抢注/集市上架/集市撤单/中继发布都是
+ *    “自转 1 币 + memo，burn=0”。isMemoSpamCandidate 收紧为“自转+memo 非空”（不再要求 amount=0）后，
+ *    这几个不能再像旧版那样靠“burn=0 被 isMessageTx 天然排除”蒙混过关，必须显式核对 payload 格式
+ *    （复用 names.ts/market.ts/relays.ts 的现成校验）+ `burn === 0`（真实形态恒定，容不得套壳夹带垃圾
+ *    还绕开门槛——套壳者只要 burn>0 就已经不是这几个协议的合法形态，会落回消息门槛）。
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）。
  */
@@ -135,13 +141,12 @@ export function isProtocolMemo(tx: {
   const atHeight = tx.atHeight ?? Infinity; // 未传高度（如旧调用点/纯单元测试）时按“已激活”处理，不新增拒绝面
   const selfTransfer = from !== undefined && to !== undefined && from === to;
 
-  // ① id 引用类：consensus 不看 to，不合法形态（含激活前 amount=0 新边界）进不了链，startsWith 足够
+  // ① id 引用类（拒绝条件不依赖 amount）：consensus 不看 to、未激活/格式错/权限不对时无条件拒绝，startsWith 足够
   if (
     memo.startsWith(UNSTAKE_PREFIX) ||
     memo.startsWith(SLASH_PREFIX) ||
     memo.startsWith(CLAIM_PREFIX) ||
-    memo.startsWith(REFUND_PREFIX) ||
-    memo.startsWith(IDRELEASE_PREFIX)
+    memo.startsWith(REFUND_PREFIX)
   ) {
     return true;
   }
@@ -151,7 +156,11 @@ export function isProtocolMemo(tx: {
   if (memo.startsWith(RED_PREFIX)) return to === RED_ESCROW_ADDRESS; // 红包从创世即生效，无激活高度
   if (memo.startsWith(IDCLAIM_PREFIX)) return to === IDENTITY_ESCROW_ADDRESS && atHeight >= IDENTITY_ACTIVATION_HEIGHT;
 
-  // ③ 仅应用层校验的游戏前缀：payload 格式 + 烧币额 + from/to/amount 语境，防「伪装成协议操作」绕过消息门槛
+  // ③ IDRELEASE：拒绝条件依赖 amount（未激活门控只拦 amount=0 新边界），故不能归进①的无条件 startsWith；
+  //    只有「已激活 + amount=0」才是真正会被 consensus 当解锁处理的形态，其余（含未激活+amount≠0）不豁免。
+  if (memo.startsWith(IDRELEASE_PREFIX)) return atHeight >= IDENTITY_ACTIVATION_HEIGHT && amount === 0;
+
+  // ④ 仅应用层校验的游戏前缀：payload 格式 + 烧币额 + from/to/amount 语境，防「伪装成协议操作」绕过消息门槛
   if (memo === PET_PREFIX) return selfTransfer; // 孵化：memo 精确、自转、burn 只要求 >0（无固定值），无 payload 可塞
   if (memo === FISH_PREFIX) return selfTransfer; // 铸渔获：同上
   if (memo === CROPX_PREFIX) return selfTransfer; // 预留前缀（尚未实现转移逻辑），无已知格式，精确匹配最保守
@@ -205,7 +214,7 @@ export function isProtocolMemo(tx: {
     return burn >= needed;
   }
 
-  // ④ 自转、burn 恒为 0 的纯展示层约定：昵称抢注 / 集市上架 / 中继发布
+  // ⑤ 自转、burn 恒为 0 的纯展示层约定：昵称抢注 / 集市上架 / 集市撤单 / 中继发布
   if (memo.startsWith(NAME_PREFIX)) {
     if (!selfTransfer || burn !== 0) return false;
     const name = memo.slice(NAME_PREFIX.length).trim().toLowerCase(); // 归一化口径同 parseNames
@@ -219,6 +228,10 @@ export function isProtocolMemo(tx: {
     const price = Number(rest.slice(0, sep));
     const title = rest.slice(sep + 1);
     return Number.isInteger(price) && price > 0 && title.length > 0 && [...title].length <= MAX_TITLE;
+  }
+  if (memo.startsWith(DEL_PREFIX)) {
+    // 撤单：V0idNode.marketDelist() 固定自转 1 币 + burn=0；payload = 上架交易 txid（64-hex）。
+    return selfTransfer && burn === 0 && HEX64.test(memo.slice(DEL_PREFIX.length));
   }
   if (memo.startsWith(RELAY_PREFIX)) {
     return selfTransfer && burn === 0 && parseRelayMemo(memo) !== null;
