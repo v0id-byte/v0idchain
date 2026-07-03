@@ -22,6 +22,7 @@ import {
   STAKE_ESCROW_ADDRESS,
   MINT_ESCROW_ADDRESS,
   RESERVED_NAMES,
+  NULL_ADDRESS,
   GENESIS_PREMINE,
   BLOCK_REWARD,
   MIN_FEE,
@@ -232,6 +233,41 @@ async function main() {
     check('racerB 的重试认领成功上链', resolveIdentityOwner(computeIdentityState(rc.chain), 'bob2') === racerB.address);
     check('竞态回归场景全链守恒', conserved(rc));
     check('竞态回归场景整链校验通过', Blockchain.validateChain(rc.chain).ok);
+  }
+
+  console.log(`\n— 核心回归：computeIdentityState 必须跳过 coinbase，不被矿工用出块奖励“伪造”认领 —`);
+  {
+    const idc = activatedClone();
+    const evilMiner = Wallet.generate();
+    // 恶意 coinbase：createCoinbase 硬编码 memo=''，但 verifyTransaction 对 coinbase 的校验只看
+    // fee===0/burn===0/amount>0，完全不查 memo——恶意矿工可以绕过官方辅助函数手写一笔发往身份托管
+    // 地址、带 IDCLAIM 内容的“出块奖励”。这里直接构造一个含此交易的伪造区块喂给 computeIdentityState
+    // （纯函数、只读 chain 结构，不校验 hash/PoW/merkleRoot，字段可以是占位值）。
+    const evilCoinbase = {
+      from: NULL_ADDRESS,
+      to: IDENTITY_ESCROW_ADDRESS,
+      amount: IDENTITY_STAKE_MIN,
+      fee: 0,
+      nonce: idc.height + 1,
+      timestamp: Date.now(),
+      memo: `${IDCLAIM_PREFIX}evilname`,
+      signature: '',
+      txid: 'f'.repeat(64),
+    };
+    const fakeBlock: Block = {
+      index: idc.height + 1,
+      timestamp: Date.now(),
+      prevHash: idc.latest.hash,
+      transactions: [evilCoinbase],
+      merkleRoot: 'e'.repeat(64),
+      difficulty: 8,
+      nonce: 0,
+      miner: evilMiner.address,
+      hash: 'd'.repeat(64),
+    };
+    const idState = computeIdentityState([...idc.chain, fakeBlock]);
+    check('恶意 coinbase（发往身份托管+IDCLAIM memo+amount够）不会被记成认领', !idState.pseudonymToClaimId.has('evilname'));
+    check('resolveIdentityOwner("evilname") 无主（未被真实占用，与共识状态一致）', resolveIdentityOwner(idState, 'evilname') === undefined);
   }
 
   console.log(`\n— 分叉安全：computeState ≡ validateChain ≡ replaceChain（余额与身份状态逐项一致）—`);

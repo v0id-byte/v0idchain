@@ -13,6 +13,7 @@
 // ⚠️ 与 names.ts 的耦合：复用其 isValidName/RESERVED_NAMES（1~20 位字符集 + 保留名规则），避免用户
 // 学两套昵称规则。这意味着以后修改 names.ts 的字符集/保留名会**同时是两个功能的软分叉**，改动前须知悉。
 import type { Block } from './block.js';
+import { isCoinbase } from './transaction.js';
 import { isValidName, RESERVED_NAMES } from './names.js';
 import {
   IDCLAIM_PREFIX,
@@ -79,6 +80,14 @@ export function computeIdentityState(chain: Block[]): {
   for (const b of chain) {
     if (b.index < IDENTITY_ACTIVATION_HEIGHT) continue;
     for (const tx of b.transactions) {
+      // coinbase（矿工出块奖励）的 to/amount 矿工可自由设置、memo 也不受 verifyTransaction 约束
+      // （coinbase 校验只看 fee===0/burn===0/amount>0，不查 memo）——恶意矿工可以绕过 createCoinbase
+      // 这个辅助函数，手写一笔 to=IDENTITY_ESCROW_ADDRESS、memo=IDCLAIM|<name> 的 coinbase，把出块奖励
+      // 凑够 IDENTITY_STAKE_MIN。真正的共识 computeState 在处理 coinbase 时直接 continue、从不进
+      // applyTx，永远不会创建对应的 identityClaims 记录；这里的只读展示层若不排除 coinbase，会把这
+      // 笔交易误记成一条合法认领，让 UI/API 显示该假名“已被占用”，即便链上共识状态里根本没有此记录
+      // （真实用户之后仍能成功认领，只是中间会有一段误导性的展示）。
+      if (isCoinbase(tx)) continue;
       const m = tx.memo;
       if (!m) continue;
       // 认领 = 转给托管地址 + IDCLAIM| memo（旧节点也会把它当普通转账锁进托管 → 不静默分叉）
