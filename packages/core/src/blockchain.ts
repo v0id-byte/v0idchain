@@ -637,6 +637,14 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number, blockDif
 export class Blockchain {
   chain: Block[];
   mempool: Transaction[] = [];
+  /**
+   * revalidateMempool 剔除交易时的回调（可选，供上层如 V0idNode 挂载）：同步清理调用方自己的
+   * P2P 去重缓存（如 seenTx），避免被剔除交易的 txid 仍被当作“已处理过”而静默吞掉外部客户端的
+   * 重新提交。用回调而非返回值/共享字段：revalidateMempool 可能在挖矿（PoW 异步计算期间）与
+   * P2P 收块两条路径交错触发，共享字段会被后触发的一次覆盖、丢失前一次的清理信息；回调在
+   * revalidateMempool 内部同步调用，不依赖调用方“事后”读取的时机，没有这个竞态风险。
+   */
+  onMempoolDropped?: (txids: string[]) => void;
 
   constructor() {
     this.chain = [genesisBlock()];
@@ -877,9 +885,12 @@ export class Blockchain {
     const old = this.mempool;
     this.mempool = [];
     const state = this.computeState(); // 只算一次，供本轮所有旧交易共用
+    const dropped: string[] = [];
     for (const tx of old) {
       if (this.admitAgainstState(tx, state).ok) this.mempool.push(tx);
+      else dropped.push(tx.txid);
     }
+    if (dropped.length > 0) this.onMempoolDropped?.(dropped);
   }
 
   // ---- 整链校验（共识的唯一权威）----

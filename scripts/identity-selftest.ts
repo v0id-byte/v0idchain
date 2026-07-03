@@ -185,6 +185,10 @@ async function main() {
   console.log(`\n— 核心回归：两笔 pending IDCLAIM 抢同一假名，输家必须被清出 mempool，不卡住其后续 nonce 队列 —`);
   {
     const rc = activatedClone();
+    // 挂上和 node.ts 同款的回调，验证 revalidateMempool 真的会把被清理交易的 txid 上报出来——
+    // 这是 V0idNode 能同步清理自己 seenTx 去重缓存、避免静默吞掉外部客户端重新广播的前提。
+    const droppedTxids: string[] = [];
+    rc.onMempoolDropped = (ids) => droppedTxids.push(...ids);
     const racerA = Wallet.generate(); // 出价更高，赢家
     const racerB = Wallet.generate(); // 出价更低，输家
     await fund(rc, racerA.address, IDENTITY_STAKE_MIN + 20);
@@ -213,6 +217,10 @@ async function main() {
     check(
       'racerB 的后续交易（nonce+1）也一并被清出（其依赖的 nonce=0 交易已判负，不再是合法排队序列）',
       !rc.mempool.some((t) => t.txid === followUp.txid),
+    );
+    check(
+      'onMempoolDropped 回调上报了 claimB 和 followUp 的 txid（node.ts 据此同步清理 seenTx，外部客户端重新广播不会被静默吞掉）',
+      droppedTxids.includes(claimB.txid) && droppedTxids.includes(followUp.txid),
     );
     check('resolveIdentityOwner("alice") 指向赢家 racerA', resolveIdentityOwner(computeIdentityState(rc.chain), 'alice') === racerA.address);
     // 关键验证：racerB 的 nonce 队列没有被永久卡死——用 nonce=0 重新构造一笔（比如认领另一个假名）应立刻可提交。

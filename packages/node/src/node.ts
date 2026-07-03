@@ -121,6 +121,13 @@ export class V0idNode {
     this.opts = opts;
     this.wallet = loadOrCreateWallet(opts.dataDir);
     this.bc = loadChain(opts.dataDir);
+    // 每次 addBlock/replaceChain 内部的 revalidateMempool 剔除交易时，同步从 seenTx 去重缓存里
+    // 忘掉这些 txid——否则外部客户端（IDCLAIM 竞态落败方等场景）重新广播同一笔已签名交易时，
+    // acceptTx/onTx 会因为“见过这个 txid”直接短路返回 ok，实际上永远不会重新进 mempool、也不会
+    // confirm，用户会一直卡在“提交成功但没反应”，直到本节点进程重启（seenTx 清空）才会恢复正常。
+    this.bc.onMempoolDropped = (txids) => {
+      for (const id of txids) this.seenTx.delete(id);
+    };
     // 启动时把现有链里的地址全部记为“已知”，并把扫描指针对齐链顶 —— 之后只对新涌现的地址报“新人”，不刷屏历史
     this.knownAddresses = collectAddresses(this.bc.chain);
     this.lastScanHeight = this.bc.height;
