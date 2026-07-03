@@ -40,11 +40,14 @@ export class RelayReachability {
    * 描述符里的私网/回环 host（如残留 127.0.0.1 死中继、或解析到内网的恶意主机名）→ **直接判不可达，绝不真的去连**。
    */
   private probe(d: RelayDescriptor): Promise<boolean> {
+    return this.probeOne(d);
+  }
+
+  /**
    * 探测一个 cell 端点：开一个 WS（443→wss，与拨号同款），open=可达，error/超时=不可达。即开即关，不收发任何 cell。
    * 只读 host/port（不需要完整 RelayDescriptor），供中继自检（探自己的广播地址）复用同一套探测逻辑。
    */
   probeOne(d: { host: string; port: number }): Promise<boolean> {
-    const url = `${d.port === 443 ? 'wss' : 'ws'}://${wsHost(d.host)}:${d.port}`;
     return new Promise<boolean>((resolve) => {
       let done = false;
       let ws: WebSocket | undefined;
@@ -129,7 +132,6 @@ export class RelayReachability {
               return ok;
             })
             .finally(() => this.inflight.delete(d.address));
-          p = this.probeOne(d).finally(() => this.inflight.delete(d.address));
           this.inflight.set(d.address, p);
         }
         await p;
