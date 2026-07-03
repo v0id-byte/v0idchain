@@ -50,6 +50,7 @@ import {
   resolveIdentityOwner,
   IDENTITY_ESCROW_ADDRESS,
   IDENTITY_STAKE_MIN,
+  IDENTITY_ACTIVATION_HEIGHT,
   IDRELEASE_PREFIX,
   writeWalletFile,
   blockHeaders,
@@ -269,8 +270,17 @@ export class V0idNode {
   }
 
   // ---- 质押身份（Phase 3B：纯资金锁仓反女巫，无罚没、无仲裁者）----
-  /** 认领：转给身份托管地址 + memo `IDCLAIM|<pseudonym>`，锁定 IDENTITY_STAKE_MIN 押金。 */
+  /**
+   * 认领：转给身份托管地址 + memo `IDCLAIM|<pseudonym>`，锁定 IDENTITY_STAKE_MIN 押金。
+   * ⚠️ 激活高度前必须拒绝：consensus 只在 atHeight >= IDENTITY_ACTIVATION_HEIGHT 时才把这笔转账当作
+   * 认领记录进 identityClaims；提前发送会被当成一笔普通转账吃进托管地址，永久锁死却没有任何认领记录、
+   * 无法 IDRELEASE 取回。api.ts 的 HTTP 路由已有同款守卫，这里补一份是防御性重复——直接内嵌调用本方法
+   * （而非只走 HTTP）的场景（如未来 CLI 直连模式、被当库嵌入）不能只靠 HTTP 层这一道闸。
+   */
   claimIdentity(pseudonym: string): { ok: boolean; tx?: Transaction; error?: string } {
+    if (this.bc.height < IDENTITY_ACTIVATION_HEIGHT) {
+      return { ok: false, error: `身份质押尚未激活（当前高度 ${this.bc.height}，激活高度 ${IDENTITY_ACTIVATION_HEIGHT}）` };
+    }
     const r = makeIdentityClaim(pseudonym);
     if (!r.ok) return { ok: false, error: r.error };
     return this.submit(this.wallet, IDENTITY_ESCROW_ADDRESS, IDENTITY_STAKE_MIN, r.memo!, minFeeFor(IDENTITY_STAKE_MIN));
