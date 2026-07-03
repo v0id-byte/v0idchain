@@ -363,15 +363,18 @@ check('密文被篡改 → 认证失败返回 null', decryptMemo(enc.slice(0, -2
 check('512 码点 memo 合法（MAX_MEMO 已抬到 512）', verifyTransaction(createTransaction(bob, alice.address, 1, 0, 'x'.repeat(512))));
 check('513 码点 memo 仍被拒', !verifyTransaction(createTransaction(bob, alice.address, 1, 0, 'x'.repeat(513))));
 // 加密私信整条上链 + 解析 + 解密（密文 >128 码点，顺带验证 512 上限放行）
+// 挖 16 块给 alice 攒本金：密文默认烧币额随 memo 长度递增（minMessageBurnFor），比旧的扁平 MESSAGE_BURN 更贵，
+// 8 块（旧值够用）不足以覆盖新默认值 + 手续费，需要更宽的余量。
 const encBc = new Blockchain();
-for (let i = 0; i < 8; i++) await encBc.mine(alice.address);
+for (let i = 0; i < 16; i++) await encBc.mine(alice.address);
 const encMsg = createMessage(alice, bob.address, encryptMemo('链上加密第一条 🔐', bob.address, alice.privateKey), encBc.nonceOf(alice.address));
 check('加密消息交易自洽（签名/txid/memo长度）', verifyTransaction(encMsg));
-encBc.addTransaction(encMsg);
+const encAdd = encBc.addTransaction(encMsg);
+check('加密消息进池（余额足够覆盖随长度递增的默认销毁额+手续费）', encAdd.ok);
 await encBc.mine(alice.address);
 const pm = parseMessages(encBc.chain)[0];
-check('加密私信上链且密文不可读', isEncryptedMemo(pm.text) && !pm.text.includes('加密第一条'));
-check('收件人从链上密文解出明文', decryptMemo(pm.text, pm.from, bob.privateKey) === '链上加密第一条 🔐');
+check('加密私信上链且密文不可读', !!pm && isEncryptedMemo(pm.text) && !pm.text.includes('加密第一条'));
+check('收件人从链上密文解出明文', !!pm && decryptMemo(pm.text, pm.from, bob.privateKey) === '链上加密第一条 🔐');
 
 console.log(`\n— 链上昵称：全网唯一抢注（先到先得）+ 改名 + 自转约束 —`);
 const nm = new Blockchain();
