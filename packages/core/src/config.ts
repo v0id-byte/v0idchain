@@ -272,3 +272,62 @@ export const MINT_FEE_BPS = 500;
  * 否则若已被链高越过会有 retroactive 激活风险（尽管 …3 与这些 memo 历史上从未出现，实际风险极小）。
  */
 export const MINT_ACTIVATION_HEIGHT = 30_000;
+
+// ---- 消息防刷底线（软分叉：收紧校验，新版节点拒绝旧版会放行的低销毁消息）----
+/**
+ * 消息销毁额随备注长度（Unicode 码点）线性增长的斜率：每 MESSAGE_BURN_PER_CHAR_UNIT 个码点，
+ * 底线再 +1（floor 整数）。与 minFeeFor 的“基点/base”整数除法同款写法，避免浮点跨节点分叉。
+ * 取 20：一条 1 字符消息门槛仍是 MESSAGE_BURN（不误伤日常寒暄），MAX_MEMO(512) 长消息门槛涨到
+ * MESSAGE_BURN+25——长文/垃圾灌水成本显著上升，短消息几乎不受影响。
+ */
+export const MESSAGE_BURN_PER_CHAR_UNIT = 20;
+
+/**
+ * 某条真实链上消息（isRealMessage(tx)，见 messages.ts）所需的最低销毁额（整数）：
+ *   MESSAGE_BURN + floor(memoLength / MESSAGE_BURN_PER_CHAR_UNIT)
+ * 与 minFeeFor(amount) 同款“底 + 比例”整数写法。memoLength 按 Unicode 码点计（与 MAX_MEMO 一致口径）。
+ * 协议层 memo（PET/FISH/…，经 isProtocolMemo 排除）不受此约束——它们的低销毁本就是刻意的游戏经济成本。
+ */
+export function minMessageBurnFor(memoLength: number): number {
+  return MESSAGE_BURN + Math.floor(memoLength / MESSAGE_BURN_PER_CHAR_UNIT);
+}
+
+/**
+ * 消息防刷底线共识激活高度。该高度前，消息销毁额仍只按旧规则校验（burn>0 即可，见 verifyTransaction）——
+ * 避免升级节点把激活前已广播/挂在旧节点 mempool 里的低销毁消息 retroactive 判非法。
+ * ⚠️ 占位值 40000 —— **合并/部署前必须确认它 ≥ 当前实时链高 + 升级窗口**（同 STAKING_ACTIVATION_HEIGHT=16000 的选法）。
+ */
+export const MIN_MESSAGE_BURN_ACTIVATION_HEIGHT = 40_000;
+
+// ---- 质押身份（Phase 3B：纯资金锁仓反女巫，无罚没、无仲裁者，软分叉）----
+/** 身份托管地址：IDCLAIM 锁定的押金记到这里（不可花）。与红包 …1 / 质押 …2 / 铸币 …3 区分（…4）。 */
+export const IDENTITY_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '4';
+
+/** 两种操作的 memo 前缀。IDCLAIM 是“转托管 amount=押金 + memo”；IDRELEASE 是 amount=0 + memo。 */
+export const IDCLAIM_PREFIX = 'IDCLAIM|'; // 认领：IDCLAIM|<pseudonym>
+export const IDRELEASE_PREFIX = 'IDRELEASE|'; // 解锁：IDRELEASE|<claimTxid>（仅质押人、过 IDENTITY_LOCK_BLOCKS）
+
+/**
+ * 身份最低押金（$V0ID）。参照 STAKE_MIN（guard=500/hsdir=300/middle=100，out of GENESIS_PREMINE=1000）：
+ * 取 200——比中等角色 middle(100) 高（身份是永久性资产，成本应高于一次性中继角色押金），
+ * 但明显低于 guard(500)，避免在 ~1000 币的小测试经济体里贵到没人用得起。对女巫攻击（批量注册马甲）
+ * 构成真实成本：想开 N 个马甲身份要锁 200N 币。教学/小算力网络的保守起点，可按需调大（改它即软分叉）。
+ */
+export const IDENTITY_STAKE_MIN = 200;
+
+/**
+ * 身份押金锁定块数：认领后再过这么多块才能 IDRELEASE 解锁取回押金。
+ * 取 STAKE_LOCK_BLOCKS（12）的 20×＝240（约 32 分钟 @ 8s 目标出块）——本机制**没有 SLASH**，
+ * 唯一的反女巫成本就是“资金被锁的时长”本身，故须显著长于中继质押（后者靠罚没+锁定双重威慑，
+ * 锁定只需覆盖一个 EPOCH_BLOCKS 度量周期即可；这里锁定期本身就是全部代价，必须长到让批量注册马甲不划算）。
+ * 教学/小算力网络的保守起点，可按需调大；所有节点须一致（改它即软分叉）。
+ */
+export const IDENTITY_LOCK_BLOCKS = 240;
+
+/**
+ * 身份质押共识激活高度。该高度前，`IDCLAIM|`/`IDRELEASE|` 备注和 `…4` 托管地址都按历史普通交易处理
+ * （amount=0 的 IDRELEASE 新边界仍拒），避免升级节点重放老链时把历史普通 memo/转账 retroactive 地解释成身份操作。
+ * ⚠️ 占位值 45000 —— **合并/部署前必须确认它 ≥ 当前实时链高 + 升级窗口**（同 STAKING_ACTIVATION_HEIGHT=16000 的选法），
+ * 且与 MIN_MESSAGE_BURN_ACTIVATION_HEIGHT(40000)/STAKING_ACTIVATION_HEIGHT(16000)/MINT_ACTIVATION_HEIGHT(30000) 互不相同。
+ */
+export const IDENTITY_ACTIVATION_HEIGHT = 45_000;

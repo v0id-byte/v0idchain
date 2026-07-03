@@ -8,12 +8,13 @@ import {
   MAX_MEMO,
   MIN_FEE,
   minFeeFor,
-  MESSAGE_BURN,
+  minMessageBurnFor,
   CLAIM_PREFIX,
   REFUND_PREFIX,
   UNSTAKE_PREFIX,
   SLASH_PREFIX,
   REDEEM_PREFIX,
+  IDRELEASE_PREFIX,
 } from './config.js';
 import type { Wallet } from './wallet.js';
 
@@ -63,15 +64,17 @@ export function createTransaction(
 }
 
 /**
- * 链上消息：由钱包签名。amount 恒 0（不转币），burn = 烧进虚空的 $V0ID（默认 MESSAGE_BURN），memo = 消息正文。
+ * 链上消息：由钱包签名。amount 恒 0（不转币），burn = 烧进虚空的 $V0ID（默认按 minMessageBurnFor(memo 长度)
+ * 随长度递增，见 config.ts；短消息等于旧默认值 MESSAGE_BURN），memo = 消息正文。
  * 另付 fee（gas，默认 MIN_FEE）给打包矿工。to = 收件人地址（实收 0 币，只是消息的投递目标）。
+ * ⚠️ 默认值须随长度递增：消息防刷底线激活后，若仍用旧的扁平 MESSAGE_BURN 默认值发长消息会被 mempool 拒收。
  */
 export function createMessage(
   wallet: Wallet,
   to: string,
   text: string,
   nonce: number,
-  burn = MESSAGE_BURN,
+  burn = minMessageBurnFor([...text].length),
   fee = MIN_FEE,
 ): Transaction {
   const base: TransactionPayload = { from: wallet.address, to, amount: 0, fee, nonce, timestamp: Date.now(), memo: text, burn };
@@ -123,14 +126,15 @@ export function verifyTransaction(t: Transaction): boolean {
   if (!Number.isInteger(t.amount) || t.amount < 0 || t.amount > Number.MAX_SAFE_INTEGER) return false;
   if (!Number.isInteger(burn) || burn < 0 || burn > Number.MAX_SAFE_INTEGER) return false;
   // 空操作交易（既不转账 amount=0 又不销毁 burn=0）一律拒：转账须 amount>0，消息须 burn>0。
-  // 例外：红包 CLAIM/REFUND、质押 UNSTAKE/SLASH、铸币 REDEEM 都是 amount=0（由共识从托管池支付/移交，不在本交易里转币）。
+  // 例外：红包 CLAIM/REFUND、质押 UNSTAKE/SLASH、铸币 REDEEM、身份 IDRELEASE 都是 amount=0（由共识从托管池支付/移交，不在本交易里转币）。
   const zeroOk =
     typeof t.memo === 'string' &&
     (t.memo.startsWith(CLAIM_PREFIX) ||
       t.memo.startsWith(REFUND_PREFIX) ||
       t.memo.startsWith(UNSTAKE_PREFIX) ||
       t.memo.startsWith(SLASH_PREFIX) ||
-      t.memo.startsWith(REDEEM_PREFIX));
+      t.memo.startsWith(REDEEM_PREFIX) ||
+      t.memo.startsWith(IDRELEASE_PREFIX));
   if (t.amount === 0 && burn === 0 && !zeroOk) return false;
   // 手续费同样必须是整数且在安全范围内（同样的浮点累积误差会撕裂共识）。此处只判范围，最低值按类型在下方判。
   if (!Number.isInteger(t.fee) || t.fee < 0 || t.fee > Number.MAX_SAFE_INTEGER) return false;

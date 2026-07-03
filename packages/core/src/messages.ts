@@ -2,7 +2,17 @@
 // 任何节点扫一遍链，就能把这些交易还原成消息列表 —— 消息随链全网同步、永久可查，零中心化服务器。
 // 收件箱 = to 是我的消息；发件箱 = from 是我的消息。memo 即正文，无需任何前缀。
 import type { Block } from './block.js';
-import { NULL_ADDRESS, RED_PREFIX, CLAIM_PREFIX, REFUND_PREFIX, STAKE_PREFIX, UNSTAKE_PREFIX, SLASH_PREFIX } from './config.js';
+import {
+  NULL_ADDRESS,
+  RED_PREFIX,
+  CLAIM_PREFIX,
+  REFUND_PREFIX,
+  STAKE_PREFIX,
+  UNSTAKE_PREFIX,
+  SLASH_PREFIX,
+  IDCLAIM_PREFIX,
+  IDRELEASE_PREFIX,
+} from './config.js';
 import { PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX, PETFARM_PREFIX, PETUNSTATION_PREFIX } from './pets.js';
 import { FISH_PREFIX } from './fishing.js';
 import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
@@ -45,6 +55,8 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(STAKE_PREFIX) ||
     memo.startsWith(UNSTAKE_PREFIX) ||
     memo.startsWith(SLASH_PREFIX) ||
+    memo.startsWith(IDCLAIM_PREFIX) ||
+    memo.startsWith(IDRELEASE_PREFIX) ||
     memo.startsWith(FISH_PREFIX) ||
     memo.startsWith(LAND_PREFIX) ||
     memo.startsWith(ZONE_PREFIX) ||
@@ -53,6 +65,11 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(CROPX_PREFIX) ||
     memo.startsWith(MINE_PREFIX)
   );
+}
+
+/** 是否“真实消息”（应受消息防刷底线约束，见 config.ts minMessageBurnFor）：amount=0+burn>0 且非协议层 memo。 */
+export function isRealMessage(tx: { amount: number; burn?: number; memo: string }): boolean {
+  return isMessageTx(tx) && !isProtocolMemo(tx.memo);
 }
 
 /** 扫整条链，把所有消息交易还原成消息列表（最新在前）。协议层 memo（PET/RED/FISH…）不算私信，跳过。 */
