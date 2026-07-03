@@ -64,6 +64,9 @@ corepack pnpm exec tsx scripts/antireplay-test.ts    # relay anti-replay
 
 `scripts/` 里还有很多独立的 `.ts` 检查(中继、隐藏服务、质押、mixnet……),都用 `corepack pnpm exec tsx scripts/<名>.ts` 跑。
 
+See [scripts/README.md](scripts/README.md) for the full standalone script index with descriptions, runtime buckets, and exact commands.
+完整的独立脚本索引（用途、耗时区间、运行命令）见 [scripts/README.md](scripts/README.md)。
+
 ---
 
 ## Repo map / 模块地图
