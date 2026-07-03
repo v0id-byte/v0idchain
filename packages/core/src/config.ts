@@ -141,11 +141,6 @@ export const MINT_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '3';
  */
 export const STAKING_ACTIVATION_HEIGHT = 16_000;
 
-/**
- * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址 + 铸币厂托管地址。
- * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”）。
- */
-export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS, STAKE_ESCROW_ADDRESS, MINT_ESCROW_ADDRESS]);
 /** 三种红包操作的 memo 前缀。RED 是“自转 amount=总额 + memo”；CLAIM/REFUND 是 amount=0 + memo。 */
 export const RED_PREFIX = 'RED|'; // 发红包：RED|<份数>|<r|e>（r=拼手气随机, e=均分）
 export const CLAIM_PREFIX = 'CLAIM|'; // 抢红包：CLAIM|<红包txid>
@@ -331,3 +326,16 @@ export const IDENTITY_LOCK_BLOCKS = 240;
  * 且与 MIN_MESSAGE_BURN_ACTIVATION_HEIGHT(40000)/STAKING_ACTIVATION_HEIGHT(16000)/MINT_ACTIVATION_HEIGHT(30000) 互不相同。
  */
 export const IDENTITY_ACTIVATION_HEIGHT = 45_000;
+
+/**
+ * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址 + 铸币厂托管地址 + 身份托管地址。
+ * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”，或不让铸币兑现打给托管地址）。
+ * 放在文件末尾（所有托管地址常量声明完毕之后）以避免引用尚未初始化的 const（暂时性死区）。
+ */
+export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([
+  NULL_ADDRESS,
+  RED_ESCROW_ADDRESS,
+  STAKE_ESCROW_ADDRESS,
+  MINT_ESCROW_ADDRESS,
+  IDENTITY_ESCROW_ADDRESS,
+]);
