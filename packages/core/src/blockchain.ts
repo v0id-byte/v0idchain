@@ -707,10 +707,27 @@ export class Blockchain {
     // 发往红包托管地址只允许合法红包（RED）；其它一律拒（防误把钱锁死）。redOpError 下方统一判。
     if (this.mempool.some((t) => t.txid === tx.txid)) return { ok: false, error: '交易已在池中' };
 
-    const { balances, nonces, pools, stakes, mintReserve, identityClaims, identityByPseudonym } = this.computeState();
-    // 红包/质押/铸币操作合法性：池存在/未抢完/未重复领/已过期、质押锁定期/度量者权限、铸币储备等（按 height+1 估算）
+    const r = this.admitAgainstState(tx, this.computeState());
+    if (!r.ok) return r;
+    this.mempool.push(tx);
+    return { ok: true };
+  }
+
+  /**
+   * addTransaction 里“依赖链上状态”的那部分校验（红包/质押/铸币/身份合法性 + nonce 顺序 + 余额），
+   * 抽成独立方法只为了让 revalidateMempool 能**复用同一份 computeState() 快照**给 mempool 里的每一笔
+   * 旧交易判断，而不是像原先那样每笔都各自重新 computeState() 一遍（见 revalidateMempool 的性能注释）。
+   * `state` 由调用方传入（正常提交路径传新鲜的 this.computeState()；批量重验路径传共享的那一份）。
+   */
+  private admitAgainstState(tx: Transaction, state: ChainState): { ok: boolean; error?: string } {
+    const { balances, nonces, pools, stakes, mintReserve, identityClaims, identityByPseudonym } = state;
+    const burn = tx.burn ?? 0;
+    // 红包/质押/铸币/身份操作合法性：池存在/未抢完/未重复领/已过期、质押锁定期/度量者权限、铸币储备、
+    // 身份假名是否已被占用等（按 height+1 估算，与 selectMempoolTxs 的口径一致）
     const redErr = redOpError(tx, pools, stakes, mintReserve, identityClaims, identityByPseudonym, this.height + 1, this.tipDifficulty());
     if (redErr) return { ok: false, error: redErr };
+    // pending 仍按“当前已在 this.mempool 里的同地址交易”统计——revalidateMempool 会在循环中逐步重建
+    // this.mempool，这个统计口径天然随重建进度演进，语义与原先逐笔重新 addTransaction 完全一致。
     const pending = this.mempool.filter((t) => t.from === tx.from);
     const expectedNonce = (nonces.get(tx.from) ?? 0) + pending.length;
     if (tx.nonce !== expectedNonce) {
@@ -724,7 +741,6 @@ export class Blockchain {
       const extra = burn > 0 ? `手续费 ${tx.fee} + 销毁 ${burn}` : `手续费 ${tx.fee}`;
       return { ok: false, error: `余额不足：可用 ${available}，需要 ${need}（含${extra}）` };
     }
-    this.mempool.push(tx);
     return { ok: true };
   }
 
@@ -846,10 +862,24 @@ export class Blockchain {
     this.mempool = this.mempool.filter((t) => !mined.has(t.txid));
   }
 
+  /**
+   * 用最新已确认状态重新过滤 mempool：剔除因新区块而不再合法的交易（如两笔互斥的 IDCLAIM 抢同一
+   * 假名，一笔上链后另一笔永久失效，见 addBlock 的调用点注释）。
+   *
+   * ⚠️ 性能要点：只调用**一次** computeState()（重放整条链）供本轮所有旧 mempool 交易共用，而非
+   * 像之前那样对每笔交易各自调用一次 addTransaction（后者内部每次都重新 computeState）——mempool
+   * 上限 5000、每块只能打包 50 笔，若每次出块都对剩余的成千上万笔各重放一次全链，链一长就会让每次
+   * 出块/收块都变得极慢（O(mempool × chainLength)）。签名/格式自洽性不必重查：mempool 里已存的交易
+   * 在最初 addTransaction 时已经过完整校验，这些字段不会因为新区块而改变；只有依赖链上状态的部分
+   * （redOpError/nonce/余额，即 admitAgainstState）需要用新状态重新判一遍。
+   */
   private revalidateMempool(): void {
     const old = this.mempool;
     this.mempool = [];
-    for (const tx of old) this.addTransaction(tx); // 失效的会被自动丢弃
+    const state = this.computeState(); // 只算一次，供本轮所有旧交易共用
+    for (const tx of old) {
+      if (this.admitAgainstState(tx, state).ok) this.mempool.push(tx);
+    }
   }
 
   // ---- 整链校验（共识的唯一权威）----
