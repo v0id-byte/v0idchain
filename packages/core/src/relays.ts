@@ -8,7 +8,9 @@
 //   重发即更新（换 host / 轮换 onion 公钥）→ 取该地址最后一笔合法描述符。
 // - **okey 无需链上单独证明归属**：描述符里的 onion 公钥由中继自报。若它谎报了别人的 okey，
 //   也只是造出一个**无法完成 ntor 握手**的中继（它没有对应私钥 → 客户端 AUTH 校验失败、换中继），损人不利己、无害。
-// - **不进 isProtocolMemo**：RELAY 是 burn=0 的自转，isMessageTx 天然排除，压根不是消息——与 NAME| 一致（见 messages.ts 注释）。
+// - **进 isProtocolMemo 白名单**（messages.ts 复用本文件 parseRelayMemo 做格式校验 + burn===0 判断）：
+//   RELAY 是自转，消息防刷底线上线后「自转+memo非空」都会被当成消息候选，必须显式排除，
+//   不能再像旧版那样仅靠 burn=0 被 isMessageTx 天然排除。
 import type { Block } from './block.js';
 import { MAX_MEMO } from './config.js';
 import { computeStakeState } from './staking.js';
@@ -60,8 +62,8 @@ export function makeRelayClaim(
   return { ok: true, memo };
 }
 
-/** 解析单条 memo → 描述符字段（不含 address，由调用方补 tx.from）。非法返回 null。 */
-function parseRelayMemo(memo: string): Omit<RelayDescriptor, 'address'> | null {
+/** 解析单条 memo → 描述符字段（不含 address，由调用方补 tx.from）。非法返回 null。也供 messages.ts 复用做格式校验。 */
+export function parseRelayMemo(memo: string): Omit<RelayDescriptor, 'address'> | null {
   if (!memo.startsWith(RELAY_PREFIX)) return null;
   const parts = memo.slice(RELAY_PREFIX.length).split('|');
   if (parts.length !== 4) return null;

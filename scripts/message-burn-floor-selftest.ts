@@ -34,6 +34,12 @@ import {
   BLOCK_REWARD,
   MIN_FEE,
   minFeeFor,
+  isMemoSpamCandidate,
+  buildNameMemo,
+  buildListMemo,
+  buildRelayMemo,
+  transactionPayloadHash,
+  sign,
   type Block,
 } from '../packages/core/src/index.js';
 import { forgeTo } from './forge-chain.js';
@@ -199,6 +205,60 @@ async function main() {
     isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: STAKE_ESCROW_ADDRESS, atHeight: STAKING_ACTIVATION_HEIGHT - 1 }),
   );
 
+  console.log(`\n— 核心回归④：isMemoSpamCandidate 不再要求 amount===0，「自转夹带」必须受消息门槛约束（旧漏洞⑥）—`);
+  check(
+    'isMemoSpamCandidate：自转 + amount>0 + 非空 memo + burn=0 也算候选（旧版 isMessageTx 会漏掉）',
+    isMemoSpamCandidate({ from: selfAddr, to: selfAddr, memo: 'x'.repeat(300) }),
+  );
+  check(
+    'isMemoSpamCandidate：转给别人（非自转）不算候选——转账带备注是合法场景，不受消息门槛约束',
+    !isMemoSpamCandidate({ from: selfAddr, to: otherAddr, memo: 'x'.repeat(300) }),
+  );
+  check(
+    'isMemoSpamCandidate：自转但 memo 为空不算候选（普通无备注自转）',
+    !isMemoSpamCandidate({ from: selfAddr, to: selfAddr, memo: '' }),
+  );
+  check(
+    '「自转 1 币 + 512 码点垃圾 memo + burn=0」（旧漏洞⑥：不满足 isMessageTx 的 amount=0 形态）现在算真消息',
+    isRealMessage({ amount: 1, burn: 0, memo: 'x'.repeat(512), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    '同一形态但转给别人（真实转账+备注）不算真消息，不受门槛约束',
+    !isRealMessage({ amount: 1, burn: 0, memo: 'x'.repeat(512), from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+
+  console.log(`\n— 核心回归⑤：NAME/MKT/RELAY（自转、burn 恒为 0）扩大范围后仍需被正确排除，不被误伤 —`);
+  check(
+    'NAME|alice（自转、burn=0、合法昵称）不算真消息',
+    !isRealMessage({ amount: 0, burn: 0, memo: buildNameMemo('alice'), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'NAME| 但 burn>0（不是真实抢注形态）算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: buildNameMemo('alice'), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'MKT|<价格>|<标题>（自转、burn=0、合法上架)不算真消息',
+    !isRealMessage({ amount: 0, burn: 0, memo: buildListMemo(100, '复习笔记'), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'MKT| 但标题超 MAX_TITLE(100) 算真消息（伪装上架夹带长文）',
+    isRealMessage({ amount: 0, burn: 1, memo: buildListMemo(100, 'x'.repeat(200)), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'RELAY|...（自转、burn=0、合法描述符）不算真消息',
+    !isRealMessage({
+      amount: 0, burn: 0, memo: buildRelayMemo('a'.repeat(64), '10.0.0.1', 6001),
+      from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+    }),
+  );
+  check(
+    'RELAY| 但 burn>0（不是真实发布形态）算真消息',
+    isRealMessage({
+      amount: 0, burn: 1, memo: buildRelayMemo('a'.repeat(64), '10.0.0.1', 6001),
+      from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+    }),
+  );
+
   console.log(`\n— 激活门控：激活前旧规则放行低销毁长消息，不 retroactive 拒绝已广播交易 —`);
   {
     const pre = new Blockchain();
@@ -262,6 +322,34 @@ async function main() {
   check('FISH| 真实协议操作（精确 memo，burn=2，远低于消息门槛）激活后依然被接受', bc.addTransaction(fishTx).ok);
   await bc.mine(bob.address);
   check('协议层操作场景后全链守恒', conserved(bc));
+
+  console.log(`\n— 端到端：真实 addTransaction 路径下，NAME 抢注不受影响、「自转夹带」套壳被真实拒绝 —`);
+  const carol2 = Wallet.generate();
+  await fund(bc, carol2.address, 100);
+  const nameTx = createTransaction(carol2, carol2.address, 1, bc.nonceOf(carol2.address), buildNameMemo('carol2'), MIN_FEE);
+  check('NAME| 真实抢注（自转 1 币 + burn=0）激活后依然被接受，不需要额外销毁费', bc.addTransaction(nameTx).ok);
+  await bc.mine(carol2.address);
+  const smuggleMemo = 'y'.repeat(512);
+  // createTransaction/createMessage 都不支持「amount>0 且 burn>0」这种组合（前者不接受 burn 参数，
+  // 后者 amount 固定 0），故这里直接用底层 payload+签名手动构造，模拟“有人手写了这样一笔交易”。
+  const selfMemoTx = (amount: number, burn: number, nonce: number) => {
+    const base = { from: carol2.address, to: carol2.address, amount, fee: MIN_FEE, nonce, timestamp: Date.now(), memo: smuggleMemo, burn };
+    const txid = transactionPayloadHash(base);
+    return { ...base, signature: sign(txid, carol2.privateKey), txid };
+  };
+  const smuggleTx = selfMemoTx(1, 0, bc.nonceOf(carol2.address));
+  check(
+    '自转 1 币 + 512 码点垃圾 memo + burn=0（旧漏洞⑥）真实提交时被拒绝',
+    !bc.addTransaction(smuggleTx).ok,
+  );
+  const smuggleRequired = minMessageBurnFor(512);
+  const smuggleFixed = selfMemoTx(1, smuggleRequired, bc.nonceOf(carol2.address));
+  check(
+    '同一条自转夹带，真的烧够 minMessageBurnFor(512) 后被接受（付出了和真消息一样的成本，套利空间消失）',
+    bc.addTransaction(smuggleFixed).ok,
+  );
+  await bc.mine(carol2.address);
+  check('NAME/套壳场景后全链守恒', conserved(bc));
 
   console.log(`\n— mempool 与选包两条路径一致拒绝：绕过 addTransaction 直塞进 mempool 也不会被打包 —`);
   {

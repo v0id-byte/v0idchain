@@ -44,6 +44,9 @@ import {
   type Crop,
 } from './farm.js';
 import { MINE_PREFIX, parseMineMemo, mineDiscoveryBurn, mineMaterialBurn } from './mining.js';
+import { NAME_PREFIX, isValidName } from './names.js';
+import { MKT_PREFIX, MAX_TITLE } from './market.js';
+import { RELAY_PREFIX, parseRelayMemo } from './relays.js';
 
 export interface ChainMessage {
   txid: string;
@@ -55,9 +58,32 @@ export interface ChainMessage {
   height: number; // 所在区块高度
 }
 
-/** 一笔交易是否“链上消息”：不转币（amount 0）但销毁了币（burn>0）。coinbase/创世天然不满足，自动排除。 */
+/** 一笔交易是否“链上消息”（用于收件箱展示）：不转币（amount 0）但销毁了币（burn>0）。coinbase/创世天然不满足，自动排除。 */
 export function isMessageTx(tx: { amount: number; burn?: number }): boolean {
   return tx.amount === 0 && (tx.burn ?? 0) > 0;
+}
+
+/**
+ * 是否“该受消息防刷底线约束”的候选交易。在原有 isMessageTx（amount=0+burn>0，发给任何人，含
+ * 最常见的“张三发消息给李四”场景）**基础上追加**一种新形态，而不是取代它——
+ * 自转（from===to）+ memo 非空 + amount 可以 >0：这是本次修复要堵的口子，把消息伪装成
+ * “自己转给自己 N 个币 + 附言”（amount>0, burn 可以是 0），因为不满足 isMessageTx 的 amount=0
+ * 形态而被完全放过，只需付最低手续费 minFeeFor(amount) 就能在链上塞任意长度文本（512 码点），
+ * 等于绕开了整条消息防刷底线（该场景在经济实质上就是一条消息——钱转回自己手里，没有真实价值
+ * 转移，唯一目的是塞内容）。
+ *
+ * ⚠️ 这里必须是“or”不是“替代”：如果误把 isMessageTx 判断丢掉、只留自转分支，会导致最常见的
+ * “发消息给别人”（from!==to）反而被排除在候选之外、完全绕开消息门槛——比本次要修的漏洞更严重。
+ *
+ * 真实的“转账给别人 + 备注”（amount>0, from!==to）不受这条新增分支影响——那是有价值转移的合法
+ * 场景，产品上允许自由备注，且转账金额越大手续费越高，天然区别于“零成本刷屏”，不该被消息门槛约束。
+ *
+ * 用于展示（收件箱）的语义仍由 isMessageTx 单独把关，不跟着扩大——“自转夹带”被 Feature A 经济门槛
+ * 约束住即可，它依然不该出现在消息列表里（没有真实收件人）。
+ */
+export function isMemoSpamCandidate(tx: { amount: number; burn?: number; from: string; to: string; memo: string }): boolean {
+  if (isMessageTx(tx)) return true;
+  return tx.from === tx.to && tx.memo.length > 0;
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -66,10 +92,9 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const DIGITS = /^\d{1,9}$/;
 
 /**
- * 某笔交易是否属于“协议层约定”（崽/红包/钓鱼/农场/矿洞等建在 memo 上的子系统），而非真人私信正文。
- * 这些子系统也会发出 `amount=0 + burn>0` 形态的交易（如孵崽 `PET|`、铸渔获 `FISH|`、买地 `LAND|`/种植 `PLANT|` 都是自转烧币），
- * 与链上消息的形态撞型 → 不排除的话会被 parseMessages 误收进收件箱。消息防刷底线上线后，这个判定还多了一层
- * 经济含义：被排除的交易不受烧币下限约束，故此处按两类前缀区别对待：
+ * 某笔交易是否属于“协议层约定”（崽/红包/钓鱼/农场/矿洞/昵称/集市/中继等建在 memo 上的子系统），
+ * 而非真人私信正文。这些子系统也会发出与链上消息撞型的交易——不排除的话会被 parseMessages 误收进
+ * 收件箱，激活消息防刷底线后还会被误判成可以豁免烧币下限。此处按四类前缀区别对待：
  *
  * ① CLAIM/REFUND/UNSTAKE/SLASH/IDRELEASE（id 引用类，amount=0）：**共识层**（blockchain.ts redOpError）
  *    校验时完全不看 `to`（只认 memo 里引用的 id + 发起人权限），不合法形态（id 不存在/格式错/权限不对）
@@ -88,9 +113,13 @@ const DIGITS = /^\d{1,9}$/;
  *    范围校验在 parseFarm 里，此处只做“像不像一个正常数字标识符”的语法粗筛，用 DIGITS 卡位数上限）。
  *    故这里同时核对 payload 格式 + 该操作要求的精确/达标烧币额 + `from`/`to`/`amount` 语境，**复用各
  *    模块导出的现成常量/函数**而非在此重复定义一套规则，避免与游戏模块演进脱节。
+ * ④ NAME/MKT/RELAY（自转、burn 恒为 0 的纯展示层约定）：昵称抢注/集市上架/中继发布都是“自转 1 币 +
+ *    memo，burn=0”。isMemoSpamCandidate 收紧为“自转+memo 非空”（不再要求 amount=0）后，这三个不能
+ *    再像旧版那样靠“burn=0 被 isMessageTx 天然排除”蒙混过关，必须显式核对 payload 格式（复用
+ *    names.ts/market.ts/relays.ts 的现成校验）+ `burn === 0`（真实形态恒定，容不得套壳夹带垃圾还
+ *    绕开门槛——套壳者只要 burn>0 就已经不是这三个协议的合法形态，会落回消息门槛）。
  *
- * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）与 `NAME|`（抢注是 burn=0 的自转，
- * 形态上压根不是消息，isMessageTx 已天然排除，无需也不该在此列）。
+ * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）。
  */
 export function isProtocolMemo(tx: {
   memo: string;
@@ -176,10 +205,29 @@ export function isProtocolMemo(tx: {
     return burn >= needed;
   }
 
+  // ④ 自转、burn 恒为 0 的纯展示层约定：昵称抢注 / 集市上架 / 中继发布
+  if (memo.startsWith(NAME_PREFIX)) {
+    if (!selfTransfer || burn !== 0) return false;
+    const name = memo.slice(NAME_PREFIX.length).trim().toLowerCase(); // 归一化口径同 parseNames
+    return isValidName(name);
+  }
+  if (memo.startsWith(MKT_PREFIX)) {
+    if (!selfTransfer || burn !== 0) return false;
+    const rest = memo.slice(MKT_PREFIX.length);
+    const sep = rest.indexOf('|');
+    if (sep < 0) return false;
+    const price = Number(rest.slice(0, sep));
+    const title = rest.slice(sep + 1);
+    return Number.isInteger(price) && price > 0 && title.length > 0 && [...title].length <= MAX_TITLE;
+  }
+  if (memo.startsWith(RELAY_PREFIX)) {
+    return selfTransfer && burn === 0 && parseRelayMemo(memo) !== null;
+  }
+
   return false;
 }
 
-/** 是否“真实消息”（应受消息防刷底线约束，见 config.ts minMessageBurnFor）：amount=0+burn>0 且非协议层 memo。 */
+/** 是否“真实消息”（应受消息防刷底线约束，见 config.ts minMessageBurnFor）：消息防刷候选 + 非协议层 memo。 */
 export function isRealMessage(tx: {
   amount: number;
   burn?: number;
@@ -188,7 +236,7 @@ export function isRealMessage(tx: {
   to: string;
   atHeight: number;
 }): boolean {
-  return isMessageTx(tx) && !isProtocolMemo(tx);
+  return isMemoSpamCandidate(tx) && !isProtocolMemo(tx);
 }
 
 /** 扫整条链，把所有消息交易还原成消息列表（最新在前）。协议层 memo（PET/RED/FISH…）不算私信，跳过。 */
