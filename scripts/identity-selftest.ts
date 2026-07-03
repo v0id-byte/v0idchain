@@ -182,6 +182,50 @@ async function main() {
   check('重新认领后全链守恒', conserved(bc));
   check('含重新认领的链整链校验通过', Blockchain.validateChain(bc.chain).ok);
 
+  console.log(`\n— 核心回归：两笔 pending IDCLAIM 抢同一假名，输家必须被清出 mempool，不卡住其后续 nonce 队列 —`);
+  {
+    const rc = activatedClone();
+    const racerA = Wallet.generate(); // 出价更高，赢家
+    const racerB = Wallet.generate(); // 出价更低，输家
+    await fund(rc, racerA.address, IDENTITY_STAKE_MIN + 20);
+    await fund(rc, racerB.address, IDENTITY_STAKE_MIN + 20);
+    // 两笔都基于同一份「假名尚未被占用」的已确认状态构造，互不知晓对方也在 mempool 里排队。
+    const claimA = createTransaction(
+      racerA, IDENTITY_ESCROW_ADDRESS, IDENTITY_STAKE_MIN, rc.nonceOf(racerA.address), `${IDCLAIM_PREFIX}alice`, MIN_FEE + 5,
+    ); // fee 更高 → selectMempoolTxs 按 fee 降序扫描时必定先轮到它，稳赢
+    const claimB = createTransaction(
+      racerB, IDENTITY_ESCROW_ADDRESS, IDENTITY_STAKE_MIN, rc.nonceOf(racerB.address), `${IDCLAIM_PREFIX}alice`, MIN_FEE,
+    );
+    check('两笔认领都成功进 mempool（提交时都基于同一份未占用状态，互不知情）', rc.addTransaction(claimA).ok && rc.addTransaction(claimB).ok);
+    // racerB 紧跟着排一笔后续交易（nonce+1）：若 claimB 卡在 mempool 里不被清理，这笔会永远选不中。
+    const followUp = createTransaction(racerB, racerA.address, 1, rc.nonceOf(racerB.address) + 1, '', MIN_FEE);
+    check('racerB 的后续交易（nonce+1）也进 mempool（排在 claimB 之后）', rc.addTransaction(followUp).ok);
+
+    const minedBlock = await rc.mine(racerA.address);
+    check('出块成功', minedBlock !== null);
+    const minedIds = new Set((minedBlock?.transactions ?? []).map((t) => t.txid));
+    check('赢家 claimA 被打进块', minedIds.has(claimA.txid));
+    check('输家 claimB 未被打进块（同一次选包内已判负）', !minedIds.has(claimB.txid));
+    check(
+      '输家 claimB 已被清出 mempool（核心修复：addBlock 后 revalidateMempool，不再永久卡住）',
+      !rc.mempool.some((t) => t.txid === claimB.txid),
+    );
+    check(
+      'racerB 的后续交易（nonce+1）也一并被清出（其依赖的 nonce=0 交易已判负，不再是合法排队序列）',
+      !rc.mempool.some((t) => t.txid === followUp.txid),
+    );
+    check('resolveIdentityOwner("alice") 指向赢家 racerA', resolveIdentityOwner(computeIdentityState(rc.chain), 'alice') === racerA.address);
+    // 关键验证：racerB 的 nonce 队列没有被永久卡死——用 nonce=0 重新构造一笔（比如认领另一个假名）应立刻可提交。
+    const retryClaim = createTransaction(
+      racerB, IDENTITY_ESCROW_ADDRESS, IDENTITY_STAKE_MIN, rc.nonceOf(racerB.address), `${IDCLAIM_PREFIX}bob2`, MIN_FEE,
+    );
+    check('racerB 用干净的 nonce 重新认领另一个假名，立刻可提交（未被之前的失败交易卡死）', rc.addTransaction(retryClaim).ok);
+    await rc.mine(racerA.address);
+    check('racerB 的重试认领成功上链', resolveIdentityOwner(computeIdentityState(rc.chain), 'bob2') === racerB.address);
+    check('竞态回归场景全链守恒', conserved(rc));
+    check('竞态回归场景整链校验通过', Blockchain.validateChain(rc.chain).ok);
+  }
+
   console.log(`\n— 分叉安全：computeState ≡ validateChain ≡ replaceChain（余额与身份状态逐项一致）—`);
   {
     const vc = Blockchain.validateChain(bc.chain);

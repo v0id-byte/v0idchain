@@ -789,7 +789,14 @@ export class Blockchain {
   }
 
   // ---- 上链 / 共识 ----
-  /** 追加一个区块（必须是当前链顶的下一块，且整体合法） */
+  /**
+   * 追加一个区块（必须是当前链顶的下一块，且整体合法）。
+   * dropMined 之后再 revalidateMempool：不是所有“未被打进这块”的 mempool 交易都只是在排队——像
+   * IDCLAIM 认领假名这类有“排他性”的操作，一旦被抢先打进链，队列里同名的另一笔就**永久**不再合法
+   * （不像红包/质押那样，落选只是暂时的、下一块还有机会）。若不清掉，selectMempoolTxs 会一直跳过它、
+   * 卡住该地址后续所有交易的 nonce 序列，直到手动清 mempool。revalidateMempool 本就在 replaceChain
+   * （reorg）用于同样目的，这里复用同一套机制覆盖“正常出块”路径。
+   */
   addBlock(block: Block): { ok: boolean; error?: string } {
     if (block.index !== this.height + 1) return { ok: false, error: '区块高度不连续' };
     if (block.prevHash !== this.latest.hash) return { ok: false, error: 'prevHash 不匹配' };
@@ -797,6 +804,7 @@ export class Blockchain {
     if (!v.ok) return { ok: false, error: v.error };
     this.chain.push(block);
     this.dropMined(block);
+    this.revalidateMempool();
     return { ok: true };
   }
 
