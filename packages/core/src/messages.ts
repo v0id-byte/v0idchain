@@ -10,10 +10,12 @@ import {
   REFUND_PREFIX,
   STAKE_PREFIX,
   STAKE_ESCROW_ADDRESS,
+  STAKING_ACTIVATION_HEIGHT,
   UNSTAKE_PREFIX,
   SLASH_PREFIX,
   IDCLAIM_PREFIX,
   IDENTITY_ESCROW_ADDRESS,
+  IDENTITY_ACTIVATION_HEIGHT,
   IDRELEASE_PREFIX,
 } from './config.js';
 import {
@@ -59,6 +61,9 @@ export function isMessageTx(tx: { amount: number; burn?: number }): boolean {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+// 数字类 payload（地块号/区块号/格位号）的位数上限：9 位（最大 999999999）远超任何真实场景可能达到的
+// 数量级，纯粹用来堵住“塞几百位数字当幌子”的套壳——真正的业务范围校验仍在 parseFarm 里。
+const DIGITS = /^\d{1,9}$/;
 
 /**
  * 某笔交易是否属于“协议层约定”（崽/红包/钓鱼/农场/矿洞等建在 memo 上的子系统），而非真人私信正文。
@@ -68,27 +73,40 @@ const HEX64 = /^[0-9a-f]{64}$/;
  *
  * ① CLAIM/REFUND/UNSTAKE/SLASH/IDRELEASE（id 引用类，amount=0）：**共识层**（blockchain.ts redOpError）
  *    校验时完全不看 `to`（只认 memo 里引用的 id + 发起人权限），不合法形态（id 不存在/格式错/权限不对）
- *    根本进不了链，`startsWith` 足够，不构成绕过消息门槛的风险。
+ *    根本进不了链，`startsWith` 足够，不构成绕过消息门槛的风险。这几个各自也有“激活前 amount=0 新边界
+ *    直接拒绝”的门控（见 blockchain.ts redOpError 早期分支），不需要在此重复判断高度。
  * ② STAKE/RED/IDCLAIM（转托管创建类）：consensus 只在 `to === 对应托管地址` 时才校验其合法性——若发往
  *    别的地址，redOpError 的对应分支根本不会触发，交易会落到 NORMAL 兜底，此时若仍判定为“协议层”会让它
- *    绕过消息门槛。故必须额外核对 `to === 对应托管地址`。
+ *    绕过消息门槛。故必须额外核对 `to === 对应托管地址`。STAKE/IDCLAIM 还各自有共识激活高度（RED 从创世
+ *    即生效，没有）——**激活前它们是 amount>0 的普通转账，会被 consensus 直接接受但不会被当协议操作**，
+ *    此时仍判定为协议层会让它免费绕过消息门槛，故还需核对 `atHeight >= 对应激活高度`。
  * ③ PET/FISH/LAND/ZONE/PLANT/HARVEST/CROPX/MINE 系：共识层完全不管，合法性全靠各自 parseXxx(chain) 在
  *    展示层重放判定，且几乎全部要求 `from === to`（自转烧币，见各模块 `selfBurn`/`tx.from!==tx.to` 判断），
  *    `PETX`（送崽转移）例外——要求 `to !== from` 且 `amount>0`（转账）。纯 `startsWith` 或只核对 payload/
- *    烧币额仍不够：不满足自转/转移语境的“伪装成协议操作的普通转账”也会被误判排除，故这里同时核对
- *    payload 格式 + 该操作要求的精确/达标烧币额 + `from`/`to`/`amount` 语境，**复用各模块导出的现成
- *    常量/函数**而非在此重复定义一套规则，避免与游戏模块演进脱节。
+ *    烧币额仍不够：不满足自转/转移语境的“伪装成协议操作的普通转账”也会被误判排除；数字类 payload
+ *    （地块号/区块号/格位号）若不限长度，也能被塞成任意长度的数字串当垃圾载体（这几个字段的真实业务
+ *    范围校验在 parseFarm 里，此处只做“像不像一个正常数字标识符”的语法粗筛，用 DIGITS 卡位数上限）。
+ *    故这里同时核对 payload 格式 + 该操作要求的精确/达标烧币额 + `from`/`to`/`amount` 语境，**复用各
+ *    模块导出的现成常量/函数**而非在此重复定义一套规则，避免与游戏模块演进脱节。
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）与 `NAME|`（抢注是 burn=0 的自转，
  * 形态上压根不是消息，isMessageTx 已天然排除，无需也不该在此列）。
  */
-export function isProtocolMemo(tx: { memo: string; burn?: number; from?: string; to?: string; amount?: number }): boolean {
+export function isProtocolMemo(tx: {
+  memo: string;
+  burn?: number;
+  from?: string;
+  to?: string;
+  amount?: number;
+  atHeight?: number;
+}): boolean {
   const { memo, from, to } = tx;
   const burn = tx.burn ?? 0;
   const amount = tx.amount ?? 0;
+  const atHeight = tx.atHeight ?? Infinity; // 未传高度（如旧调用点/纯单元测试）时按“已激活”处理，不新增拒绝面
   const selfTransfer = from !== undefined && to !== undefined && from === to;
 
-  // ① id 引用类：consensus 不看 to，不合法形态进不了链，startsWith 足够
+  // ① id 引用类：consensus 不看 to，不合法形态（含激活前 amount=0 新边界）进不了链，startsWith 足够
   if (
     memo.startsWith(UNSTAKE_PREFIX) ||
     memo.startsWith(SLASH_PREFIX) ||
@@ -99,10 +117,10 @@ export function isProtocolMemo(tx: { memo: string; burn?: number; from?: string;
     return true;
   }
 
-  // ② 转托管创建类：只有真的发往对应托管地址，consensus 才会校验/接纳，其余地址等于普通转账
-  if (memo.startsWith(STAKE_PREFIX)) return to === STAKE_ESCROW_ADDRESS;
-  if (memo.startsWith(RED_PREFIX)) return to === RED_ESCROW_ADDRESS;
-  if (memo.startsWith(IDCLAIM_PREFIX)) return to === IDENTITY_ESCROW_ADDRESS;
+  // ② 转托管创建类：只有真的发往对应托管地址 + 已过激活高度，consensus 才会校验/接纳，否则等于普通转账
+  if (memo.startsWith(STAKE_PREFIX)) return to === STAKE_ESCROW_ADDRESS && atHeight >= STAKING_ACTIVATION_HEIGHT;
+  if (memo.startsWith(RED_PREFIX)) return to === RED_ESCROW_ADDRESS; // 红包从创世即生效，无激活高度
+  if (memo.startsWith(IDCLAIM_PREFIX)) return to === IDENTITY_ESCROW_ADDRESS && atHeight >= IDENTITY_ACTIVATION_HEIGHT;
 
   // ③ 仅应用层校验的游戏前缀：payload 格式 + 烧币额 + from/to/amount 语境，防「伪装成协议操作」绕过消息门槛
   if (memo === PET_PREFIX) return selfTransfer; // 孵化：memo 精确、自转、burn 只要求 >0（无固定值），无 payload 可塞
@@ -127,8 +145,8 @@ export function isProtocolMemo(tx: { memo: string; burn?: number; from?: string;
   }
   if (memo.startsWith(LAND_PREFIX)) {
     // 地价随链上状态浮动（下限需重放 soldTotal/velocity 才能算出），此处无法精确核验金额；
-    // 但 payload 收紧为纯数字 + 自转要求已杜绝夹带任意字符串，真实地价下限仍由 parseFarm/共识层的经济防线把关。
-    return selfTransfer && /^\d+$/.test(memo.slice(LAND_PREFIX.length));
+    // 但 payload 收紧为「≤9 位数字 + 自转」已杜绝夹带任意长度字符串，真实地价下限仍由 parseFarm/共识层把关。
+    return selfTransfer && DIGITS.test(memo.slice(LAND_PREFIX.length));
   }
   if (memo.startsWith(ZONE_PREFIX)) {
     if (!selfTransfer) return false;
@@ -137,14 +155,14 @@ export function isProtocolMemo(tx: { memo: string; burn?: number; from?: string;
     if (sep < 0) return false;
     const plotN = rest.slice(0, sep);
     const type = rest.slice(sep + 1);
-    return /^\d+$/.test(plotN) && (ZONE_TYPES as readonly string[]).includes(type) && burn === ZONE_COST;
+    return DIGITS.test(plotN) && (ZONE_TYPES as readonly string[]).includes(type) && burn === ZONE_COST;
   }
   if (memo.startsWith(PLANT_PREFIX)) {
     if (!selfTransfer) return false;
     const parts = memo.slice(PLANT_PREFIX.length).split('|');
     if (parts.length !== 3) return false;
     const [zoneId, crop, slot] = parts;
-    if (!HEX64.test(zoneId) || !(CROPS as readonly string[]).includes(crop) || !/^\d+$/.test(slot)) return false;
+    if (!HEX64.test(zoneId) || !(CROPS as readonly string[]).includes(crop) || !DIGITS.test(slot)) return false;
     return burn === SEED_COST[crop as Crop];
   }
   if (memo.startsWith(HARVEST_PREFIX)) {
@@ -162,7 +180,14 @@ export function isProtocolMemo(tx: { memo: string; burn?: number; from?: string;
 }
 
 /** 是否“真实消息”（应受消息防刷底线约束，见 config.ts minMessageBurnFor）：amount=0+burn>0 且非协议层 memo。 */
-export function isRealMessage(tx: { amount: number; burn?: number; memo: string; from: string; to: string }): boolean {
+export function isRealMessage(tx: {
+  amount: number;
+  burn?: number;
+  memo: string;
+  from: string;
+  to: string;
+  atHeight: number;
+}): boolean {
   return isMessageTx(tx) && !isProtocolMemo(tx);
 }
 
@@ -172,7 +197,7 @@ export function parseMessages(chain: Block[]): ChainMessage[] {
   for (const b of chain) {
     for (const tx of b.transactions) {
       if (!isMessageTx(tx)) continue;
-      if (isProtocolMemo(tx)) continue;
+      if (isProtocolMemo({ ...tx, atHeight: b.index })) continue;
       out.push({
         txid: tx.txid,
         from: tx.from,

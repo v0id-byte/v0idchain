@@ -25,9 +25,11 @@ import {
   IDRELEASE_PREFIX,
   STAKE_PREFIX,
   STAKE_ESCROW_ADDRESS,
+  STAKING_ACTIVATION_HEIGHT,
   RED_PREFIX,
   RED_ESCROW_ADDRESS,
   IDENTITY_ESCROW_ADDRESS,
+  IDENTITY_ACTIVATION_HEIGHT,
   GENESIS_PREMINE,
   BLOCK_REWARD,
   MIN_FEE,
@@ -112,16 +114,16 @@ async function main() {
     !isRealMessage({ amount: 0, burn: 999, memo: `${LAND_PREFIX}0`, from: selfAddr, to: selfAddr }),
   );
   check(
-    'STAKE| 真发往质押托管地址不算真消息',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: STAKE_ESCROW_ADDRESS }),
+    'STAKE| 真发往质押托管地址 + 已过激活高度 不算真消息',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: STAKE_ESCROW_ADDRESS, atHeight: STAKING_ACTIVATION_HEIGHT }),
   );
   check(
-    'RED| 真发往红包托管地址不算真消息',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: RED_ESCROW_ADDRESS }),
+    'RED| 真发往红包托管地址不算真消息（无激活高度，从创世即生效）',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: RED_ESCROW_ADDRESS, atHeight: 1 }),
   );
   check(
-    'IDCLAIM| 真发往身份托管地址不算真消息（Feature A×B 交叉wiring，共识层已保护）',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS }),
+    'IDCLAIM| 真发往身份托管地址 + 已过激活高度 不算真消息（Feature A×B 交叉wiring，共识层已保护）',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
   );
   check(
     'IDRELEASE| 前缀不算真消息（id 引用类，consensus 不看 to，共识层已保护）',
@@ -152,19 +154,49 @@ async function main() {
   );
   check(
     'STAKE|guard 但 to 不是质押托管地址算真消息（旧漏洞③：曾只看前缀不看 to，consensus 也不会把它当质押）',
-    isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: otherAddr }),
+    isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: otherAddr, atHeight: STAKING_ACTIVATION_HEIGHT }),
   );
   check(
     'RED|10|r 但 to 不是红包托管地址算真消息',
-    isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: otherAddr }),
+    isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: otherAddr, atHeight: 1 }),
   );
   check(
     'IDCLAIM|alice 但 to 不是身份托管地址算真消息',
-    isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: otherAddr }),
+    isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: otherAddr, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
   );
   check(
     'PETX|<64hex> 但 amount=0（没真转账）算真消息——真实送崽要求转 1 币',
     isRealMessage({ amount: 0, burn: 1, memo: `${PETX_PREFIX}${fakeId}`, from: selfAddr, to: otherAddr }),
+  );
+
+  console.log(`\n— 核心回归②：LAND 超长数字 payload 必须算真消息（旧漏洞④：数字类字段未限位数）—`);
+  check(
+    'LAND|<9位数字>（自转、位数上限内）不算真消息',
+    !isRealMessage({ amount: 0, burn: 999, memo: `${LAND_PREFIX}${'9'.repeat(9)}`, from: selfAddr, to: selfAddr }),
+  );
+  check(
+    'LAND|<500位数字>（自转、远超位数上限，套壳夹带垃圾）算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${LAND_PREFIX}${'1'.repeat(500)}`, from: selfAddr, to: selfAddr }),
+  );
+
+  console.log(`\n— 核心回归③：IDENTITY_ACTIVATION_HEIGHT(45000) 晚于 MIN_MESSAGE_BURN_ACTIVATION_HEIGHT(40000)，`);
+  console.log(`   窗口期内（消息门槛已激活、身份质押尚未激活）IDCLAIM 不能豁免（旧漏洞⑤）—`);
+  check(
+    `身份激活高度确实晚于消息防刷激活高度（存在窗口期，前提条件）`,
+    IDENTITY_ACTIVATION_HEIGHT > MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+  );
+  const windowHeight = MIN_MESSAGE_BURN_ACTIVATION_HEIGHT + 1; // 落在 (40000, 45000) 窗口内
+  check(
+    'IDCLAIM|alice 发往身份托管地址,但 atHeight 落在窗口期内（身份尚未激活）算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: windowHeight }),
+  );
+  check(
+    '同一笔 IDCLAIM，一旦 atHeight 达到身份激活高度就不再算真消息（对照组）',
+    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'STAKE|guard 发往质押托管地址,但 atHeight 落在质押激活高度之前算真消息（同一逻辑的 STAKE 版本）',
+    isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: STAKE_ESCROW_ADDRESS, atHeight: STAKING_ACTIVATION_HEIGHT - 1 }),
   );
 
   console.log(`\n— 激活门控：激活前旧规则放行低销毁长消息，不 retroactive 拒绝已广播交易 —`);

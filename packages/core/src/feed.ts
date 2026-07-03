@@ -143,7 +143,7 @@ export function deriveFeed(chain: Block[], limit = 80): FeedEvent[] {
       }
 
       // 私信：amount=0 + burn>0 + 非协议 memo（与 parseMessages 一致）。
-      if (isMessageTx(tx) && !isProtocolMemo(tx)) {
+      if (isMessageTx(tx) && !isProtocolMemo({ ...tx, atHeight: b.index })) {
         out.push({ type: 'message', ...base, text: m });
         continue;
       }

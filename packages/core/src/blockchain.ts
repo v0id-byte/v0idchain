@@ -326,7 +326,7 @@ function redOpError(
     return null;
   }
   // ---- 消息防刷底线：收紧校验，不引入新状态机，故放最后（真消息不命中前面任何托管/前缀分支）----
-  if (atHeight >= MIN_MESSAGE_BURN_ACTIVATION_HEIGHT && isRealMessage(tx)) {
+  if (atHeight >= MIN_MESSAGE_BURN_ACTIVATION_HEIGHT && isRealMessage({ ...tx, atHeight })) {
     const memoLen = [...tx.memo].length; // Unicode 码点，同 MAX_MEMO 口径
     const required = minMessageBurnFor(memoLen);
     if ((tx.burn ?? 0) < required) return `消息销毁额过低（需 ≥ ${required}，当前 ${tx.burn ?? 0}）`;
