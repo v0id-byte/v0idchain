@@ -55,7 +55,7 @@ import {
   makeMineMaterial,
 } from './mining.js';
 import { NAME_PREFIX, isValidName } from './names.js';
-import { MKT_PREFIX, DEL_PREFIX, MAX_TITLE } from './market.js';
+import { MKT_PREFIX, BUY_PREFIX, DEL_PREFIX, MAX_TITLE } from './market.js';
 import { RELAY_PREFIX, parseRelayMemo, buildRelayMemo } from './relays.js';
 import { parseRedCreate } from './redpacket.js';
 
@@ -105,6 +105,16 @@ const HEX64 = /^[0-9a-f]{64}$/;
 // 数量级，纯粹用来堵住“塞几百位数字当幌子”的套壳——真正的业务范围校验仍在 parseFarm 里。
 const DIGITS = /^\d{1,9}$/;
 
+// 全部协议层 memo 前缀（用于「历史字符串签名」的纯前缀判定——见 isProtocolMemo 的字符串入参分支）。
+// 与下面 isProtocolMemo 对象分支覆盖的前缀保持一致；ENC| 刻意不含（端到端私信正文，本就该进收件箱）。
+const PROTOCOL_MEMO_PREFIXES = [
+  UNSTAKE_PREFIX, SLASH_PREFIX, CLAIM_PREFIX, REFUND_PREFIX,
+  STAKE_PREFIX, RED_PREFIX, IDCLAIM_PREFIX, IDRELEASE_PREFIX,
+  PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX, PETFARM_PREFIX, PETUNSTATION_PREFIX,
+  FISH_PREFIX, CROPX_PREFIX, LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, MINE_PREFIX,
+  NAME_PREFIX, MKT_PREFIX, BUY_PREFIX, DEL_PREFIX, RELAY_PREFIX, ROOM_PREFIX,
+];
+
 /**
  * 某笔交易是否属于“协议层约定”（崽/红包/钓鱼/农场/矿洞/昵称/集市/中继等建在 memo 上的子系统），
  * 而非真人私信正文。这些子系统也会发出与链上消息撞型的交易——不排除的话会被 parseMessages 误收进
@@ -148,12 +158,13 @@ const DIGITS = /^\d{1,9}$/;
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）。
  *
- * 入参兼容：本函数历史签名是 `isProtocolMemo(memo: string)`，本轮加固后改为需要完整交易语境的对象签名。
- * 为不静默破坏公共出口（`@v0idchain/core/browser`）的既有字符串调用方，仍接受裸字符串——归一为
- * `{ memo }`（无 from/to/amount/burn/atHeight 语境）。此时所有「需语境才敢豁免」的分支（②转托管创建类需
- * `to===托管地址`、④游戏类需自转+达标烧币、⑤需自转+burn=0）都因语境缺失而**保守地返回 false**（= 判为
- * 真消息、落回消息门槛），绝不会因缺语境而误豁免——即字符串模式只会更严、不会开新绕过口子；只有①id 引用类
- * （纯 startsWith、本就不看语境）行为与旧版完全一致。字符串调用方应尽快改传完整交易以获得精确判定。
+ * 入参兼容：本函数历史签名是 `isProtocolMemo(memo: string)`，做**收件箱展示过滤**用（判断一条 memo 像不像
+ * 协议 memo、以便不当私信显示）。本轮加固后改为需要完整交易语境的对象签名，做**经济门槛豁免**判定。二者
+ * 的“保守方向”正好相反：展示层缺信息时应偏向“当协议、别显示”（纯前缀命中即真），经济层缺信息时应偏向
+ * “当真消息、照收门槛”。故字符串入参**沿用历史纯前缀语义**（命中任一协议前缀即 true，见 PROTOCOL_MEMO_PREFIXES）——
+ * 精确复刻旧版展示行为、不把 PET/FISH 等协议 memo 泄进收件箱；对象入参才走下面完整的语境化豁免判定
+ * （消息门槛只由对象调用点 isRealMessage→redOpError 驱动，永远传对象，故字符串分支绝不参与经济门槛、
+ * 不会因纯前缀放行而在门槛侧开绕过口子）。字符串调用方若需精确豁免判定应改传完整交易。
  */
 export function isProtocolMemo(
   tx:
@@ -167,7 +178,8 @@ export function isProtocolMemo(
         atHeight?: number;
       },
 ): boolean {
-  if (typeof tx === 'string') tx = { memo: tx };
+  // 历史字符串签名（展示过滤）：纯前缀判定，命中任一协议前缀即视为协议 memo（与旧版逐字一致）。
+  if (typeof tx === 'string') return PROTOCOL_MEMO_PREFIXES.some((p) => tx.startsWith(p));
   const { memo, from, to } = tx;
   const burn = tx.burn ?? 0;
   const amount = tx.amount ?? 0;
@@ -289,6 +301,14 @@ export function isProtocolMemo(
   if (memo.startsWith(DEL_PREFIX)) {
     // 撤单：V0idNode.marketDelist() 固定自转 1 币 + burn=0；payload = 上架交易 txid（64-hex）。
     return selfTransfer && burn === 0 && HEX64.test(memo.slice(DEL_PREFIX.length));
+  }
+  if (memo.startsWith(BUY_PREFIX)) {
+    // ⑥ 集市购买：唯一「付款给别人（非自转）」形态的协议 memo——V0idNode.marketBuy() 付 price 给卖家
+    //   （from≠to、amount>0、burn=0），payload = 上架交易 txid（64-hex，定长不可填充）。`BUY|<64hex>` 恒为
+    //   68 码点 > 免费额度，若不在此豁免，激活后每一笔集市购买都会被消息门槛误杀（#1 的长度网副作用）。
+    //   payload 定长 + hex-only，无法当灌水载体，豁免安全。金额是否 ≥ 标价由 parseMarket 结合状态判，此处
+    //   只核结构形态。
+    return !selfTransfer && amount > 0 && burn === 0 && HEX64.test(memo.slice(BUY_PREFIX.length));
   }
   if (memo.startsWith(RELAY_PREFIX)) {
     if (!selfTransfer || burn !== 0) return false;

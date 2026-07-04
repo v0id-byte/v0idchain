@@ -41,6 +41,7 @@ import {
   isMemoSpamCandidate,
   buildNameMemo,
   buildListMemo,
+  BUY_PREFIX,
   DEL_PREFIX,
   buildRelayMemo,
   ROOM_PREFIX,
@@ -105,18 +106,30 @@ async function main() {
     check('minMessageBurnFor 在抽样长度上全整数输出（禁浮点跨节点分叉）', allInt);
   }
 
-  console.log(`\n— 向后兼容：isProtocolMemo 仍接受裸字符串（历史签名），不抛异常、缺语境时保守判 false —`);
+  console.log(`\n— 向后兼容：isProtocolMemo 裸字符串入参 = 历史"展示过滤"纯前缀语义（命中任一协议前缀即 true）—`);
   check(
-    'isProtocolMemo(裸字符串 "UNSTAKE|..." )：① id 引用类纯 startsWith，与旧版一致返回 true',
+    'isProtocolMemo(裸字符串 "UNSTAKE|..." )：纯前缀命中 → true',
     isProtocolMemo(`${UNSTAKE_PREFIX}${'a'.repeat(64)}`) === true,
   );
   check(
-    'isProtocolMemo(裸字符串 "STAKE|guard")：② 需 to===托管地址语境，字符串模式缺语境 → 保守返回 false（不误豁免）',
-    isProtocolMemo('STAKE|guard') === false,
+    'isProtocolMemo(裸字符串 "STAKE|guard")：纯前缀命中 → true（历史展示语义；旧版就把它当协议 memo 不显示）',
+    isProtocolMemo('STAKE|guard') === true,
+  );
+  check(
+    'isProtocolMemo(裸字符串 "PET|")：纯前缀命中 → true（旧漏洞：round-10 shim 曾误判 false 让崽/渔获泄进收件箱）',
+    isProtocolMemo(PET_PREFIX) === true,
+  );
+  check(
+    'isProtocolMemo(裸字符串 "FISH|...")：纯前缀命中 → true',
+    isProtocolMemo(`${FISH_PREFIX}whatever`) === true,
   );
   check(
     'isProtocolMemo(裸字符串 普通正文)：非协议前缀 → false（且不抛异常）',
     isProtocolMemo('hello world') === false,
+  );
+  check(
+    'isProtocolMemo(裸字符串 "ENC|...")：加密私信刻意不算协议 memo → false（留在收件箱）',
+    isProtocolMemo('ENC|ciphertext') === false,
   );
 
   console.log(`\n— isRealMessage 分类：真正合法的协议层操作不算真消息（精确 payload + 达标烧币值 + from/to/amount 语境）—`);
@@ -342,6 +355,19 @@ async function main() {
   check(
     'DEL| 但 burn>0（不是真实撤单形态）算真消息',
     isRealMessage({ amount: 1, burn: 1, memo: `${DEL_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'BUY|<64hex>（付款给卖家：from!==to、amount>0、burn=0，marketBuy 真实形态）不算真消息' +
+      '（旧漏洞⑭：BUY memo 68 码点 > 免费额度，#1 长度网曾误杀每一笔集市购买）',
+    !isRealMessage({ amount: 100, burn: 0, memo: `${BUY_PREFIX}${fakeId}`, from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'BUY| 但自转（from===to，不是真实购买形态）算真消息',
+    isRealMessage({ amount: 100, burn: 0, memo: `${BUY_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'BUY| 但 burn>0（真实购买 burn 恒 0，套壳想蹭豁免）算真消息',
+    isRealMessage({ amount: 100, burn: 1, memo: `${BUY_PREFIX}${fakeId}`, from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
   );
   check(
     'ROOM|<64hex>（自转、burn=0，game-web publishRoom() 的真实形态）不算真消息',
