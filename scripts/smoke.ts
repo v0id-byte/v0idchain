@@ -526,6 +526,13 @@ pets = parsePets(pet.chain);
 check('送崽后归属转移给 bob', pets[0].owner === bob.address);
 check('基因不随转手改变（还是同一只崽）', pets[0].gene === gene && pets[0].minter === alice.address);
 check('petsOf(bob) 含该崽、petsOf(alice) 不再含', petsOf(pet.chain, bob.address).some((p) => p.id === petId) && !petsOf(pet.chain, alice.address).some((p) => p.id === petId));
+// amount=0 的 PETX（送崽 = 转 1 币给对方，见 pets 约定）不是真实转移：parsePets 须忽略（与 isProtocolMemo 的
+// PETX amount>0 判定一致，避免解析器认它有效、消息门槛却把它当真消息误杀这类分类冲突）。此处用 burn>0 让它
+// 过 verifyTransaction（amount=0+burn=0 会被判空操作直接拒，进不了池，测不到 parsePets）。
+const zeroAmtGive = createTransaction(bob, carol.address, 0, pet.nonceOf(bob.address), makePetTransfer(petId).memo!, MIN_FEE, 1);
+check('amount=0 的 PETX 进池（burn>0 过校验）', pet.addTransaction(zeroAmtGive).ok);
+await pet.mine(bob.address);
+check('amount=0 的 PETX 不转移归属（parsePets 要求 amount>0，崽仍归 bob）', parsePets(pet.chain).find((p) => p.id === petId)?.owner === bob.address);
 // 越权转移：alice 已不是主人，再发 PETX 把崽转给别人 → 无效
 pet.addTransaction(createTransaction(alice, carol.address, 1, pet.nonceOf(alice.address), makePetTransfer(petId).memo!));
 await pet.mine(bob.address);
