@@ -56,9 +56,12 @@ export function createTransaction(
   nonce: number,
   memo = '',
   fee?: number,
+  burn = 0,
 ): Transaction {
   const actualFee = fee ?? minFeeFor(amount);
-  const base: TransactionPayload = { from: wallet.address, to, amount, fee: actualFee, nonce, timestamp: Date.now(), memo };
+  // burn 默认 0（与升级前逐字节一致：transactionPayloadHash 仅在 burn>0 时计入，故 burn=0 的哈希不变）。
+  // 支持 burn>0 是为「付款附带较长备注」——消息门槛激活后长 memo 转账需按 minMessageBurnFor 销毁，见 node.send。
+  const base: TransactionPayload = { from: wallet.address, to, amount, fee: actualFee, nonce, timestamp: Date.now(), memo, burn };
   const txid = transactionPayloadHash(base);
   return { ...base, signature: sign(txid, wallet.privateKey), txid };
 }

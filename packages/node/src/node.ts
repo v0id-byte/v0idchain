@@ -11,6 +11,8 @@ import {
   minFeeFor,
   MESSAGE_BURN,
   minMessageBurnFor,
+  MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+  isRealMessage,
   MAX_MEMO,
   NULL_ADDRESS,
   SYSTEM_ADDRESSES,
@@ -159,9 +161,19 @@ export class V0idNode {
   }
 
   // ---- 钱包动作 ----
-  /** 本节点发起转账：算好 nonce、签名、进池、广播。fee 省略时自动按比例计算（minFeeFor(amount)）。 */
-  send(to: string, amount: number, memo = '', fee?: number): { ok: boolean; tx?: Transaction; error?: string } {
-    return this.submit(this.wallet, to, amount, memo, fee ?? minFeeFor(amount));
+  /**
+   * 本节点发起转账：算好 nonce、签名、进池、广播。fee 省略时自动按比例计算（minFeeFor(amount)）。
+   * burn 省略时**自动**处理消息防刷底线：若这笔转账会落入消息门槛（自转带备注 / 备注超免费额度，
+   * 且非协议 memo），激活后 redOpError 会要求按 minMessageBurnFor 销毁——此处自动补上所需销毁额，
+   * 否则长备注付款会被静默拒收且钱包无从补烧（普通短备注付款 burn 保持 0，不受影响）。可显式传 burn 覆盖。
+   */
+  send(to: string, amount: number, memo = '', fee?: number, burn?: number): { ok: boolean; tx?: Transaction; error?: string } {
+    const atHeight = this.bc.height + 1; // 这笔大约会被打进的高度
+    const floored =
+      atHeight >= MIN_MESSAGE_BURN_ACTIVATION_HEIGHT &&
+      isRealMessage({ amount, burn: burn ?? 0, memo, from: this.wallet.address, to, atHeight });
+    const actualBurn = burn ?? (floored ? minMessageBurnFor([...memo].length) : 0);
+    return this.submit(this.wallet, to, amount, memo, fee ?? minFeeFor(amount), actualBurn);
   }
 
   /**
@@ -421,10 +433,11 @@ export class V0idNode {
     amount: number,
     memo: string,
     fee: number,
+    burn = 0,
   ): { ok: boolean; tx?: Transaction; error?: string } {
     const pending = this.bc.mempool.filter((t) => t.from === wallet.address).length;
     const nonce = this.bc.nonceOf(wallet.address) + pending;
-    const tx = createTransaction(wallet, to, amount, nonce, memo, fee);
+    const tx = createTransaction(wallet, to, amount, nonce, memo, fee, burn);
     const r = this.bc.addTransaction(tx);
     if (!r.ok) return { ok: false, error: r.error };
     this.markSeen(tx.txid);

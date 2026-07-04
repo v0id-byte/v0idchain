@@ -552,6 +552,21 @@ async function main() {
   await bc.mine(carol2.address);
   check('双钱包接力场景后全链守恒', conserved(bc));
 
+  console.log(`\n— 端到端：createTransaction 的 burn 参数让"长备注付款"能补足门槛（#4 送币路径可补烧的底座）—`);
+  await fund(bc, carol2.address, 100);
+  const longPayMemo = 'p'.repeat(100); // > 免费额度 64
+  const longPayRequired = minMessageBurnFor(100);
+  check(
+    'createTransaction 长备注付款 + burn=0 → 被门槛拒收（旧：send 路径无从补烧的症结）',
+    !bc.addTransaction(createTransaction(carol2, dave.address, 5, bc.nonceOf(carol2.address), longPayMemo, MIN_FEE, 0)).ok,
+  );
+  check(
+    'createTransaction 同一付款带足 burn=minMessageBurnFor(100) → 被接受（burn 参数逐字节流入 txid，不破坏旧交易哈希）',
+    bc.addTransaction(createTransaction(carol2, dave.address, 5, bc.nonceOf(carol2.address), longPayMemo, MIN_FEE, longPayRequired)).ok,
+  );
+  await bc.mine(carol2.address);
+  check('长备注付款场景后全链守恒', conserved(bc));
+
   console.log(`\n— 端到端：DEL 撤单不受影响、IDRELEASE「未激活+amount≠0」套壳被真实拒绝 —`);
   const delTx = createTransaction(carol2, carol2.address, 1, bc.nonceOf(carol2.address), `${DEL_PREFIX}${fakeId}`, MIN_FEE);
   check('DEL| 真实撤单（自转 1 币 + burn=0）激活后依然被接受，不需要额外销毁费', bc.addTransaction(delTx).ok);

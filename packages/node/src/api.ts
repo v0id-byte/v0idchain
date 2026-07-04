@@ -198,7 +198,9 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             if (!isValidAddress(String(body.to))) return json(400, { error: '收款地址格式无效' });
             const amount = Number(body.amount);
             const fee = body.fee === undefined ? minFeeFor(amount) : Number(body.fee);
-            const r = node.send(String(body.to), amount, String(body.memo ?? ''), fee);
+            // burn 省略 → node.send 按备注长度自动补足消息门槛所需销毁额；显式传则覆盖。
+            const burn = body.burn === undefined ? undefined : Number(body.burn);
+            const r = node.send(String(body.to), amount, String(body.memo ?? ''), fee, burn);
             return r.ok ? json(200, { txid: r.tx!.txid }) : json(400, { error: r.error });
           }
           case '/message': {

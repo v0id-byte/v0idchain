@@ -338,11 +338,13 @@ txCmd(program.command('send'))
   .argument('<amount>', '金额')
   .option('--memo <text>', '附带一段备注（上链可查）', '')
   .option('--fee <n>', `手续费（gas；省略则自动算：max(${MIN_FEE}, 金额×0.1%)）`)
-  .description('转账（需付 金额 + 手续费/gas）')
+  .option('--burn <n>', '为超长备注附带的销毁额（消息门槛激活后长备注付款需要；省略则按备注长度自动补足）')
+  .description('转账（需付 金额 + 手续费/gas；长备注还需按门槛销毁）')
   .action(async (to, amount, o) => {
     const amt = Number(amount);
     const fee = o.fee !== undefined ? Number(o.fee) : minFeeFor(amt);
-    const r = await api(o,'POST', '/send', { to, amount: amt, memo: o.memo, fee });
+    const burn = o.burn !== undefined ? Number(o.burn) : undefined; // 省略 → 节点按备注长度自动补足
+    const r = await api(o,'POST', '/send', { to, amount: amt, memo: o.memo, fee, burn });
     console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${fee}`));
     if (o.wait) await waitConfirm(o, r.txid);
   });
