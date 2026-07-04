@@ -16,6 +16,7 @@ import {
   IDCLAIM_PREFIX,
   IDENTITY_ESCROW_ADDRESS,
   IDENTITY_ACTIVATION_HEIGHT,
+  IDENTITY_STAKE_MIN,
   IDRELEASE_PREFIX,
   ROOM_PREFIX,
 } from './config.js';
@@ -44,10 +45,18 @@ import {
   HARVEST_BURN,
   type Crop,
 } from './farm.js';
-import { MINE_PREFIX, parseMineMemo, mineDiscoveryBurn, mineMaterialBurn } from './mining.js';
+import {
+  MINE_PREFIX,
+  parseMineMemo,
+  mineDiscoveryBurn,
+  mineMaterialBurn,
+  makeMineDiscovery,
+  makeMineMaterial,
+} from './mining.js';
 import { NAME_PREFIX, isValidName } from './names.js';
 import { MKT_PREFIX, DEL_PREFIX, MAX_TITLE } from './market.js';
-import { RELAY_PREFIX, parseRelayMemo } from './relays.js';
+import { RELAY_PREFIX, parseRelayMemo, buildRelayMemo } from './relays.js';
+import { parseRedCreate } from './redpacket.js';
 
 export interface ChainMessage {
   txid: string;
@@ -104,7 +113,13 @@ const DIGITS = /^\d{1,9}$/;
  *    别的地址，redOpError 的对应分支根本不会触发，交易会落到 NORMAL 兜底，此时若仍判定为“协议层”会让它
  *    绕过消息门槛。故必须额外核对 `to === 对应托管地址`。STAKE/IDCLAIM 还各自有共识激活高度（RED 从创世
  *    即生效，没有）——**激活前它们是 amount>0 的普通转账，会被 consensus 直接接受但不会被当协议操作**，
- *    此时仍判定为协议层会让它免费绕过消息门槛，故还需核对 `atHeight >= 对应激活高度`。
+ *    此时仍判定为协议层会让它免费绕过消息门槛，故还需核对 `atHeight >= 对应激活高度`。RED/IDCLAIM 还须
+ *    核对 `amount` 达标（RED 用 parseRedCreate 反推的 `count`；IDCLAIM 用 `IDENTITY_STAKE_MIN`）——
+ *    `amount` 不足时 applyTx 的门槛判断恒假，consensus 不会当真操作接受，只是普通烧币到托管地址，此时
+ *    若仍判定为协议层，会让「合法前缀 + burn>0 + amount 不足」组合免费绕开消息门槛（真正 amount 达标、
+ *    发给托管地址的合法创建操作是有价值转移的第三方转账，天然不落入 isMemoSpamCandidate 的候选范围，
+ *    不受此处影响）。STAKE 因其门槛 `computeStakeMin` 依赖区块难度、此处拿不到，暂不做同款收紧
+ *    （已知缺口，留待后续单独处理——本轮改动范围外）。
  * ③ IDRELEASE（id 引用类，但拒绝条件依赖 amount，单独一类，不能归进①）：**redOpError 的未激活门控只在
  *    `tx.amount === 0` 时才触发**（`!identityActive && startsWith(IDRELEASE) && amount===0` 才拒绝），
  *    这是刻意设计——避免 retroactive 拒绝激活前 amount>0 的历史普通转账。副作用是「amount≠0 + 未激活」
@@ -155,8 +170,14 @@ export function isProtocolMemo(tx: {
 
   // ② 转托管创建类：只有真的发往对应托管地址 + 已过激活高度，consensus 才会校验/接纳，否则等于普通转账
   if (memo.startsWith(STAKE_PREFIX)) return to === STAKE_ESCROW_ADDRESS && atHeight >= STAKING_ACTIVATION_HEIGHT;
-  if (memo.startsWith(RED_PREFIX)) return to === RED_ESCROW_ADDRESS; // 红包从创世即生效，无激活高度
-  if (memo.startsWith(IDCLAIM_PREFIX)) return to === IDENTITY_ESCROW_ADDRESS && atHeight >= IDENTITY_ACTIVATION_HEIGHT;
+  if (memo.startsWith(RED_PREFIX)) {
+    // 红包从创世即生效，无激活高度；但 amount 须达标（applyTx 要求 amount >= meta.count）才是真红包。
+    const meta = parseRedCreate(memo);
+    return to === RED_ESCROW_ADDRESS && meta !== null && amount >= meta.count;
+  }
+  if (memo.startsWith(IDCLAIM_PREFIX)) {
+    return to === IDENTITY_ESCROW_ADDRESS && atHeight >= IDENTITY_ACTIVATION_HEIGHT && amount >= IDENTITY_STAKE_MIN;
+  }
 
   // ③ IDRELEASE：拒绝条件依赖 amount（未激活门控只拦 amount=0 新边界），故不能归进①的无条件 startsWith；
   //    只有「已激活 + amount=0」才是真正会被 consensus 当解锁处理的形态，其余（含未激活+amount≠0）不豁免。
@@ -212,6 +233,10 @@ export function isProtocolMemo(tx: {
     if (!selfTransfer) return false;
     const m = parseMineMemo(memo);
     if (!m) return false;
+    // 深度/坐标/数量字段用 Number() 归一化，前导零填充可把 memo 撑满 512 码点仍解析出合法小值；
+    // 用同一套 make* 建造函数反推规范 memo 做逐字节比对，堵住这条填充绕开消息门槛的路。
+    const rebuilt = m.type === 'discovery' ? makeMineDiscovery(m.depth, m.x, m.y, m.kind) : makeMineMaterial(m.kind, m.count);
+    if (!rebuilt.ok || rebuilt.memo !== memo) return false;
     const needed = m.type === 'discovery' ? mineDiscoveryBurn(m.depth, m.kind) : mineMaterialBurn(m.kind, m.count);
     return burn >= needed;
   }
@@ -219,7 +244,10 @@ export function isProtocolMemo(tx: {
   // ⑤ 自转、burn 恒为 0 的纯展示层约定：昵称抢注 / 集市上架 / 集市撤单 / 中继发布
   if (memo.startsWith(NAME_PREFIX)) {
     if (!selfTransfer || burn !== 0) return false;
-    const name = memo.slice(NAME_PREFIX.length).trim().toLowerCase(); // 归一化口径同 parseNames
+    // 不 trim：parseNames 会 trim 后再判定合法性（容忍意外首尾空白），但这里若照抄 trim，会让「真实
+    // 内容只有 1 个字符、靠几百个空格填充撑满 512 码点」的套壳被 isValidName 放过；NAME_RE 本就不含
+    // 空白字符，不 trim 直接判定既保留大小写不敏感、又堵死这条空白填充路径。
+    const name = memo.slice(NAME_PREFIX.length).toLowerCase();
     return isValidName(name);
   }
   if (memo.startsWith(MKT_PREFIX)) {
@@ -227,16 +255,26 @@ export function isProtocolMemo(tx: {
     const rest = memo.slice(MKT_PREFIX.length);
     const sep = rest.indexOf('|');
     if (sep < 0) return false;
-    const price = Number(rest.slice(0, sep));
+    const priceToken = rest.slice(0, sep);
+    const price = Number(priceToken);
     const title = rest.slice(sep + 1);
-    return Number.isInteger(price) && price > 0 && title.length > 0 && [...title].length <= MAX_TITLE;
+    // 价格字段须是其数值的规范十进制形式（无前导零/正号/科学计数法等），否则可用几百位填充撑满 512
+    // 码点、仍被 Number() 归一成合法小价格，绕开消息门槛。
+    return (
+      Number.isInteger(price) && price > 0 && String(price) === priceToken &&
+      title.length > 0 && [...title].length <= MAX_TITLE
+    );
   }
   if (memo.startsWith(DEL_PREFIX)) {
     // 撤单：V0idNode.marketDelist() 固定自转 1 币 + burn=0；payload = 上架交易 txid（64-hex）。
     return selfTransfer && burn === 0 && HEX64.test(memo.slice(DEL_PREFIX.length));
   }
   if (memo.startsWith(RELAY_PREFIX)) {
-    return selfTransfer && burn === 0 && parseRelayMemo(memo) !== null;
+    if (!selfTransfer || burn !== 0) return false;
+    const m = parseRelayMemo(memo);
+    // port 等数字字段同样能被前导零填充撑满 512 码点仍解析出合法小值；用 buildRelayMemo 反推规范
+    // memo 逐字节比对，堵住这条绕开消息门槛的路。
+    return m !== null && buildRelayMemo(m.onionPubHex, m.host, m.port, m.bandwidth, m.stakeTxid) === memo;
   }
   if (memo.startsWith(ROOM_PREFIX)) {
     // 房间布局发布：game-web publishRoom() 固定自转 1 币 + burn=0；payload = 布局 hash（64-hex）。

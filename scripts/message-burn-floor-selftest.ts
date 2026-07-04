@@ -30,6 +30,7 @@ import {
   RED_ESCROW_ADDRESS,
   IDENTITY_ESCROW_ADDRESS,
   IDENTITY_ACTIVATION_HEIGHT,
+  IDENTITY_STAKE_MIN,
   GENESIS_PREMINE,
   BLOCK_REWARD,
   MIN_FEE,
@@ -40,6 +41,9 @@ import {
   DEL_PREFIX,
   buildRelayMemo,
   ROOM_PREFIX,
+  MINE_MAT_PREFIX,
+  makeMineMaterial,
+  mineMaterialBurn,
   transactionPayloadHash,
   sign,
   type Block,
@@ -126,12 +130,26 @@ async function main() {
     !isRealMessage({ amount: 0, burn: 1, memo: `${STAKE_PREFIX}guard`, from: selfAddr, to: STAKE_ESCROW_ADDRESS, atHeight: STAKING_ACTIVATION_HEIGHT }),
   );
   check(
-    'RED| 真发往红包托管地址不算真消息（无激活高度，从创世即生效）',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: RED_ESCROW_ADDRESS, atHeight: 1 }),
+    'RED| 真发往红包托管地址 + amount 达标（count=10，真实转账给第三方）不算真消息' +
+      '（本就落在 isMemoSpamCandidate 候选范围外，amount 达标与否不影响这条——见下方旧漏洞⑧才是新增校验点）',
+    !isRealMessage({ amount: 10, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: RED_ESCROW_ADDRESS, atHeight: 1 }),
   );
   check(
-    'IDCLAIM| 真发往身份托管地址 + 已过激活高度 不算真消息（Feature A×B 交叉wiring，共识层已保护）',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
+    'RED| 但 amount 不足 count（旧漏洞⑧：amount=0 时 consensus 不当真红包接受，只是普通烧币到托管，' +
+      '此时若仍判定为协议层会免费绕开消息门槛）算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${RED_PREFIX}10|r`, from: selfAddr, to: RED_ESCROW_ADDRESS, atHeight: 1 }),
+  );
+  check(
+    'IDCLAIM| 真发往身份托管地址 + 已过激活高度 + amount 达标（真实转账给第三方）不算真消息' +
+      '（本就落在 isMemoSpamCandidate 候选范围外——见下方旧漏洞⑨才是新增校验点）',
+    !isRealMessage({
+      amount: IDENTITY_STAKE_MIN, burn: 1, memo: `${IDCLAIM_PREFIX}alice`,
+      from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT,
+    }),
+  );
+  check(
+    'IDCLAIM| 但 amount 不足 IDENTITY_STAKE_MIN（旧漏洞⑨：amount=0 时 consensus 不当真认领接受，只是普通烧币到托管）算真消息',
+    isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
   );
   check(
     'IDRELEASE| 前缀不算真消息（id 引用类，consensus 不看 to，共识层已保护）',
@@ -199,8 +217,13 @@ async function main() {
     isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: windowHeight }),
   );
   check(
-    '同一笔 IDCLAIM，一旦 atHeight 达到身份激活高度就不再算真消息（对照组）',
-    !isRealMessage({ amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`, from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT }),
+    '同一笔 IDCLAIM，即便 atHeight 已达身份激活高度仍算真消息（amount=0 恒不足 IDENTITY_STAKE_MIN，' +
+      '不像旧版那样单靠高度跨过激活点就豁免——现在还需 amount 达标，而达标的 amount>0 又天然不落入' +
+      'isMemoSpamCandidate 候选范围，故这条分支在 isRealMessage 的可达路径里恒定判真消息）',
+    isRealMessage({
+      amount: 0, burn: 1, memo: `${IDCLAIM_PREFIX}alice`,
+      from: selfAddr, to: IDENTITY_ESCROW_ADDRESS, atHeight: IDENTITY_ACTIVATION_HEIGHT,
+    }),
   );
   check(
     'STAKE|guard 发往质押托管地址,但 atHeight 落在质押激活高度之前算真消息（同一逻辑的 STAKE 版本）',
@@ -279,6 +302,41 @@ async function main() {
   check(
     'ROOM| 但 payload 不是 64-hex（伪装发布夹带长文）算真消息',
     isRealMessage({ amount: 1, burn: 1, memo: `${ROOM_PREFIX}${'x'.repeat(200)}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+
+  console.log(`\n— 核心回归⑦：数字/字符串字段填充攻击——Number()/trim() 归一化把填充值判成合法小值，`);
+  console.log(`   必须核对规范形式（无前导零/空白），否则可撑满 512 码点仍被判非真消息（旧漏洞⑩）—`);
+  check(
+    'NAME|<506 空格>x（trim 后归一成合法昵称 x）算真消息——不该被当协议层豁免',
+    isRealMessage({ amount: 0, burn: 1, memo: `NAME|${' '.repeat(506)}x`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'MKT|<前导零填充的价格>|x（Number() 归一成 1）算真消息——价格字段须是规范十进制形式',
+    isRealMessage({ amount: 0, burn: 1, memo: `MKT|${'0'.repeat(505)}1|x`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'MKT|1|x（规范形式，无填充）合法上架仍不算真消息（对照组，确认没有误伤正常上架）',
+    !isRealMessage({ amount: 0, burn: 0, memo: buildListMemo(1, 'x'), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  const paddedMineCount = `${MINE_MAT_PREFIX}copper|${'0'.repeat(495)}1`; // 495 零 + 1 位数字 = 496 位，凑够 512 码点
+  check(
+    'MINE|MAT|copper|<前导零填充的数量>（parseMineMemo 归一成 1）算真消息——数量字段须是规范十进制形式',
+    isRealMessage({
+      amount: 0, burn: mineMaterialBurn('copper', 1), memo: paddedMineCount,
+      from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+    }),
+  );
+  check(
+    'MINE|MAT|copper|1（规范形式，无填充）合法材料铸造仍不算真消息（对照组）',
+    !isRealMessage({
+      amount: 0, burn: mineMaterialBurn('copper', 1), memo: makeMineMaterial('copper', 1).memo!,
+      from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+    }),
+  );
+  const paddedRelayPort = `RELAY|${'a'.repeat(64)}|10.0.0.1:${'0'.repeat(429)}6001|m|0`; // 端口前导零填充撑到 512 码点
+  check(
+    'RELAY|...:<前导零填充的端口>|...（Number() 归一成合法端口）算真消息——端口字段须是规范十进制形式',
+    isRealMessage({ amount: 0, burn: 1, memo: paddedRelayPort, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
   );
 
   console.log(`\n— 核心回归⑥：IDRELEASE 拒绝条件依赖 amount，未激活+amount≠0 这个组合不能豁免（旧漏洞⑦）—`);
