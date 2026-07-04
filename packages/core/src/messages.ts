@@ -4,6 +4,7 @@
 import type { Block } from './block.js';
 import {
   NULL_ADDRESS,
+  MESSAGE_FREE_MEMO_CHARS,
   RED_PREFIX,
   RED_ESCROW_ADDRESS,
   CLAIM_PREFIX,
@@ -74,26 +75,29 @@ export function isMessageTx(tx: { amount: number; burn?: number }): boolean {
 }
 
 /**
- * 是否“该受消息防刷底线约束”的候选交易。在原有 isMessageTx（amount=0+burn>0，发给任何人，含
- * 最常见的“张三发消息给李四”场景）**基础上追加**一种新形态，而不是取代它——
- * 自转（from===to）+ memo 非空 + amount 可以 >0：这是本次修复要堵的口子，把消息伪装成
- * “自己转给自己 N 个币 + 附言”（amount>0, burn 可以是 0），因为不满足 isMessageTx 的 amount=0
- * 形态而被完全放过，只需付最低手续费 minFeeFor(amount) 就能在链上塞任意长度文本（512 码点），
- * 等于绕开了整条消息防刷底线（该场景在经济实质上就是一条消息——钱转回自己手里，没有真实价值
- * 转移，唯一目的是塞内容）。
+ * 是否“该受消息防刷底线约束”的候选交易。三条**并列**规则（or，任一命中即候选）：
  *
- * ⚠️ 这里必须是“or”不是“替代”：如果误把 isMessageTx 判断丢掉、只留自转分支，会导致最常见的
- * “发消息给别人”（from!==to）反而被排除在候选之外、完全绕开消息门槛——比本次要修的漏洞更严重。
+ * (1) isMessageTx（amount=0 + burn>0）：最常见的“张三发消息给李四”，本就是消息，全额受门槛。
+ * (2) 自转（from===to）+ memo 非空（amount 可 >0）：把消息伪装成“自己转给自己 N 个币 + 附言”——
+ *     钱转回自己手里、无真实价值转移、唯一目的是塞内容，经济实质就是一条消息，必须受门槛。
+ * (3) memo 长度 > MESSAGE_FREE_MEMO_CHARS：**任意**带超长备注的交易，无论 from/to/amount。这条封堵
+ *     “双钱包接力”——A→自己控制的第二个钱包 amount=1 + 超长 memo，因既非 amount=0 消息、又非自转，
+ *     漏过 (1)(2) 只付 minFeeFor(amount) 就塞满 512 码点。链上无法证明两地址是否同属一人，无法靠
+ *     from/to 区分真实付款与自我接力，故改用**长度**判：≤ 额度的备注（真实付款的一行短附言）完全免费；
+ *     超额则不管怎么路由都受门槛。接力攻击每笔最多免费夹带 MESSAGE_FREE_MEMO_CHARS 码点，灌水成本抬高。
  *
- * 真实的“转账给别人 + 备注”（amount>0, from!==to）不受这条新增分支影响——那是有价值转移的合法
- * 场景，产品上允许自由备注，且转账金额越大手续费越高，天然区别于“零成本刷屏”，不该被消息门槛约束。
+ * ⚠️ (1) 必须保留、不能被后两条替代：否则最常见的“发消息给别人”（from!==to、可能 <额度）会漏出候选。
  *
- * 用于展示（收件箱）的语义仍由 isMessageTx 单独把关，不跟着扩大——“自转夹带”被 Feature A 经济门槛
- * 约束住即可，它依然不该出现在消息列表里（没有真实收件人）。
+ * 真实的“转账给别人 + **短**备注”（from!==to、amount>0、memo ≤ 额度）仍完全不受约束——有价值转移的合法
+ * 场景，产品上允许自由（短）附言。只有当备注长到 > 额度、更像灌水载体而非附言时，才一并受门槛。
+ *
+ * 协议层 memo（RELAY/PLANT 等本就可能 >额度）由 isProtocolMemo 在 isRealMessage 里单独豁免，不受 (3) 误伤。
+ * 用于展示（收件箱）的语义仍由 isMessageTx 单独把关，不跟着扩大——付款+长备注不是私信，不进消息列表。
  */
 export function isMemoSpamCandidate(tx: { amount: number; burn?: number; from: string; to: string; memo: string }): boolean {
-  if (isMessageTx(tx)) return true;
-  return tx.from === tx.to && tx.memo.length > 0;
+  if (isMessageTx(tx)) return true; // (1)
+  if (tx.from === tx.to && tx.memo.length > 0) return true; // (2)
+  return [...tx.memo].length > MESSAGE_FREE_MEMO_CHARS; // (3) 按 Unicode 码点计，同 MAX_MEMO/minMessageBurnFor 口径
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;

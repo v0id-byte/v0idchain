@@ -288,6 +288,23 @@ export function minMessageBurnFor(memoLength: number): number {
 }
 
 /**
+ * “给别人转账 + 备注”的免费备注长度额度（Unicode 码点）。这类交易（from≠to、有价值转移）产品上允许自由
+ * 附言、不当消息收进收件箱，故默认不受消息销毁门槛约束——但若不设上限，攻击者可用「A→自己控制的第二个
+ * 钱包 amount=1 + 超长 memo」把消息伪装成转账、只付 minFeeFor 就在链上塞满 MAX_MEMO(512) 文本，绕开整条
+ * 消息防刷底线（链上无法证明两地址是否同一人，无法靠 from/to 区分真实付款与自我接力）。
+ *
+ * 折中：给**任意带 memo 的交易**一个免费额度——≤ 该长度的备注完全免费（真实付款的一行短附言不受影响）；
+ * 一旦 memo 超过它，无论 from/to/amount，都落入 isMemoSpamCandidate 候选、按 minMessageBurnFor(全长) 收
+ * 销毁门槛。这样：真实付款的短备注零成本；超长文本不管怎么路由（自转/发消息/双钱包接力）都统一受约束；
+ * 接力攻击每笔最多只能免费夹带 64 码点（要塞满 512 需 8 笔交易+8 份手续费+8 次来回），灌水成本被抬高约 8×。
+ *
+ * 取 64：足够一行真实附言（中英文一句话都够），又远小于 MAX_MEMO(512)、不足以当有效灌水载体。可按需调整
+ * （改它即软分叉，须全网一致）。注意：协议层 memo（RELAY/PLANT 等本就可能 >64）仍由 isProtocolMemo 单独
+ * 豁免，不受此额度影响。与消息门槛同挂 MIN_MESSAGE_BURN_ACTIVATION_HEIGHT，不引入新的共识激活边界。
+ */
+export const MESSAGE_FREE_MEMO_CHARS = 64;
+
+/**
  * 消息防刷底线共识激活高度。该高度前，消息销毁额仍只按旧规则校验（burn>0 即可，见 verifyTransaction）——
  * 避免升级节点把激活前已广播/挂在旧节点 mempool 里的低销毁消息 retroactive 判非法。
  * ⚠️ 占位值 40000 —— **合并/部署前必须确认它 ≥ 当前实时链高 + 升级窗口**（同 STAKING_ACTIVATION_HEIGHT=16000 的选法）。

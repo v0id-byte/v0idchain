@@ -15,6 +15,7 @@ import {
   UNSTAKE_PREFIX,
   MESSAGE_BURN,
   MESSAGE_BURN_PER_CHAR_UNIT,
+  MESSAGE_FREE_MEMO_CHARS,
   MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
   MAX_MEMO,
   FISH_PREFIX,
@@ -264,8 +265,8 @@ async function main() {
     isMemoSpamCandidate({ from: selfAddr, to: selfAddr, memo: 'x'.repeat(300) }),
   );
   check(
-    'isMemoSpamCandidate：转给别人（非自转）不算候选——转账带备注是合法场景，不受消息门槛约束',
-    !isMemoSpamCandidate({ from: selfAddr, to: otherAddr, memo: 'x'.repeat(300) }),
+    'isMemoSpamCandidate：转给别人 + 短备注（≤ 免费额度）不算候选——真实付款的一行短附言合法免费',
+    !isMemoSpamCandidate({ from: selfAddr, to: otherAddr, memo: 'x'.repeat(MESSAGE_FREE_MEMO_CHARS) }),
   );
   check(
     'isMemoSpamCandidate：自转但 memo 为空不算候选（普通无备注自转）',
@@ -275,9 +276,32 @@ async function main() {
     '「自转 1 币 + 512 码点垃圾 memo + burn=0」（旧漏洞⑥：不满足 isMessageTx 的 amount=0 形态）现在算真消息',
     isRealMessage({ amount: 1, burn: 0, memo: 'x'.repeat(512), from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
   );
+
+  console.log(`\n— 核心回归⑧：双钱包接力（from!==to、amount 微小、超长 memo）必须受消息门槛约束（免费备注额度 = ${MESSAGE_FREE_MEMO_CHARS}）—`);
   check(
-    '同一形态但转给别人（真实转账+备注）不算真消息，不受门槛约束',
-    !isRealMessage({ amount: 1, burn: 0, memo: 'x'.repeat(512), from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+    'isMemoSpamCandidate：转给别人 + 512 码点 memo（> 免费额度，双钱包接力载体）算候选（旧漏洞⑬：曾靠 from!==to 完全放过）',
+    isMemoSpamCandidate({ from: selfAddr, to: otherAddr, memo: 'x'.repeat(512) }),
+  );
+  check(
+    'isMemoSpamCandidate：转给别人 + 恰好额度+1 码点也算候选（边界：> 而非 ≥）',
+    isMemoSpamCandidate({ from: selfAddr, to: otherAddr, memo: 'x'.repeat(MESSAGE_FREE_MEMO_CHARS + 1) }),
+  );
+  check(
+    '双钱包接力（A→B amount=1 + 512 memo + burn=0）激活后算真消息、受门槛约束（#1 核心修复）',
+    isRealMessage({ amount: 1, burn: 0, memo: 'x'.repeat(512), from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    '同一接力即便烧够也仍是"真消息"（isRealMessage 只判"是否受门槛约束"，与烧够没烧够无关——' +
+      '烧够与否由 redOpError/addTransaction 层把关，见下方端到端测试）',
+    isRealMessage({ amount: 1, burn: minMessageBurnFor(512), memo: 'x'.repeat(512), from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    '真实付款 + 短备注（额度内、from!==to、大额转账）仍不受门槛（保住"自由（短）附言"产品语义）',
+    !isRealMessage({ amount: 1000, burn: 0, memo: '本月房租已转，另附上次借的餐费，多谢！', from: selfAddr, to: otherAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'MESSAGE_FREE_MEMO_CHARS 明显小于 MAX_MEMO（额度不足以当有效灌水载体）',
+    MESSAGE_FREE_MEMO_CHARS < MAX_MEMO,
   );
 
   console.log(`\n— 核心回归⑤：NAME/MKT/RELAY（自转、burn 恒为 0）扩大范围后仍需被正确排除，不被误伤 —`);
@@ -478,6 +502,29 @@ async function main() {
   );
   await bc.mine(carol2.address);
   check('NAME/套壳场景后全链守恒', conserved(bc));
+
+  console.log(`\n— 端到端：双钱包接力（转给别人的钱包 + 超长 memo）被真实拒绝；短备注付款不受影响（#1）—`);
+  const dave = Wallet.generate();
+  const shuttleTx = (amount: number, burn: number, nonce: number, memo: string) => {
+    const base = { from: carol2.address, to: dave.address, amount, fee: minFeeFor(amount), nonce, timestamp: Date.now(), memo, burn };
+    const txid = transactionPayloadHash(base);
+    return { ...base, signature: sign(txid, carol2.privateKey), txid };
+  };
+  check(
+    '接力：A→B amount=1 + 512 码点 memo + burn=0（#1 核心绕过）真实提交时被拒绝',
+    !bc.addTransaction(shuttleTx(1, 0, bc.nonceOf(carol2.address), 'w'.repeat(512))).ok,
+  );
+  check(
+    '同一接力真的烧够 minMessageBurnFor(512) 后被接受（套利空间消失，与真消息成本一致）',
+    bc.addTransaction(shuttleTx(1, minMessageBurnFor(512), bc.nonceOf(carol2.address), 'w'.repeat(512))).ok,
+  );
+  await bc.mine(carol2.address);
+  check(
+    '真实付款 + 短备注（转给 B、额度内 memo、burn=0）仍免费被接受（保住"自由（短）附言"）',
+    bc.addTransaction(shuttleTx(5, 0, bc.nonceOf(carol2.address), '货款已付，请查收～')).ok,
+  );
+  await bc.mine(carol2.address);
+  check('双钱包接力场景后全链守恒', conserved(bc));
 
   console.log(`\n— 端到端：DEL 撤单不受影响、IDRELEASE「未激活+amount≠0」套壳被真实拒绝 —`);
   const delTx = createTransaction(carol2, carol2.address, 1, bc.nonceOf(carol2.address), `${DEL_PREFIX}${fakeId}`, MIN_FEE);
