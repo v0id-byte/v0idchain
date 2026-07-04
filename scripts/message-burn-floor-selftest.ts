@@ -110,8 +110,16 @@ async function main() {
     !isRealMessage({ amount: 0, burn: 1, memo: PET_PREFIX, from: selfAddr, to: selfAddr }),
   );
   check(
+    'PET| 但 burn=0（旧漏洞⑪：parsePets 要求 burn>0 才算真孵化，burn=0 只是自转带 memo）算真消息',
+    isRealMessage({ amount: 0, burn: 0, memo: PET_PREFIX, from: selfAddr, to: selfAddr }),
+  );
+  check(
     'FISH| 精确铸渔获 memo（自转、无后缀）不算真消息',
     !isRealMessage({ amount: 0, burn: 1, memo: FISH_PREFIX, from: selfAddr, to: selfAddr }),
+  );
+  check(
+    'FISH| 但 burn=0（parseFish 同样要求 burn>0 才算真铸渔获）算真消息',
+    isRealMessage({ amount: 0, burn: 0, memo: FISH_PREFIX, from: selfAddr, to: selfAddr }),
   );
   check(
     'PETBREED|<64hex>|<64hex>（自转）且 burn=PET_BREED_COST 不算真消息',
@@ -124,6 +132,10 @@ async function main() {
   check(
     'LAND|<n>（自转）不算真消息',
     !isRealMessage({ amount: 0, burn: 999, memo: `${LAND_PREFIX}0`, from: selfAddr, to: selfAddr }),
+  );
+  check(
+    'LAND|<n> 但 burn=0（旧漏洞⑫：parseFarm 的 selfBurn 门槛要求 burn>0，地价恒为正）算真消息',
+    isRealMessage({ amount: 0, burn: 0, memo: `${LAND_PREFIX}0`, from: selfAddr, to: selfAddr }),
   );
   check(
     'STAKE| 真发往质押托管地址 + 已过激活高度 不算真消息',

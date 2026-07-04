@@ -184,9 +184,12 @@ export function isProtocolMemo(tx: {
   if (memo.startsWith(IDRELEASE_PREFIX)) return atHeight >= IDENTITY_ACTIVATION_HEIGHT && amount === 0;
 
   // ④ 仅应用层校验的游戏前缀：payload 格式 + 烧币额 + from/to/amount 语境，防「伪装成协议操作」绕过消息门槛
-  if (memo === PET_PREFIX) return selfTransfer; // 孵化：memo 精确、自转、burn 只要求 >0（无固定值），无 payload 可塞
-  if (memo === FISH_PREFIX) return selfTransfer; // 铸渔获：同上
-  if (memo === CROPX_PREFIX) return selfTransfer; // 预留前缀（尚未实现转移逻辑），无已知格式，精确匹配最保守
+  // 孵化/铸渔获：parsePets/parseFish 都要求 burn>0（见各自 `tx.from!==tx.to || (tx.burn??0)<=0` 早退）；
+  // 此前这里没核对 burn，burn=0 的精确 `PET|`/`FISH|` 自转会被误判成真实铸造而免费绕开消息门槛（虽然
+  // 因是精确匹配、无 payload 可塞，spam 规模有限，但判定本身错误——它根本不是一次真实铸造）。
+  if (memo === PET_PREFIX) return selfTransfer && burn > 0; // 孵化：memo 精确、自转、burn>0（无固定值），无 payload 可塞
+  if (memo === FISH_PREFIX) return selfTransfer && burn > 0; // 铸渔获：同上
+  if (memo === CROPX_PREFIX) return selfTransfer; // 预留前缀（尚未实现转移逻辑，parseFarm 无条件忽略，无 burn 要求），精确匹配最保守
 
   if (memo.startsWith(PETX_PREFIX)) {
     // 送崽：转移给别人（非自转）+ 真的转了币，payload=petId。amount=0 的「转移」不是真实语义，不豁免。
@@ -207,7 +210,9 @@ export function isProtocolMemo(tx: {
   if (memo.startsWith(LAND_PREFIX)) {
     // 地价随链上状态浮动（下限需重放 soldTotal/velocity 才能算出），此处无法精确核验金额；
     // 但 payload 收紧为「≤9 位数字 + 自转」已杜绝夹带任意长度字符串，真实地价下限仍由 parseFarm/共识层把关。
-    return selfTransfer && DIGITS.test(memo.slice(LAND_PREFIX.length));
+    // parseFarm 的 selfBurn 门槛要求 burn>0（地价恒为正）——此前这里没核对，burn=0 的「LAND|<n>」
+    // 自转会被误判成真实买地而免费绕开消息门槛。
+    return selfTransfer && burn > 0 && DIGITS.test(memo.slice(LAND_PREFIX.length));
   }
   if (memo.startsWith(ZONE_PREFIX)) {
     if (!selfTransfer) return false;
