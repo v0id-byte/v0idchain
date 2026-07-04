@@ -11,6 +11,8 @@ import {
   createMessage,
   minMessageBurnFor,
   isRealMessage,
+  isProtocolMemo,
+  UNSTAKE_PREFIX,
   MESSAGE_BURN,
   MESSAGE_BURN_PER_CHAR_UNIT,
   MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
@@ -101,6 +103,20 @@ async function main() {
     check('minMessageBurnFor 在抽样长度上单调不减', monotonic);
     check('minMessageBurnFor 在抽样长度上全整数输出（禁浮点跨节点分叉）', allInt);
   }
+
+  console.log(`\n— 向后兼容：isProtocolMemo 仍接受裸字符串（历史签名），不抛异常、缺语境时保守判 false —`);
+  check(
+    'isProtocolMemo(裸字符串 "UNSTAKE|..." )：① id 引用类纯 startsWith，与旧版一致返回 true',
+    isProtocolMemo(`${UNSTAKE_PREFIX}${'a'.repeat(64)}`) === true,
+  );
+  check(
+    'isProtocolMemo(裸字符串 "STAKE|guard")：② 需 to===托管地址语境，字符串模式缺语境 → 保守返回 false（不误豁免）',
+    isProtocolMemo('STAKE|guard') === false,
+  );
+  check(
+    'isProtocolMemo(裸字符串 普通正文)：非协议前缀 → false（且不抛异常）',
+    isProtocolMemo('hello world') === false,
+  );
 
   console.log(`\n— isRealMessage 分类：真正合法的协议层操作不算真消息（精确 payload + 达标烧币值 + from/to/amount 语境）—`);
   const selfAddr = '0x' + '1'.repeat(64);

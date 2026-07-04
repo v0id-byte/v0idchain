@@ -143,15 +143,27 @@ const DIGITS = /^\d{1,9}$/;
  *    就已经不是这几个协议的合法形态，会落回消息门槛）。
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）。
+ *
+ * 入参兼容：本函数历史签名是 `isProtocolMemo(memo: string)`，本轮加固后改为需要完整交易语境的对象签名。
+ * 为不静默破坏公共出口（`@v0idchain/core/browser`）的既有字符串调用方，仍接受裸字符串——归一为
+ * `{ memo }`（无 from/to/amount/burn/atHeight 语境）。此时所有「需语境才敢豁免」的分支（②转托管创建类需
+ * `to===托管地址`、④游戏类需自转+达标烧币、⑤需自转+burn=0）都因语境缺失而**保守地返回 false**（= 判为
+ * 真消息、落回消息门槛），绝不会因缺语境而误豁免——即字符串模式只会更严、不会开新绕过口子；只有①id 引用类
+ * （纯 startsWith、本就不看语境）行为与旧版完全一致。字符串调用方应尽快改传完整交易以获得精确判定。
  */
-export function isProtocolMemo(tx: {
-  memo: string;
-  burn?: number;
-  from?: string;
-  to?: string;
-  amount?: number;
-  atHeight?: number;
-}): boolean {
+export function isProtocolMemo(
+  tx:
+    | string
+    | {
+        memo: string;
+        burn?: number;
+        from?: string;
+        to?: string;
+        amount?: number;
+        atHeight?: number;
+      },
+): boolean {
+  if (typeof tx === 'string') tx = { memo: tx };
   const { memo, from, to } = tx;
   const burn = tx.burn ?? 0;
   const amount = tx.amount ?? 0;
