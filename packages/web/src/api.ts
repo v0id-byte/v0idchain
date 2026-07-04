@@ -58,6 +58,17 @@ export interface RedPacket {
   grabbedByMe: boolean;
 }
 
+/** 本节点自己的一份身份质押（纯资金锁仓反女巫，无罚没；GET /identity 只返回本节点地址名下的） */
+export interface IdentityClaim {
+  id: string;
+  staker: string;
+  pseudonym: string;
+  amount: number;
+  lockedUntil: number;
+  createdHeight: number;
+  released: boolean;
+}
+
 /** 新成员事件：本次会话首见的对等节点 / 首次上链的地址 */
 export interface Newcomer {
   kind: 'peer' | 'address';

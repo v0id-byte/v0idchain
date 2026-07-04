@@ -54,11 +54,21 @@ import {
   REDEEM_PREFIX,
   MINT_ADDRESS,
   SYSTEM_ADDRESSES,
+  MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+  minMessageBurnFor,
+  IDENTITY_ESCROW_ADDRESS,
+  IDCLAIM_PREFIX,
+  IDRELEASE_PREFIX,
+  IDENTITY_STAKE_MIN,
+  IDENTITY_LOCK_BLOCKS,
+  IDENTITY_ACTIVATION_HEIGHT,
 } from './config.js';
 import { isValidAddress, merkleRoot } from './crypto.js';
 import { parseRedCreate, parseClaimId, parseRefundId, computeShare, redSeed, type RedMode } from './redpacket.js';
 import { parseStakeCreate, parseUnstakeId, parseSlash, computeStakeMin, type StakePool } from './staking.js';
 import { parseRedeem, redeemSplit, isMintDeposit } from './mint.js';
+import { isRealMessage } from './messages.js';
+import { parseIdentityClaim, parseIdentityRelease, type IdentityStake } from './identity.js';
 
 /** 创世区块：不做 PoW，参数全固定 → 所有节点算出同一个 hash。 */
 export function genesisBlock(): Block {
@@ -167,6 +177,8 @@ export interface ChainState {
   // 刻意与「托管地址原始余额」区分——激活前误入 …3 托管的普通转账不计入可兑现储备（否则会被当成无对应券的储备被兑走，
   // 且与公开视图 computeMintState 不一致）。兑现校验 gross ≤ mintReserve 即以此为准 → 链上储备 ≡ computeMintState。
   mintReserve: number;
+  identityClaims: Map<string, IdentityStake>; // 身份质押池：id（IDCLAIM 交易 txid）→ 质押（Phase 3B，无罚没）
+  identityByPseudonym: Map<string, string>; // 假名 → 当前活跃 claimId（IDRELEASE 后移除，假名重新可认领）
 }
 
 export interface ChainJSON {
@@ -185,6 +197,8 @@ function redOpError(
   pools: Map<string, RedPool>,
   stakes: Map<string, StakePool>,
   mintReserve: number,
+  identityClaims: Map<string, IdentityStake>,
+  identityByPseudonym: Map<string, string>,
   atHeight: number,
   blockDifficulty = GENESIS_DIFFICULTY,
 ): string | null {
@@ -206,6 +220,16 @@ function redOpError(
   // 而 REDEEM| 开头的历史消息（burn>0）照常放行，两端节点行为一致、不分叉。（amount>0 的 REDEEM| 普通转账本就不被 amount===0 命中。）
   if (!mintActive && m.startsWith(REDEEM_PREFIX) && tx.amount === 0 && (tx.burn ?? 0) === 0) {
     return `铸币厂尚未激活（激活高度 ${MINT_ACTIVATION_HEIGHT}）`;
+  }
+  const identityActive = atHeight >= IDENTITY_ACTIVATION_HEIGHT;
+  // 只拦「amount=0 且 burn=0 的解锁新边界」——这正是真实 IDRELEASE 的形态（见下方 275 行强制 burn=0）。
+  // 关键：必须同时要求 burn===0，否则会误伤「amount=0 + burn>0 的普通链上消息，正文恰好以 IDRELEASE| 开头」——
+  // 那种消息在本 PR 之前旧节点是合法接受的（verifyTransaction 里 burn>0 即非空操作，照收），若这里无条件按
+  // amount=0 拒绝，validateChain 重放历史块时就会把这条老消息判非法 → loadChain/replaceChain 拒绝整条链
+  // （retroactive 分叉）。加 burn===0 后：真实解锁（amount=0+burn=0）仍被拦（与旧节点一致地拒空操作），
+  // 而 IDRELEASE| 开头的历史消息（burn>0）照常放行，两端节点行为一致、不分叉。
+  if (!identityActive && m.startsWith(IDRELEASE_PREFIX) && tx.amount === 0 && (tx.burn ?? 0) === 0) {
+    return `身份质押尚未激活（激活高度 ${IDENTITY_ACTIVATION_HEIGHT}）`;
   }
   // ---- 铸币厂操作（DEPOSIT/REDEEM）：与质押 STAKE/SLASH 同款合法性校验 ----
   if (mintActive && m.startsWith(REDEEM_PREFIX)) {
@@ -260,6 +284,28 @@ function redOpError(
     if (tx.amount < minStake) return `质押额须 ≥ 该角色最低押金 ${minStake}（当前难度动态值）`;
     return null;
   }
+  // ---- 身份质押操作（IDCLAIM/IDRELEASE）：纯资金锁仓反女巫，无罚没、无仲裁者，与质押 STAKE/UNSTAKE 同款 ----
+  if (identityActive && m.startsWith(IDRELEASE_PREFIX)) {
+    if ((tx.burn ?? 0) > 0) return '身份操作不能附带销毁';
+    if (tx.amount !== 0) return '解锁金额须为 0';
+    const id = parseIdentityRelease(m);
+    if (!id) return '解锁格式无效';
+    const c = identityClaims.get(id);
+    if (!c) return '身份质押不存在';
+    if (tx.from !== c.staker) return '只有质押人能解锁';
+    if (c.released) return '该身份质押已解锁';
+    if (atHeight < c.lockedUntil) return `身份质押锁定中（需到第 ${c.lockedUntil} 块）`;
+    return null;
+  }
+  // 认领 = 转给身份托管地址（旧节点也当普通转账锁进托管 → 不静默分叉）。发往托管地址的交易**必须**是合法认领。
+  if (identityActive && tx.to === IDENTITY_ESCROW_ADDRESS) {
+    if ((tx.burn ?? 0) > 0) return '身份操作不能附带销毁';
+    const meta = parseIdentityClaim(m);
+    if (!meta) return '发往身份托管地址的交易必须是合法认领（IDCLAIM|<pseudonym>）';
+    if (tx.amount < IDENTITY_STAKE_MIN) return `身份押金须 ≥ 最低押金 ${IDENTITY_STAKE_MIN}`;
+    if (identityByPseudonym.has(meta.pseudonym)) return `假名“${meta.pseudonym}”已被认领中`;
+    return null;
+  }
   // ---- 红包操作（RED/CLAIM/REFUND）----
   if (m.startsWith(CLAIM_PREFIX)) {
     if ((tx.burn ?? 0) > 0) return '红包交易不能附带销毁';
@@ -292,6 +338,12 @@ function redOpError(
     if (!meta) return '发往红包托管地址的交易必须是合法红包（RED|份数|r或e）';
     if (tx.amount < meta.count) return '红包总额须 ≥ 份数（每份至少 1）';
     return null;
+  }
+  // ---- 消息防刷底线：收紧校验，不引入新状态机，故放最后（真消息不命中前面任何托管/前缀分支）----
+  if (atHeight >= MIN_MESSAGE_BURN_ACTIVATION_HEIGHT && isRealMessage({ ...tx, atHeight })) {
+    const memoLen = [...tx.memo].length; // Unicode 码点，同 MAX_MEMO 口径
+    const required = minMessageBurnFor(memoLen);
+    if ((tx.burn ?? 0) < required) return `消息销毁额过低（需 ≥ ${required}，当前 ${tx.burn ?? 0}）`;
   }
   return null; // NORMAL
 }
@@ -390,6 +442,36 @@ function applyTx(tx: Transaction, st: ChainState, blockHash: string, atHeight: n
       credit(STAKE_ESCROW_ADDRESS, -cut);
       credit(GENESIS_PREMINE_ADDRESS, cut); // 罚没币移交国库（而非烧毁），便于审计与再分配
       credit(tx.from, -tx.fee); // 度量者付打包手续费
+      bump();
+      return;
+    }
+  }
+  // ---- 身份质押（Phase 3B）：IDCLAIM/IDRELEASE，与质押 STAKE/UNSTAKE 同款，共识权威在此，无罚没 ----
+  // 认领：转给身份托管地址 → 锁押金、记录质押。余额效果 = 普通转账到托管（旧节点也如此），额外记录。
+  if (atHeight >= IDENTITY_ACTIVATION_HEIGHT && tx.to === IDENTITY_ESCROW_ADDRESS && m.startsWith(IDCLAIM_PREFIX)) {
+    const meta = parseIdentityClaim(m);
+    if (meta && tx.amount >= IDENTITY_STAKE_MIN && !st.identityByPseudonym.has(meta.pseudonym)) {
+      credit(tx.from, -(tx.amount + tx.fee));
+      credit(IDENTITY_ESCROW_ADDRESS, tx.amount);
+      st.identityClaims.set(tx.txid, {
+        staker: tx.from, pseudonym: meta.pseudonym, amount: tx.amount,
+        lockedUntil: atHeight + IDENTITY_LOCK_BLOCKS, createdHeight: atHeight, released: false,
+      });
+      st.identityByPseudonym.set(meta.pseudonym, tx.txid);
+      bump();
+      return;
+    }
+    // 发往托管的非法 IDCLAIM → 合法链上不会发生（validateChain/redOpError 已拦）；稳妥起见落到 NORMAL
+  }
+  // 解锁：质押人取回全部本金（无罚没扣减）；已被 redOpError 校验过锁定期/归属/未解锁
+  if (atHeight >= IDENTITY_ACTIVATION_HEIGHT && m.startsWith(IDRELEASE_PREFIX) && tx.amount === 0) {
+    const id = parseIdentityRelease(m);
+    const c = id ? st.identityClaims.get(id) : undefined;
+    if (c && !c.released) {
+      credit(tx.from, c.amount - tx.fee); // 全额退回（无罚没）
+      credit(IDENTITY_ESCROW_ADDRESS, -c.amount);
+      c.released = true;
+      if (st.identityByPseudonym.get(c.pseudonym) === id) st.identityByPseudonym.delete(c.pseudonym);
       bump();
       return;
     }
@@ -511,6 +593,33 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number, blockDif
       return;
     }
   }
+  // 身份质押在选包阶段与 applyTx 完全一致（无区块 hash 依赖 → 可原样推进，杜绝选包/校验分歧）
+  if (atHeight >= IDENTITY_ACTIVATION_HEIGHT && tx.to === IDENTITY_ESCROW_ADDRESS && m.startsWith(IDCLAIM_PREFIX)) {
+    const meta = parseIdentityClaim(m);
+    if (meta && tx.amount >= IDENTITY_STAKE_MIN && !st.identityByPseudonym.has(meta.pseudonym)) {
+      credit(tx.from, -(tx.amount + tx.fee));
+      credit(IDENTITY_ESCROW_ADDRESS, tx.amount);
+      st.identityClaims.set(tx.txid, {
+        staker: tx.from, pseudonym: meta.pseudonym, amount: tx.amount,
+        lockedUntil: atHeight + IDENTITY_LOCK_BLOCKS, createdHeight: atHeight, released: false,
+      });
+      st.identityByPseudonym.set(meta.pseudonym, tx.txid);
+      bump();
+      return;
+    }
+  }
+  if (atHeight >= IDENTITY_ACTIVATION_HEIGHT && m.startsWith(IDRELEASE_PREFIX) && tx.amount === 0) {
+    const id = parseIdentityRelease(m);
+    const c = id ? st.identityClaims.get(id) : undefined;
+    if (c && !c.released) {
+      credit(tx.from, c.amount - tx.fee);
+      credit(IDENTITY_ESCROW_ADDRESS, -c.amount);
+      c.released = true;
+      if (st.identityByPseudonym.get(c.pseudonym) === id) st.identityByPseudonym.delete(c.pseudonym);
+      bump();
+      return;
+    }
+  }
   // 铸币充值/兑现在选包阶段与 applyTx 完全一致（无区块 hash 依赖 → 可原样推进，杜绝选包/校验分歧）
   if (atHeight >= MINT_ACTIVATION_HEIGHT && tx.to === MINT_ESCROW_ADDRESS && isMintDeposit(m)) {
     credit(tx.from, -(tx.amount + tx.fee));
@@ -542,6 +651,14 @@ function applySelect(tx: Transaction, st: ChainState, atHeight: number, blockDif
 export class Blockchain {
   chain: Block[];
   mempool: Transaction[] = [];
+  /**
+   * revalidateMempool 剔除交易时的回调（可选，供上层如 V0idNode 挂载）：同步清理调用方自己的
+   * P2P 去重缓存（如 seenTx），避免被剔除交易的 txid 仍被当作“已处理过”而静默吞掉外部客户端的
+   * 重新提交。用回调而非返回值/共享字段：revalidateMempool 可能在挖矿（PoW 异步计算期间）与
+   * P2P 收块两条路径交错触发，共享字段会被后触发的一次覆盖、丢失前一次的清理信息；回调在
+   * revalidateMempool 内部同步调用，不依赖调用方“事后”读取的时机，没有这个竞态风险。
+   */
+  onMempoolDropped?: (txids: string[]) => void;
 
   constructor() {
     this.chain = [genesisBlock()];
@@ -563,7 +680,7 @@ export class Blockchain {
 
   // ---- 状态：重放整条链，得到余额表 / nonce 表 / 红包池（假定链已合法；校验在 validateChain）----
   computeState(chain: Block[] = this.chain): ChainState {
-    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map(), stakes: new Map(), mintReserve: 0 };
+    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map(), stakes: new Map(), mintReserve: 0, identityClaims: new Map(), identityByPseudonym: new Map() };
     for (const block of chain) {
       for (const tx of block.transactions) {
         if (isCoinbase(tx)) {
@@ -598,7 +715,8 @@ export class Blockchain {
         tx.memo.startsWith(REFUND_PREFIX) ||
         tx.memo.startsWith(UNSTAKE_PREFIX) ||
         tx.memo.startsWith(SLASH_PREFIX) ||
-        tx.memo.startsWith(REDEEM_PREFIX));
+        tx.memo.startsWith(REDEEM_PREFIX) ||
+        tx.memo.startsWith(IDRELEASE_PREFIX));
     if (!Number.isInteger(tx.amount) || tx.amount < 0) return { ok: false, error: '金额必须是非负整数' };
     if (!Number.isInteger(burn) || burn < 0) return { ok: false, error: '销毁额必须是非负整数' };
     if (tx.amount === 0 && burn === 0 && !isZeroOp) return { ok: false, error: '空交易：转账须金额>0，消息须销毁额>0' };
@@ -611,10 +729,27 @@ export class Blockchain {
     // 发往红包托管地址只允许合法红包（RED）；其它一律拒（防误把钱锁死）。redOpError 下方统一判。
     if (this.mempool.some((t) => t.txid === tx.txid)) return { ok: false, error: '交易已在池中' };
 
-    const { balances, nonces, pools, stakes, mintReserve } = this.computeState();
-    // 红包/质押/铸币操作合法性：池存在/未抢完/未重复领/已过期、质押锁定期/度量者权限、铸币储备等（按 height+1 估算）
-    const redErr = redOpError(tx, pools, stakes, mintReserve, this.height + 1, this.tipDifficulty());
+    const r = this.admitAgainstState(tx, this.computeState());
+    if (!r.ok) return r;
+    this.mempool.push(tx);
+    return { ok: true };
+  }
+
+  /**
+   * addTransaction 里“依赖链上状态”的那部分校验（红包/质押/铸币/身份合法性 + nonce 顺序 + 余额），
+   * 抽成独立方法只为了让 revalidateMempool 能**复用同一份 computeState() 快照**给 mempool 里的每一笔
+   * 旧交易判断，而不是像原先那样每笔都各自重新 computeState() 一遍（见 revalidateMempool 的性能注释）。
+   * `state` 由调用方传入（正常提交路径传新鲜的 this.computeState()；批量重验路径传共享的那一份）。
+   */
+  private admitAgainstState(tx: Transaction, state: ChainState): { ok: boolean; error?: string } {
+    const { balances, nonces, pools, stakes, mintReserve, identityClaims, identityByPseudonym } = state;
+    const burn = tx.burn ?? 0;
+    // 红包/质押/铸币/身份操作合法性：池存在/未抢完/未重复领/已过期、质押锁定期/度量者权限、铸币储备、
+    // 身份假名是否已被占用等（按 height+1 估算，与 selectMempoolTxs 的口径一致）
+    const redErr = redOpError(tx, pools, stakes, mintReserve, identityClaims, identityByPseudonym, this.height + 1, this.tipDifficulty());
     if (redErr) return { ok: false, error: redErr };
+    // pending 仍按“当前已在 this.mempool 里的同地址交易”统计——revalidateMempool 会在循环中逐步重建
+    // this.mempool，这个统计口径天然随重建进度演进，语义与原先逐笔重新 addTransaction 完全一致。
     const pending = this.mempool.filter((t) => t.from === tx.from);
     const expectedNonce = (nonces.get(tx.from) ?? 0) + pending.length;
     if (tx.nonce !== expectedNonce) {
@@ -628,7 +763,6 @@ export class Blockchain {
       const extra = burn > 0 ? `手续费 ${tx.fee} + 销毁 ${burn}` : `手续费 ${tx.fee}`;
       return { ok: false, error: `余额不足：可用 ${available}，需要 ${need}（含${extra}）` };
     }
-    this.mempool.push(tx);
     return { ok: true };
   }
 
@@ -655,7 +789,7 @@ export class Blockchain {
         // 同 validateChain 的接纳条件：nonce 对、红包操作合法、余额够付、自洽签名 → 必能通过整链校验
         if (
           tx.nonce === expected &&
-          !redOpError(tx, st.pools, st.stakes, st.mintReserve, atHeight, this.tipDifficulty()) &&
+          !redOpError(tx, st.pools, st.stakes, st.mintReserve, st.identityClaims, st.identityByPseudonym, atHeight, this.tipDifficulty()) &&
           cost <= (st.balances.get(tx.from) ?? 0) &&
           verifyTransaction(tx)
         ) {
@@ -693,7 +827,14 @@ export class Blockchain {
   }
 
   // ---- 上链 / 共识 ----
-  /** 追加一个区块（必须是当前链顶的下一块，且整体合法） */
+  /**
+   * 追加一个区块（必须是当前链顶的下一块，且整体合法）。
+   * dropMined 之后再 revalidateMempool：不是所有“未被打进这块”的 mempool 交易都只是在排队——像
+   * IDCLAIM 认领假名这类有“排他性”的操作，一旦被抢先打进链，队列里同名的另一笔就**永久**不再合法
+   * （不像红包/质押那样，落选只是暂时的、下一块还有机会）。若不清掉，selectMempoolTxs 会一直跳过它、
+   * 卡住该地址后续所有交易的 nonce 序列，直到手动清 mempool。revalidateMempool 本就在 replaceChain
+   * （reorg）用于同样目的，这里复用同一套机制覆盖“正常出块”路径。
+   */
   addBlock(block: Block): { ok: boolean; error?: string } {
     if (block.index !== this.height + 1) return { ok: false, error: '区块高度不连续' };
     if (block.prevHash !== this.latest.hash) return { ok: false, error: 'prevHash 不匹配' };
@@ -701,6 +842,7 @@ export class Blockchain {
     if (!v.ok) return { ok: false, error: v.error };
     this.chain.push(block);
     this.dropMined(block);
+    this.revalidateMempool();
     return { ok: true };
   }
 
@@ -742,10 +884,27 @@ export class Blockchain {
     this.mempool = this.mempool.filter((t) => !mined.has(t.txid));
   }
 
+  /**
+   * 用最新已确认状态重新过滤 mempool：剔除因新区块而不再合法的交易（如两笔互斥的 IDCLAIM 抢同一
+   * 假名，一笔上链后另一笔永久失效，见 addBlock 的调用点注释）。
+   *
+   * ⚠️ 性能要点：只调用**一次** computeState()（重放整条链）供本轮所有旧 mempool 交易共用，而非
+   * 像之前那样对每笔交易各自调用一次 addTransaction（后者内部每次都重新 computeState）——mempool
+   * 上限 5000、每块只能打包 50 笔，若每次出块都对剩余的成千上万笔各重放一次全链，链一长就会让每次
+   * 出块/收块都变得极慢（O(mempool × chainLength)）。签名/格式自洽性不必重查：mempool 里已存的交易
+   * 在最初 addTransaction 时已经过完整校验，这些字段不会因为新区块而改变；只有依赖链上状态的部分
+   * （redOpError/nonce/余额，即 admitAgainstState）需要用新状态重新判一遍。
+   */
   private revalidateMempool(): void {
     const old = this.mempool;
     this.mempool = [];
-    for (const tx of old) this.addTransaction(tx); // 失效的会被自动丢弃
+    const state = this.computeState(); // 只算一次，供本轮所有旧交易共用
+    const dropped: string[] = [];
+    for (const tx of old) {
+      if (this.admitAgainstState(tx, state).ok) this.mempool.push(tx);
+      else dropped.push(tx.txid);
+    }
+    if (dropped.length > 0) this.onMempoolDropped?.(dropped);
   }
 
   // ---- 整链校验（共识的唯一权威）----
@@ -763,7 +922,7 @@ export class Blockchain {
     if (badCp) return { ok: false, error: `#${badCp.index} 与 checkpoint 不一致` };
 
     // 状态机：余额/nonce/红包池。与 computeState 共用 applyTx，确保各节点一致。
-    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map(), stakes: new Map(), mintReserve: 0 };
+    const st: ChainState = { balances: new Map(), nonces: new Map(), pools: new Map(), stakes: new Map(), mintReserve: 0, identityClaims: new Map(), identityByPseudonym: new Map() };
 
     for (let i = 0; i < chain.length; i++) {
       const b = chain[i];
@@ -819,7 +978,7 @@ export class Blockchain {
         // 普通交易不得打到空地址（销毁应走 burn 字段）；发往托管地址的合法性交给 redOpError 判
         if (tx.to === NULL_ADDRESS) return { ok: false, error: `#${i} 收款为空地址非法` };
         // 红包操作合法性（池存在/未抢完/未重复领/发起人退款且已过期…）；非红包返回 null
-        const redErr = redOpError(tx, st.pools, st.stakes, st.mintReserve, b.index, b.difficulty);
+        const redErr = redOpError(tx, st.pools, st.stakes, st.mintReserve, st.identityClaims, st.identityByPseudonym, b.index, b.difficulty);
         if (redErr) return { ok: false, error: `#${i} 红包/质押/铸币：${redErr}` };
         // 余额够付：发送方实付 = 金额 + 手续费 + 销毁额（RED=总额+费；CLAIM/REFUND=费；收到的 share 由 applyTx 入账）
         const cost = tx.amount + tx.fee + (tx.burn ?? 0);

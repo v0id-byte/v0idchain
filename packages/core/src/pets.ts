@@ -252,7 +252,10 @@ export function parsePets(chain: Block[]): Pet[] {
         const id = m.slice(PETX_PREFIX.length);
         const pet = pets.get(id);
         // 只有当前主人能转；接收方须是合法地址；派驻农场中的崽被锁，不能转移（须先召回）。
-        if (pet && tx.from === pet.owner && !pet.stationedZone && isValidAddress(tx.to) && tx.to !== tx.from) {
+        // 须 amount>0（送崽 = 转 1 币给对方，见文件头约定）——与 isProtocolMemo 的 PETX 判定一致：
+        // amount=0 的“转移”不是真实语义，不该被当有效送崽（否则解析器认它有效、而消息门槛却因它不达
+        // isProtocolMemo 的 amount>0 条件把它当真消息误杀，两侧分类冲突）。
+        if (pet && tx.amount > 0 && tx.from === pet.owner && !pet.stationedZone && isValidAddress(tx.to) && tx.to !== tx.from) {
           pet.owner = tx.to;
         }
       }

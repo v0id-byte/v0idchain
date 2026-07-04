@@ -141,11 +141,6 @@ export const MINT_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '3';
  */
 export const STAKING_ACTIVATION_HEIGHT = 16_000;
 
-/**
- * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址 + 铸币厂托管地址。
- * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”）。
- */
-export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([NULL_ADDRESS, RED_ESCROW_ADDRESS, STAKE_ESCROW_ADDRESS, MINT_ESCROW_ADDRESS]);
 /** 三种红包操作的 memo 前缀。RED 是“自转 amount=总额 + memo”；CLAIM/REFUND 是 amount=0 + memo。 */
 export const RED_PREFIX = 'RED|'; // 发红包：RED|<份数>|<r|e>（r=拼手气随机, e=均分）
 export const CLAIM_PREFIX = 'CLAIM|'; // 抢红包：CLAIM|<红包txid>
@@ -272,3 +267,100 @@ export const MINT_FEE_BPS = 500;
  * 否则若已被链高越过会有 retroactive 激活风险（尽管 …3 与这些 memo 历史上从未出现，实际风险极小）。
  */
 export const MINT_ACTIVATION_HEIGHT = 30_000;
+
+// ---- 消息防刷底线（软分叉：收紧校验，新版节点拒绝旧版会放行的低销毁消息）----
+/**
+ * 消息销毁额随备注长度（Unicode 码点）线性增长的斜率：每 MESSAGE_BURN_PER_CHAR_UNIT 个码点，
+ * 底线再 +1（floor 整数）。与 minFeeFor 的“基点/base”整数除法同款写法，避免浮点跨节点分叉。
+ * 取 20：一条 1 字符消息门槛仍是 MESSAGE_BURN（不误伤日常寒暄），MAX_MEMO(512) 长消息门槛涨到
+ * MESSAGE_BURN+25——长文/垃圾灌水成本显著上升，短消息几乎不受影响。
+ */
+export const MESSAGE_BURN_PER_CHAR_UNIT = 20;
+
+/**
+ * 某条真实链上消息（isRealMessage(tx)，见 messages.ts）所需的最低销毁额（整数）：
+ *   MESSAGE_BURN + floor(memoLength / MESSAGE_BURN_PER_CHAR_UNIT)
+ * 与 minFeeFor(amount) 同款“底 + 比例”整数写法。memoLength 按 Unicode 码点计（与 MAX_MEMO 一致口径）。
+ * 协议层 memo（PET/FISH/…，经 isProtocolMemo 排除）不受此约束——它们的低销毁本就是刻意的游戏经济成本。
+ */
+export function minMessageBurnFor(memoLength: number): number {
+  return MESSAGE_BURN + Math.floor(memoLength / MESSAGE_BURN_PER_CHAR_UNIT);
+}
+
+/**
+ * “给别人转账 + 备注”的免费备注长度额度（Unicode 码点）。这类交易（from≠to、有价值转移）产品上允许自由
+ * 附言、不当消息收进收件箱，故默认不受消息销毁门槛约束——但若不设上限，攻击者可用「A→自己控制的第二个
+ * 钱包 amount=1 + 超长 memo」把消息伪装成转账、只付 minFeeFor 就在链上塞满 MAX_MEMO(512) 文本，绕开整条
+ * 消息防刷底线（链上无法证明两地址是否同一人，无法靠 from/to 区分真实付款与自我接力）。
+ *
+ * 折中：给**任意带 memo 的交易**一个免费额度——≤ 该长度的备注完全免费（真实付款的一行短附言不受影响）；
+ * 一旦 memo 超过它，无论 from/to/amount，都落入 isMemoSpamCandidate 候选、按 minMessageBurnFor(全长) 收
+ * 销毁门槛。这样：真实付款的短备注零成本；超长文本不管怎么路由（自转/发消息/双钱包接力）都统一受约束；
+ * 接力攻击每笔最多只能免费夹带 64 码点（要塞满 512 需 8 笔交易+8 份手续费+8 次来回），灌水成本被抬高约 8×。
+ *
+ * 取 64：足够一行真实附言（中英文一句话都够），又远小于 MAX_MEMO(512)、不足以当有效灌水载体。可按需调整
+ * （改它即软分叉，须全网一致）。注意：协议层 memo（RELAY/PLANT 等本就可能 >64）仍由 isProtocolMemo 单独
+ * 豁免，不受此额度影响。与消息门槛同挂 MIN_MESSAGE_BURN_ACTIVATION_HEIGHT，不引入新的共识激活边界。
+ */
+export const MESSAGE_FREE_MEMO_CHARS = 64;
+
+/**
+ * 消息防刷底线共识激活高度。该高度前，消息销毁额仍只按旧规则校验（burn>0 即可，见 verifyTransaction）——
+ * 避免升级节点把激活前已广播/挂在旧节点 mempool 里的低销毁消息 retroactive 判非法。
+ * ⚠️ 占位值 40000 —— **合并/部署前必须确认它 ≥ 当前实时链高 + 升级窗口**（同 STAKING_ACTIVATION_HEIGHT=16000 的选法）。
+ */
+export const MIN_MESSAGE_BURN_ACTIVATION_HEIGHT = 40_000;
+
+// ---- 质押身份（Phase 3B：纯资金锁仓反女巫，无罚没、无仲裁者，软分叉）----
+/** 身份托管地址：IDCLAIM 锁定的押金记到这里（不可花）。与红包 …1 / 质押 …2 / 铸币 …3 区分（…4）。 */
+export const IDENTITY_ESCROW_ADDRESS = '0x' + '0'.repeat(63) + '4';
+
+/** 两种操作的 memo 前缀。IDCLAIM 是“转托管 amount=押金 + memo”；IDRELEASE 是 amount=0 + memo。 */
+export const IDCLAIM_PREFIX = 'IDCLAIM|'; // 认领：IDCLAIM|<pseudonym>
+export const IDRELEASE_PREFIX = 'IDRELEASE|'; // 解锁：IDRELEASE|<claimTxid>（仅质押人、过 IDENTITY_LOCK_BLOCKS）
+
+/**
+ * 身份最低押金（$V0ID）。参照 STAKE_MIN（guard=500/hsdir=300/middle=100，out of GENESIS_PREMINE=1000）：
+ * 取 200——比中等角色 middle(100) 高（身份是永久性资产，成本应高于一次性中继角色押金），
+ * 但明显低于 guard(500)，避免在 ~1000 币的小测试经济体里贵到没人用得起。对女巫攻击（批量注册马甲）
+ * 构成真实成本：想开 N 个马甲身份要锁 200N 币。教学/小算力网络的保守起点，可按需调大（改它即软分叉）。
+ */
+export const IDENTITY_STAKE_MIN = 200;
+
+/**
+ * 身份押金锁定块数：认领后再过这么多块才能 IDRELEASE 解锁取回押金。
+ * 取 STAKE_LOCK_BLOCKS（12）的 20×＝240（约 32 分钟 @ 8s 目标出块）——本机制**没有 SLASH**，
+ * 唯一的反女巫成本就是“资金被锁的时长”本身，故须显著长于中继质押（后者靠罚没+锁定双重威慑，
+ * 锁定只需覆盖一个 EPOCH_BLOCKS 度量周期即可；这里锁定期本身就是全部代价，必须长到让批量注册马甲不划算）。
+ * 教学/小算力网络的保守起点，可按需调大；所有节点须一致（改它即软分叉）。
+ */
+export const IDENTITY_LOCK_BLOCKS = 240;
+
+/**
+ * 身份质押共识激活高度。该高度前，`IDCLAIM|`/`IDRELEASE|` 备注和 `…4` 托管地址都按历史普通交易处理
+ * （amount=0 的 IDRELEASE 新边界仍拒），避免升级节点重放老链时把历史普通 memo/转账 retroactive 地解释成身份操作。
+ * ⚠️ 占位值 45000 —— **合并/部署前必须确认它 ≥ 当前实时链高 + 升级窗口**（同 STAKING_ACTIVATION_HEIGHT=16000 的选法），
+ * 且与 MIN_MESSAGE_BURN_ACTIVATION_HEIGHT(40000)/STAKING_ACTIVATION_HEIGHT(16000)/MINT_ACTIVATION_HEIGHT(30000) 互不相同。
+ */
+export const IDENTITY_ACTIVATION_HEIGHT = 45_000;
+
+/**
+ * 房间布局发布协议前缀（game-web 房间装饰功能：自转 1 + `ROOM|<布局hash>`，burn 恒为 0，consensus
+ * 不校验，合法性由 game-server 事后比对布局字节的 hash 判定）。放在 core 而非 game-web/src/room.ts
+ * （原定义处），是因为 messages.ts 的 isProtocolMemo 豁免判定需要在 core 内引用它——core 不能反向依赖
+ * game-web。room.ts 现从 `@v0idchain/core/browser` 导入这个常量，不再本地定义，避免两处漂移。
+ */
+export const ROOM_PREFIX = 'ROOM|';
+
+/**
+ * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址 + 铸币厂托管地址 + 身份托管地址。
+ * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”，或不让铸币兑现打给托管地址）。
+ * 放在文件末尾（所有托管地址常量声明完毕之后）以避免引用尚未初始化的 const（暂时性死区）。
+ */
+export const SYSTEM_ADDRESSES: ReadonlySet<string> = new Set([
+  NULL_ADDRESS,
+  RED_ESCROW_ADDRESS,
+  STAKE_ESCROW_ADDRESS,
+  MINT_ESCROW_ADDRESS,
+  IDENTITY_ESCROW_ADDRESS,
+]);

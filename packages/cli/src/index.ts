@@ -49,6 +49,7 @@ import {
   MINT_DEPOSIT_PREFIX,
   MINT_ADDRESS,
   MINT_ACTIVATION_HEIGHT,
+  IDENTITY_STAKE_MIN,
   type RelayDescriptor,
 } from '@v0idchain/core';
 
@@ -337,11 +338,13 @@ txCmd(program.command('send'))
   .argument('<amount>', '金额')
   .option('--memo <text>', '附带一段备注（上链可查）', '')
   .option('--fee <n>', `手续费（gas；省略则自动算：max(${MIN_FEE}, 金额×0.1%)）`)
-  .description('转账（需付 金额 + 手续费/gas）')
+  .option('--burn <n>', '为超长备注附带的销毁额（消息门槛激活后长备注付款需要；省略则按备注长度自动补足）')
+  .description('转账（需付 金额 + 手续费/gas；长备注还需按门槛销毁）')
   .action(async (to, amount, o) => {
     const amt = Number(amount);
     const fee = o.fee !== undefined ? Number(o.fee) : minFeeFor(amt);
-    const r = await api(o,'POST', '/send', { to, amount: amt, memo: o.memo, fee });
+    const burn = o.burn !== undefined ? Number(o.burn) : undefined; // 省略 → 节点按备注长度自动补足
+    const r = await api(o,'POST', '/send', { to, amount: amt, memo: o.memo, fee, burn });
     console.log(c.green('✅ 交易已广播'), c.dim('txid='), r.txid, c.dim(`手续费=${fee}`));
     if (o.wait) await waitConfirm(o, r.txid);
   });
@@ -349,15 +352,17 @@ txCmd(program.command('send'))
 txCmd(program.command('msg'))
   .argument('<to>', '收件人地址')
   .argument('<text...>', '消息正文')
-  .option('--burn <n>', `烧进虚空的 $V0ID（永久销毁；默认 ${MESSAGE_BURN}，越多越壕）`, String(MESSAGE_BURN))
+  .option('--burn <n>', `烧进虚空的 $V0ID（永久销毁；不指定则按正文长度自动算，默认起步 ${MESSAGE_BURN}、越长烧越多，越多越壕）`)
   .option('--fee <n>', `手续费（gas，给打包矿工，至少 ${MIN_FEE}）`, String(MIN_FEE))
   .option('-e, --encrypt', '端到端加密（只有收件人能解；发件人也能解自己发的）', false)
   .description('给一个地址发链上消息（不转币，烧掉一点 $V0ID；-e 加密）')
   .action(async (to, text, o) => {
-    const burn = Number(o.burn);
+    // 不传 --burn 时保持 undefined（而非拼一个固定默认值）：让节点按最终 memo 长度（加密则是密文长度）自动算，
+    // 消息防刷底线激活后固定默认值对长消息会不够烧、被拒收。
+    const burn = o.burn === undefined ? undefined : Number(o.burn);
     const r = await api(o, 'POST', '/message', { to, text: text.join(' '), burn, fee: Number(o.fee), encrypt: !!o.encrypt });
     const lock = o.encrypt ? c.cyan(' 🔒加密') : '';
-    console.log(c.green('✉️  消息已广播') + lock, c.dim('txid='), r.txid, c.dim(`🔥烧=${burn} 手续费=${Number(o.fee)}`));
+    console.log(c.green('✉️  消息已广播') + lock, c.dim('txid='), r.txid, c.dim(`🔥烧=${burn ?? '(按长度自动)'} 手续费=${Number(o.fee)}`));
     console.log(c.dim('（打包确认后，对方 `v0id inbox` 即可看到）'));
     if (o.wait) await waitConfirm(o, r.txid);
   });
@@ -544,6 +549,43 @@ txCmd(red.command('refund'))
     const r = await api(o, 'POST', '/redpacket/refund', { id });
     console.log(c.green('↩️  已申请退款'), c.dim('txid='), r.txid);
     if (o.wait) await waitConfirm(o, r.txid);
+  });
+
+// ---- identity 质押身份（纯资金锁仓反女巫，无罚没、无仲裁者）----
+const identity = program.command('identity').description('质押身份：纯资金锁仓反女巫，押金须持续持有才算拥有身份');
+txCmd(identity.command('claim'))
+  .argument('<pseudonym>', '想认领的假名（1~20 位 小写字母/数字/_/-）')
+  .description(`认领一个身份（转给托管地址 ${IDENTITY_STAKE_MIN} 押金 + memo；挖进区块后生效）`)
+  .action(async (pseudonym, o) => {
+    const r = await api(o, 'POST', '/identity/claim', { pseudonym });
+    console.log(c.green('🪪 已提交认领'), c.dim('txid='), r.txid, c.dim(`（押金 ${IDENTITY_STAKE_MIN}；打包确认后生效）`));
+    if (o.wait) await waitConfirm(o, r.txid);
+  });
+txCmd(identity.command('release'))
+  .argument('<claimTxid>', '认领交易 txid（IDCLAIM 交易 txid）')
+  .description('解锁：过锁定期后取回全部押金（无罚没）；解锁后该假名立刻可被别人重新认领')
+  .action(async (claimTxid, o) => {
+    const r = await api(o, 'POST', '/identity/release', { claimTxid });
+    console.log(c.green('🔓 已提交解锁'), c.dim('txid='), r.txid);
+    if (o.wait) await waitConfirm(o, r.txid);
+  });
+apiOpt(identity.command('list'))
+  .description('看本节点自己的身份质押')
+  .action(async (o) => {
+    const list = (await api(o, 'GET', '/identity')) as any[];
+    if (!list.length) return console.log(c.dim('（暂无身份质押）'));
+    for (const claim of list) {
+      const tag = claim.released ? c.dim('[已解锁]') : c.green('[活跃]');
+      console.log(`${tag} ${c.cyan('#' + claim.pseudonym)}  押金 ${claim.amount} ${SYMBOL}  锁至 #${claim.lockedUntil}`);
+      console.log(`      ${c.dim('id ' + claim.id.slice(0, 12) + '…')}`);
+    }
+  });
+apiOpt(identity.command('resolve'))
+  .argument('<pseudonym>', '假名')
+  .description('查某假名当前属于哪个地址')
+  .action(async (pseudonym, o) => {
+    const r = await api(o, 'GET', `/identity/resolve?pseudonym=${encodeURIComponent(pseudonym)}`);
+    console.log(r.owner ? `${c.cyan('#' + pseudonym)} → ${c.green(r.owner)}` : c.dim(`#${pseudonym} 当前无人持有`));
   });
 
 // ============================================================================

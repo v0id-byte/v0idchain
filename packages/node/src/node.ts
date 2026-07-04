@@ -10,6 +10,9 @@ import {
   FEE_RATE_BPS,
   minFeeFor,
   MESSAGE_BURN,
+  minMessageBurnFor,
+  MIN_MESSAGE_BURN_ACTIVATION_HEIGHT,
+  isRealMessage,
   MAX_MEMO,
   NULL_ADDRESS,
   SYSTEM_ADDRESSES,
@@ -44,6 +47,13 @@ import {
   computeStakeMin,
   STAKE_ESCROW_ADDRESS,
   UNSTAKE_PREFIX,
+  makeIdentityClaim,
+  computeIdentityState,
+  resolveIdentityOwner,
+  IDENTITY_ESCROW_ADDRESS,
+  IDENTITY_STAKE_MIN,
+  IDENTITY_ACTIVATION_HEIGHT,
+  IDRELEASE_PREFIX,
   writeWalletFile,
   blockHeaders,
   recentBlockWindow,
@@ -113,6 +123,13 @@ export class V0idNode {
     this.opts = opts;
     this.wallet = loadOrCreateWallet(opts.dataDir);
     this.bc = loadChain(opts.dataDir);
+    // 每次 addBlock/replaceChain 内部的 revalidateMempool 剔除交易时，同步从 seenTx 去重缓存里
+    // 忘掉这些 txid——否则外部客户端（IDCLAIM 竞态落败方等场景）重新广播同一笔已签名交易时，
+    // acceptTx/onTx 会因为“见过这个 txid”直接短路返回 ok，实际上永远不会重新进 mempool、也不会
+    // confirm，用户会一直卡在“提交成功但没反应”，直到本节点进程重启（seenTx 清空）才会恢复正常。
+    this.bc.onMempoolDropped = (txids) => {
+      for (const id of txids) this.seenTx.delete(id);
+    };
     // 启动时把现有链里的地址全部记为“已知”，并把扫描指针对齐链顶 —— 之后只对新涌现的地址报“新人”，不刷屏历史
     this.knownAddresses = collectAddresses(this.bc.chain);
     this.lastScanHeight = this.bc.height;
@@ -144,19 +161,31 @@ export class V0idNode {
   }
 
   // ---- 钱包动作 ----
-  /** 本节点发起转账：算好 nonce、签名、进池、广播。fee 省略时自动按比例计算（minFeeFor(amount)）。 */
-  send(to: string, amount: number, memo = '', fee?: number): { ok: boolean; tx?: Transaction; error?: string } {
-    return this.submit(this.wallet, to, amount, memo, fee ?? minFeeFor(amount));
+  /**
+   * 本节点发起转账：算好 nonce、签名、进池、广播。fee 省略时自动按比例计算（minFeeFor(amount)）。
+   * burn 省略时**自动**处理消息防刷底线：若这笔转账会落入消息门槛（自转带备注 / 备注超免费额度，
+   * 且非协议 memo），激活后 redOpError 会要求按 minMessageBurnFor 销毁——此处自动补上所需销毁额，
+   * 否则长备注付款会被静默拒收且钱包无从补烧（普通短备注付款 burn 保持 0，不受影响）。可显式传 burn 覆盖。
+   */
+  send(to: string, amount: number, memo = '', fee?: number, burn?: number): { ok: boolean; tx?: Transaction; error?: string } {
+    const atHeight = this.bc.height + 1; // 这笔大约会被打进的高度
+    const floored =
+      atHeight >= MIN_MESSAGE_BURN_ACTIVATION_HEIGHT &&
+      isRealMessage({ amount, burn: burn ?? 0, memo, from: this.wallet.address, to, atHeight });
+    const actualBurn = burn ?? (floored ? minMessageBurnFor([...memo].length) : 0);
+    return this.submit(this.wallet, to, amount, memo, fee ?? minFeeFor(amount), actualBurn);
   }
 
   /**
    * 给某地址发一条链上消息：不转币、烧 burn 个 $V0ID 进虚空、付 fee 给矿工。算好 nonce、签名、进池、广播。
    * encrypt=true → 用收件人公钥端到端加密正文（只有收发双方能解），密文以 `ENC|` 上链。
+   * burn 省略（undefined）时按**最终上链 memo 长度**（加密后是密文长度，不是明文长度）算默认值——
+   * 必须在这里算，不能用固定参数默认值：消息防刷底线激活后，固定默认值对稍长的消息会不够烧、被 mempool 拒收。
    */
   message(
     to: string,
     text: string,
-    burn = MESSAGE_BURN,
+    burn?: number,
     fee = MIN_FEE,
     encrypt = false,
   ): { ok: boolean; tx?: Transaction; error?: string } {
@@ -167,9 +196,10 @@ export class V0idNode {
         return { ok: false, error: `加密后超长（${[...body].length}>${MAX_MEMO}），消息太长` };
       }
     }
+    const actualBurn = burn ?? minMessageBurnFor([...body].length);
     const pending = this.bc.mempool.filter((t) => t.from === this.wallet.address).length;
     const nonce = this.bc.nonceOf(this.wallet.address) + pending;
-    const tx = createMessage(this.wallet, to, body, nonce, burn, fee);
+    const tx = createMessage(this.wallet, to, body, nonce, actualBurn, fee);
     const r = this.bc.addTransaction(tx);
     if (!r.ok) return { ok: false, error: r.error };
     this.markSeen(tx.txid);
@@ -256,6 +286,41 @@ export class V0idNode {
     return [...computeStakeState(this.bc.chain).entries()]
       .filter(([, p]) => p.staker === me)
       .map(([id, p]) => ({ id, ...p }));
+  }
+
+  // ---- 质押身份（Phase 3B：纯资金锁仓反女巫，无罚没、无仲裁者）----
+  /**
+   * 认领：转给身份托管地址 + memo `IDCLAIM|<pseudonym>`，锁定 IDENTITY_STAKE_MIN 押金。
+   * ⚠️ 激活高度前必须拒绝：consensus 只在 atHeight >= IDENTITY_ACTIVATION_HEIGHT 时才把这笔转账当作
+   * 认领记录进 identityClaims；提前发送会被当成一笔普通转账吃进托管地址，永久锁死却没有任何认领记录、
+   * 无法 IDRELEASE 取回。api.ts 的 HTTP 路由已有同款守卫，这里补一份是防御性重复——直接内嵌调用本方法
+   * （而非只走 HTTP）的场景（如未来 CLI 直连模式、被当库嵌入）不能只靠 HTTP 层这一道闸。
+   */
+  claimIdentity(pseudonym: string): { ok: boolean; tx?: Transaction; error?: string } {
+    if (this.bc.height < IDENTITY_ACTIVATION_HEIGHT) {
+      return { ok: false, error: `身份质押尚未激活（当前高度 ${this.bc.height}，激活高度 ${IDENTITY_ACTIVATION_HEIGHT}）` };
+    }
+    const r = makeIdentityClaim(pseudonym);
+    if (!r.ok) return { ok: false, error: r.error };
+    return this.submit(this.wallet, IDENTITY_ESCROW_ADDRESS, IDENTITY_STAKE_MIN, r.memo!, minFeeFor(IDENTITY_STAKE_MIN));
+  }
+
+  /** 解锁：发 IDRELEASE 交易（amount=0），过锁定期后取回全部本金（无罚没）。claimTxid = IDCLAIM 交易 txid。 */
+  releaseIdentity(claimTxid: string): { ok: boolean; tx?: Transaction; error?: string } {
+    return this.submit(this.wallet, this.wallet.address, 0, `${IDRELEASE_PREFIX}${claimTxid}`, MIN_FEE);
+  }
+
+  /** 本节点地址名下的身份质押列表（只读，从链上身份状态过滤出 staker=本地址）。 */
+  myIdentityClaims() {
+    const me = this.wallet.address;
+    return [...computeIdentityState(this.bc.chain).claims.entries()]
+      .filter(([, c]) => c.staker === me)
+      .map(([id, c]) => ({ id, ...c }));
+  }
+
+  /** 公开查询：假名 → 当前持有者地址（无活跃质押则 undefined）。 */
+  resolveIdentity(pseudonym: string): string | undefined {
+    return resolveIdentityOwner(computeIdentityState(this.bc.chain), pseudonym);
   }
 
   /**
@@ -368,10 +433,11 @@ export class V0idNode {
     amount: number,
     memo: string,
     fee: number,
+    burn = 0,
   ): { ok: boolean; tx?: Transaction; error?: string } {
     const pending = this.bc.mempool.filter((t) => t.from === wallet.address).length;
     const nonce = this.bc.nonceOf(wallet.address) + pending;
-    const tx = createTransaction(wallet, to, amount, nonce, memo, fee);
+    const tx = createTransaction(wallet, to, amount, nonce, memo, fee, burn);
     const r = this.bc.addTransaction(tx);
     if (!r.ok) return { ok: false, error: r.error };
     this.markSeen(tx.txid);

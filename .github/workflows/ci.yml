@@ -40,6 +40,12 @@ jobs:
       - name: Relay anti-replay test
         run: pnpm exec tsx scripts/antireplay-test.ts
 
+      - name: Message burn floor selftest
+        run: pnpm exec tsx scripts/message-burn-floor-selftest.ts
+
+      - name: Identity staking selftest
+        run: pnpm exec tsx scripts/identity-selftest.ts
+
   docker:
     name: docker image builds
     runs-on: ubuntu-latest

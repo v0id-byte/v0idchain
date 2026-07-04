@@ -1,10 +1,8 @@
 // 房间布局：序列化 → sha256 → 发布(链上只记版本 hash,字节存服务器)。串门时按 hash 校验。
-import { Wallet, createTransaction, sha256Hex } from '@v0idchain/core/browser';
+import { Wallet, createTransaction, sha256Hex, ROOM_PREFIX } from '@v0idchain/core/browser';
 import type { FurnitureItem } from './engine/scene';
 import type { RoomThemeId } from './engine/tileset';
 import { api } from './api';
-
-export const ROOM_PREFIX = 'ROOM|';
 
 export interface RoomLayout {
   theme: RoomThemeId;
