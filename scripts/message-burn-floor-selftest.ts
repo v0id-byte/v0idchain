@@ -39,6 +39,7 @@ import {
   buildListMemo,
   DEL_PREFIX,
   buildRelayMemo,
+  ROOM_PREFIX,
   transactionPayloadHash,
   sign,
   type Block,
@@ -266,6 +267,18 @@ async function main() {
   check(
     'DEL| 但 burn>0（不是真实撤单形态）算真消息',
     isRealMessage({ amount: 1, burn: 1, memo: `${DEL_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'ROOM|<64hex>（自转、burn=0，game-web publishRoom() 的真实形态）不算真消息',
+    !isRealMessage({ amount: 1, burn: 0, memo: `${ROOM_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'ROOM| 但 burn>0（不是真实发布形态）算真消息',
+    isRealMessage({ amount: 1, burn: 1, memo: `${ROOM_PREFIX}${fakeId}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
+  );
+  check(
+    'ROOM| 但 payload 不是 64-hex（伪装发布夹带长文）算真消息',
+    isRealMessage({ amount: 1, burn: 1, memo: `${ROOM_PREFIX}${'x'.repeat(200)}`, from: selfAddr, to: selfAddr, atHeight: MIN_MESSAGE_BURN_ACTIVATION_HEIGHT }),
   );
 
   console.log(`\n— 核心回归⑥：IDRELEASE 拒绝条件依赖 amount，未激活+amount≠0 这个组合不能豁免（旧漏洞⑦）—`);

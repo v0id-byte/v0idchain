@@ -328,6 +328,14 @@ export const IDENTITY_LOCK_BLOCKS = 240;
 export const IDENTITY_ACTIVATION_HEIGHT = 45_000;
 
 /**
+ * 房间布局发布协议前缀（game-web 房间装饰功能：自转 1 + `ROOM|<布局hash>`，burn 恒为 0，consensus
+ * 不校验，合法性由 game-server 事后比对布局字节的 hash 判定）。放在 core 而非 game-web/src/room.ts
+ * （原定义处），是因为 messages.ts 的 isProtocolMemo 豁免判定需要在 core 内引用它——core 不能反向依赖
+ * game-web。room.ts 现从 `@v0idchain/core/browser` 导入这个常量，不再本地定义，避免两处漂移。
+ */
+export const ROOM_PREFIX = 'ROOM|';
+
+/**
  * 系统/协议地址集合（非真人账户）：虚空/销毁地址 + 红包托管地址 + 质押托管地址 + 铸币厂托管地址 + 身份托管地址。
  * 供 UI / 新人发现等处把它们与真实用户区分（如不把托管地址误报成“🆕 新地址首次上链”，或不让铸币兑现打给托管地址）。
  * 放在文件末尾（所有托管地址常量声明完毕之后）以避免引用尚未初始化的 const（暂时性死区）。

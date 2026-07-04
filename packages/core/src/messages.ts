@@ -17,6 +17,7 @@ import {
   IDENTITY_ESCROW_ADDRESS,
   IDENTITY_ACTIVATION_HEIGHT,
   IDRELEASE_PREFIX,
+  ROOM_PREFIX,
 } from './config.js';
 import {
   PET_PREFIX,
@@ -119,11 +120,12 @@ const DIGITS = /^\d{1,9}$/;
  *    范围校验在 parseFarm 里，此处只做“像不像一个正常数字标识符”的语法粗筛，用 DIGITS 卡位数上限）。
  *    故这里同时核对 payload 格式 + 该操作要求的精确/达标烧币额 + `from`/`to`/`amount` 语境，**复用各
  *    模块导出的现成常量/函数**而非在此重复定义一套规则，避免与游戏模块演进脱节。
- * ⑤ NAME/MKT/DEL/RELAY（自转、burn 恒为 0 的纯展示层约定）：昵称抢注/集市上架/集市撤单/中继发布都是
- *    “自转 1 币 + memo，burn=0”。isMemoSpamCandidate 收紧为“自转+memo 非空”（不再要求 amount=0）后，
- *    这几个不能再像旧版那样靠“burn=0 被 isMessageTx 天然排除”蒙混过关，必须显式核对 payload 格式
- *    （复用 names.ts/market.ts/relays.ts 的现成校验）+ `burn === 0`（真实形态恒定，容不得套壳夹带垃圾
- *    还绕开门槛——套壳者只要 burn>0 就已经不是这几个协议的合法形态，会落回消息门槛）。
+ * ⑤ NAME/MKT/DEL/RELAY/ROOM（自转、burn 恒为 0 的纯展示层约定）：昵称抢注/集市上架/集市撤单/中继发布/
+ *    房间布局发布都是“自转 1 币 + memo，burn=0”。isMemoSpamCandidate 收紧为“自转+memo 非空”（不再要求
+ *    amount=0）后，这几个不能再像旧版那样靠“burn=0 被 isMessageTx 天然排除”蒙混过关，必须显式核对
+ *    payload 格式（复用 names.ts/market.ts/relays.ts 的现成校验；ROOM 无独立 core 模块，直接核对
+ *    64-hex hash）+ `burn === 0`（真实形态恒定，容不得套壳夹带垃圾还绕开门槛——套壳者只要 burn>0
+ *    就已经不是这几个协议的合法形态，会落回消息门槛）。
  *
  * ⚠️ 刻意**不含** `ENC|`（端到端加密私信，本就是私信正文，必须留在收件箱）。
  */
@@ -235,6 +237,10 @@ export function isProtocolMemo(tx: {
   }
   if (memo.startsWith(RELAY_PREFIX)) {
     return selfTransfer && burn === 0 && parseRelayMemo(memo) !== null;
+  }
+  if (memo.startsWith(ROOM_PREFIX)) {
+    // 房间布局发布：game-web publishRoom() 固定自转 1 币 + burn=0；payload = 布局 hash（64-hex）。
+    return selfTransfer && burn === 0 && HEX64.test(memo.slice(ROOM_PREFIX.length));
   }
 
   return false;
