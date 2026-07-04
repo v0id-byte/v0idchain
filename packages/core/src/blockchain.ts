@@ -190,12 +190,21 @@ function redOpError(
 ): string | null {
   const m = tx.memo;
   const stakingActive = atHeight >= STAKING_ACTIVATION_HEIGHT;
-  if (!stakingActive && (m.startsWith(UNSTAKE_PREFIX) || m.startsWith(SLASH_PREFIX))) {
+  // 只拦「amount=0 且 burn=0 的赎回/罚没新边界」——这正是真实 UNSTAKE/SLASH 的形态（见下方 stakingActive 分支强制 amount=0 且 burn=0）。
+  // 关键：必须同时要求 amount===0 && burn===0，否则会误伤「amount=0 + burn>0 的普通链上消息，正文恰好以 UNSTAKE|/SLASH| 开头」
+  //（以及 amount>0 的普通转账）——那些在本 PR 之前旧节点是合法接受的（burn>0 即非空操作，照收），若这里无条件按前缀拒绝，
+  // validateChain 重放历史块时就会把老消息判非法 → loadChain/replaceChain 拒绝整条链（retroactive 分叉）。加 amount===0 &&
+  // burn===0 后：真实赎回/罚没（amount=0+burn=0）仍被拦，而 UNSTAKE|/SLASH| 开头的历史消息（burn>0）/普通转账（amount>0）照常放行，两端行为一致、不分叉。
+  if (!stakingActive && (m.startsWith(UNSTAKE_PREFIX) || m.startsWith(SLASH_PREFIX)) && tx.amount === 0 && (tx.burn ?? 0) === 0) {
     return `质押尚未激活（激活高度 ${STAKING_ACTIVATION_HEIGHT}）`;
   }
   const mintActive = atHeight >= MINT_ACTIVATION_HEIGHT;
-  // 只拦「amount=0 的兑现新边界」；激活前带 REDEEM| 前缀但 amount>0 的普通转账仍按历史普通交易处理（不 retroactive 破坏旧 memo）。
-  if (!mintActive && m.startsWith(REDEEM_PREFIX) && tx.amount === 0) {
+  // 只拦「amount=0 且 burn=0 的兑现新边界」——这正是真实 REDEEM 的形态（见下方 mintActive REDEEM 分支强制 amount=0 且 burn=0）。
+  // 关键：必须同时要求 burn===0，否则会误伤「amount=0 + burn>0 的普通链上消息，正文恰好以 REDEEM| 开头」——那种消息在本 PR
+  // 之前旧节点是合法接受的（burn>0 即非空操作，照收），若这里无条件按 amount=0 拒绝，validateChain 重放历史块时就会把这条
+  // 老消息判非法 → loadChain/replaceChain 拒绝整条链（retroactive 分叉）。加 burn===0 后：真实兑现（amount=0+burn=0）仍被拦，
+  // 而 REDEEM| 开头的历史消息（burn>0）照常放行，两端节点行为一致、不分叉。（amount>0 的 REDEEM| 普通转账本就不被 amount===0 命中。）
+  if (!mintActive && m.startsWith(REDEEM_PREFIX) && tx.amount === 0 && (tx.burn ?? 0) === 0) {
     return `铸币厂尚未激活（激活高度 ${MINT_ACTIVATION_HEIGHT}）`;
   }
   // ---- 铸币厂操作（DEPOSIT/REDEEM）：与质押 STAKE/SLASH 同款合法性校验 ----

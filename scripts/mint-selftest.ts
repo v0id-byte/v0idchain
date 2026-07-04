@@ -9,6 +9,7 @@ import {
   Blockchain,
   Wallet,
   createTransaction,
+  createMessage,
   parseRedeem,
   isMintDeposit,
   isZeroAmountMintOp,
@@ -107,7 +108,14 @@ async function main() {
     // 激活前带 REDEEM| 前缀但 amount>0 的普通转账 = 历史普通交易，不被 retroactive 拒（只拦 amount=0 新边界）。
     check('激活前带 REDEEM| 前缀的普通转账(amount>0)按普通交易处理',
       pre.addTransaction(createTransaction(user, funder.address, 2, pre.nonceOf(user.address), `${REDEEM_PREFIX}999`, MIN_FEE)).ok);
-    check('激活前链整链校验通过', Blockchain.validateChain(pre.chain).ok);
+    // 回归：激活前，一条正文恰好以 REDEEM| 开头的**普通链上消息**（amount=0 + burn>0）在本 PR 之前旧节点是合法接受的
+    //（burn>0 即非空操作）；未激活守卫必须只拦 burn=0 的真实兑现形态，不能无条件按 amount=0 把这类历史消息判非法——否则
+    // 升级节点重放老链时 validateChain 会拒绝整条链（retroactive 分叉）。
+    // nonce +1：上一行那笔 REDEEM|999 普通转账已被接受进 mempool（未挖），占了 nonceOf 这个 nonce；本消息须紧随其后。
+    const redeemMsg = createMessage(user, funder.address, `${REDEEM_PREFIX}这是一条正文碰巧以前缀开头的消息`, pre.nonceOf(user.address) + 1, 1, MIN_FEE);
+    check('激活前 REDEEM| 开头的普通消息(burn>0)仍被接受，不被 retroactive 拒绝', pre.addTransaction(redeemMsg).ok);
+    await pre.mine(user.address);
+    check('激活前链整链校验通过（含上面那条 REDEEM| 开头的历史消息）', Blockchain.validateChain(pre.chain).ok);
   }
 
   console.log(`\n— 把链便宜地 forge 到铸币激活高度 ${MINT_ACTIVATION_HEIGHT}（非真 PoW；难度自降到地板）…耐心几十秒 —`);
