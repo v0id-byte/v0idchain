@@ -5,6 +5,7 @@ import {
   Blockchain,
   Wallet,
   createTransaction,
+  createMessage,
   parseIdentityClaim,
   parseIdentityRelease,
   makeIdentityClaim,
@@ -95,10 +96,16 @@ async function main() {
     await pre.mine(user.address);
     check('激活前不会创建身份质押', pre.computeState().identityClaims.size === 0);
     check(
-      '激活前 IDRELEASE 零额新边界被拒',
+      '激活前 IDRELEASE 零额新边界被拒（amount=0 + burn=0 = 真实解锁形态，激活前无claim可解，须拒）',
       !pre.addTransaction(createTransaction(user, user.address, 0, pre.nonceOf(user.address), `${IDRELEASE_PREFIX}${fakeId}`, MIN_FEE)).ok,
     );
-    check('激活前链整链校验通过', Blockchain.validateChain(pre.chain).ok);
+    // 回归：激活前，一条正文恰好以 IDRELEASE| 开头的**普通链上消息**（amount=0 + burn>0）在本 PR 之前旧节点
+    // 是合法接受的；redOpError 的未激活守卫必须只拦 burn=0 的真实解锁形态，不能无条件按 amount=0 把这类历史
+    // 消息判非法——否则升级节点重放老链时 validateChain 会拒绝整条链（retroactive 分叉）。
+    const idreleaseMsg = createMessage(user, user.address, `${IDRELEASE_PREFIX}这是一条正文碰巧以前缀开头的消息`, pre.nonceOf(user.address), 1, MIN_FEE);
+    check('激活前 IDRELEASE| 开头的普通消息(burn>0)仍被接受，不被 retroactive 拒绝', pre.addTransaction(idreleaseMsg).ok);
+    await pre.mine(user.address);
+    check('激活前链整链校验通过（含上面那条 IDRELEASE| 开头的历史消息）', Blockchain.validateChain(pre.chain).ok);
   }
 
   console.log(`\n— 把基底链便宜地 forge 到激活高度 ${IDENTITY_ACTIVATION_HEIGHT}（非真 PoW）…耐心几秒 —`);

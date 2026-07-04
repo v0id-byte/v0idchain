@@ -213,8 +213,13 @@ function redOpError(
     return `铸币厂尚未激活（激活高度 ${MINT_ACTIVATION_HEIGHT}）`;
   }
   const identityActive = atHeight >= IDENTITY_ACTIVATION_HEIGHT;
-  // 只拦「amount=0 的解锁新边界」；激活前带 IDRELEASE| 前缀但 amount>0 的普通转账仍按历史普通交易处理。
-  if (!identityActive && m.startsWith(IDRELEASE_PREFIX) && tx.amount === 0) {
+  // 只拦「amount=0 且 burn=0 的解锁新边界」——这正是真实 IDRELEASE 的形态（见下方 275 行强制 burn=0）。
+  // 关键：必须同时要求 burn===0，否则会误伤「amount=0 + burn>0 的普通链上消息，正文恰好以 IDRELEASE| 开头」——
+  // 那种消息在本 PR 之前旧节点是合法接受的（verifyTransaction 里 burn>0 即非空操作，照收），若这里无条件按
+  // amount=0 拒绝，validateChain 重放历史块时就会把这条老消息判非法 → loadChain/replaceChain 拒绝整条链
+  // （retroactive 分叉）。加 burn===0 后：真实解锁（amount=0+burn=0）仍被拦（与旧节点一致地拒空操作），
+  // 而 IDRELEASE| 开头的历史消息（burn>0）照常放行，两端节点行为一致、不分叉。
+  if (!identityActive && m.startsWith(IDRELEASE_PREFIX) && tx.amount === 0 && (tx.burn ?? 0) === 0) {
     return `身份质押尚未激活（激活高度 ${IDENTITY_ACTIVATION_HEIGHT}）`;
   }
   // ---- 铸币厂操作（DEPOSIT/REDEEM）：与质押 STAKE/SLASH 同款合法性校验 ----
