@@ -15,6 +15,7 @@ import {
   Blockchain,
   Wallet,
   createTransaction,
+  createMessage,
   parseStakeCreate,
   parseUnstakeId,
   parseSlash,
@@ -97,9 +98,19 @@ async function main() {
     check('激活前普通转账到质押托管地址可按普通历史交易处理', pre.addTransaction(ordinaryToEscrow).ok);
     await pre.mine(user.address);
     check('激活前不会创建质押池', pre.computeState().stakes.size === 0);
-    check('激活前 UNSTAKE 零额新边界被拒',
+    check('激活前 UNSTAKE 零额新边界被拒（amount=0 + burn=0 = 真实赎回形态，激活前无质押可赎，须拒）',
       !pre.addTransaction(createTransaction(user, user.address, 0, pre.nonceOf(user.address), `${UNSTAKE_PREFIX}${fakeId}`, MIN_FEE)).ok);
-    check('激活前链整链校验通过', Blockchain.validateChain(pre.chain).ok);
+    check('激活前 SLASH 零额新边界被拒（amount=0 + burn=0 = 真实罚没形态，激活前无质押可罚，须拒）',
+      !pre.addTransaction(createTransaction(user, user.address, 0, pre.nonceOf(user.address), `${SLASH_PREFIX}${fakeId}|3|0`, MIN_FEE)).ok);
+    // 回归：激活前，一条正文恰好以 UNSTAKE|/SLASH| 开头的**普通链上消息**（amount=0 + burn>0）在本 PR 之前旧节点是合法接受的
+    //（burn>0 即非空操作）；未激活守卫必须只拦 amount=0+burn=0 的真实赎回/罚没形态，不能无条件按前缀把这类历史消息判非法——
+    // 否则升级节点重放老链时 validateChain 会拒绝整条链（retroactive 分叉）。
+    const unstakeMsg = createMessage(user, user.address, `${UNSTAKE_PREFIX}这是一条正文碰巧以前缀开头的消息`, pre.nonceOf(user.address), 1, MIN_FEE);
+    check('激活前 UNSTAKE| 开头的普通消息(burn>0)仍被接受，不被 retroactive 拒绝', pre.addTransaction(unstakeMsg).ok);
+    const slashMsg = createMessage(user, user.address, `${SLASH_PREFIX}这也是一条正文碰巧以前缀开头的消息`, pre.nonceOf(user.address) + 1, 1, MIN_FEE);
+    check('激活前 SLASH| 开头的普通消息(burn>0)仍被接受，不被 retroactive 拒绝', pre.addTransaction(slashMsg).ok);
+    await pre.mine(user.address);
+    check('激活前链整链校验通过（含上面两条 UNSTAKE|/SLASH| 开头的历史消息）', Blockchain.validateChain(pre.chain).ok);
   }
 
   // ---- forge 一次到激活高度（coinbase 全给 funder，攒足后续各场景的起步资金）----
