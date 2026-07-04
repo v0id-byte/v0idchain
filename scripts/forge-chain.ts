@@ -52,8 +52,11 @@ export async function forgeAppendBlock(bc: Blockchain, miner: string, txs: Trans
   const fees = txs.reduce((s, t) => s + t.fee, 0);
   const coinbase = createCoinbase(miner, index, fees);
   const transactions = [coinbase, ...txs];
-  // 时间戳：max(创世+index×间隔, prev+间隔)，保证严格递增且与创世拉开足够窗口让难度降到地板。
-  const timestamp = Math.max(GENESIS_TIMESTAMP + index * SLOW_SPACING_MS, prev.timestamp + SLOW_SPACING_MS);
+  // 时间戳：优先按「创世+index×间隔」的合成慢速时间线（让难度降到地板），但**钳到不超过 Date.now()**——
+  // 否则在**真实时间块（bc.mine 用 Date.now）之上继续 forge** 时，+60s/块会把时间戳推到当前时钟数小时之后，
+  // 触发 validateChain 的「未来时间戳」上界（MAX_FUTURE_DRIFT_MS）。钳位后：从创世 forge 时合成时间恒 < now
+  // → 行为与旧版逐字一致（仍 60s 间隔）；在真实块之上 forge 时回退到 prev+1ms，贴着当前时钟严格递增、不越界。
+  const timestamp = Math.max(prev.timestamp + 1, Math.min(GENESIS_TIMESTAMP + index * SLOW_SPACING_MS, Date.now()));
   const template: Omit<Block, 'hash' | 'nonce'> = {
     index,
     timestamp,

@@ -161,7 +161,10 @@ async function main() {
     '非质押人（eve）解锁被拒（即便挂着 alice 的 claimId）',
     !bc.addTransaction(createTransaction(eve, eve.address, 0, bc.nonceOf(eve.address), `${IDRELEASE_PREFIX}${claimId}`, MIN_FEE)).ok,
   );
-  while (bc.height < claimHeight + IDENTITY_LOCK_BLOCKS) await bc.mine(alice.address);
+  // 用 forgeTo 廉价推进过锁定期（240 块）——不逐块 bc.mine（那样每块都 addBlock→validateChain 全链重放，
+  // 在已 forge 到 45000 的链上 240 次 ≈ 全链×240 极慢/易挂 CI）。forge 出的空块把 coinbase 记给 alice，
+  // 与原 bc.mine(alice) 效果一致；aliceBeforeRelease 在其后捕获，余额断言不受影响。
+  await forgeTo(bc, alice.address, claimHeight + IDENTITY_LOCK_BLOCKS);
   const aliceBeforeRelease = bc.balanceOf(alice.address);
   const releaseTx = createTransaction(alice, alice.address, 0, bc.nonceOf(alice.address), `${IDRELEASE_PREFIX}${claimId}`, MIN_FEE);
   check('过锁定期后解锁进池', bc.addTransaction(releaseTx).ok);
