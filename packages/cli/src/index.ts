@@ -260,6 +260,39 @@ program
 
     console.log(c.dim('\n  Ctrl-C 退出。另开一个终端用 `v0id` 子命令操作这个节点。\n'));
 
+    // 优雅退出：停止挖矿 + 把防抖窗口内还没落盘的链/seenTx 变化立即同步写盘，再退出。
+    // 没有这段时 kill/Ctrl-C 直接杀进程——配合 persist() 的 500ms 防抖窗口，最坏丢窗口内的变化
+    // （多数情况下不影响资产安全：交易已广播给 peer，重启后能从网络同步补回来；但无 --peers 的独立节点
+    // 没有对等节点可补，这半秒窗口是真实风险——下面的 uncaughtException/unhandledRejection 兜底补的是同一个窗口）。
+    const shutdown = (signal: string) => {
+      console.log(c.dim(`\n  收到 ${signal}，保存链状态后退出…`));
+      node.stopMining();
+      node.flushPersist();
+      process.exit(0);
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    // 未捕获异常/未处理的 Promise 拒绝本就会让 Node 终止进程——这里只是在终止前尽力把防抖窗口内的
+    // 变化落盘，别白丢半秒数据。进程状态此时已不可信，不尝试恢复运行，落盘后仍然退出。
+    process.on('uncaughtException', (e) => {
+      console.error(c.red('\n  ✖ 未捕获异常，尽力保存链状态后退出：'), e);
+      try {
+        node.flushPersist();
+      } catch {
+        /* 已在异常处理中，尽力而为 */
+      }
+      process.exit(1);
+    });
+    process.on('unhandledRejection', (e) => {
+      console.error(c.red('\n  ✖ 未处理的 Promise 拒绝，尽力保存链状态后退出：'), e);
+      try {
+        node.flushPersist();
+      } catch {
+        /* 尽力而为 */
+      }
+      process.exit(1);
+    });
+
     // 每 5s 打一行状态，挖矿时能直观看到链在前进、余额在涨
     let lastHeight = node.bc.height;
     setInterval(() => {

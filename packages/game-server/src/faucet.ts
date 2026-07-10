@@ -9,7 +9,7 @@ import {
   FAUCET_IP_COOLDOWN_MS,
   DATA_DIR,
 } from './config.js';
-import { snapshot, submitSigned } from './chain.js';
+import { getAccount, submitSigned } from './chain.js';
 import { readJson, writeJson } from './store.js';
 
 interface FaucetState {
@@ -45,11 +45,11 @@ async function doDispense(address: string, ip: string): Promise<FaucetResult> {
   const last = ipLast.get(ip) ?? 0;
   if (Date.now() - last < FAUCET_IP_COOLDOWN_MS) return err('同一网络领取过于频繁，稍后再试');
 
-  const bc = await snapshot(true);
-  const chainNonce = bc.nonceOf(TREASURY.address);
+  // 走节点 /account 一次取（同一次 computeState，nonce 与余额保证来自同一链高），不必拉整条链在本地重建 Blockchain 再算。
+  const { nonce: chainNonce, balance: treasuryBalance } = await getAccount(TREASURY.address);
   if (submittedTotal < 0) submittedTotal = chainNonce;
   // 央行池要够付 额度 + 手续费；不够则明确拒绝（而不是崩溃，PRD 6.1 验收）。
-  if (bc.balanceOf(TREASURY.address) < FAUCET_AMOUNT + 1) {
+  if (treasuryBalance < FAUCET_AMOUNT + 1) {
     return err('央行池余额不足——请给央行地址充值后再试');
   }
 

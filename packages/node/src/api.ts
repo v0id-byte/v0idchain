@@ -144,6 +144,17 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
             const address = url.searchParams.get('address') || node.wallet.address;
             return json(200, { address, balance: node.bc.balanceOf(address) });
           }
+          case '/nonce': {
+            // 某地址下一个可用 nonce（= 链上已发交易数），与 /balance 同级只读端点。
+            const address = url.searchParams.get('address') || node.wallet.address;
+            return json(200, { address, nonce: node.bc.nonceOf(address) });
+          }
+          case '/account': {
+            // nonce+balance 一次性返回：调用方要两者都要时用这个，同一次 computeState 读出，避免两次调用中间跨了一个块导致读到不同高度的状态。
+            const address = url.searchParams.get('address') || node.wallet.address;
+            const st = node.bc.computeState();
+            return json(200, { address, balance: st.balances.get(address) ?? 0, nonce: st.nonces.get(address) ?? 0 });
+          }
           case '/stake':
             // 本节点自己的质押池（只读、无需令牌）：含锁定高度 / 已罚没 / 是否已赎回。GUI 中继板块据此展示。
             return json(200, node.stakes());

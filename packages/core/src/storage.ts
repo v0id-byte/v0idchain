@@ -14,6 +14,9 @@ function chainPath(dataDir: string): string {
 function tokenPath(dataDir: string): string {
   return join(dataDir, 'api.token');
 }
+function seenTxPath(dataDir: string): string {
+  return join(dataDir, 'seenTx.json');
+}
 
 /** 只读 API 令牌；不存在返回 null（用于 CLI 子命令自动取本机节点的令牌）。 */
 export function loadApiToken(dataDir: string): string | null {
@@ -115,6 +118,34 @@ export function saveChain(dataDir: string, bc: Blockchain): void {
   renameSync(tmp, chainPath(dataDir));
   try {
     chmodSync(chainPath(dataDir), 0o600);
+  } catch {
+    /* 只读介质/无权限：尽力而为 */
+  }
+}
+
+/**
+ * 读取已见交易 id 列表（P2P gossip 去重用，重启后避免短暂重复广播）。
+ * 不存在/损坏 → 返回空数组：mempool 本身仍按 txid 去重（见 Blockchain.addTransaction），不影响正确性，
+ * 只是重启后头几笔交易可能被多广播一轮，故加载失败无需备份告警，静默兜底即可。
+ */
+export function loadSeenTx(dataDir: string): string[] {
+  const f = seenTxPath(dataDir);
+  if (!existsSync(f)) return [];
+  try {
+    const data = JSON.parse(readFileSync(f, 'utf8'));
+    return Array.isArray(data) ? data.filter((x: unknown): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveSeenTx(dataDir: string, ids: string[]): void {
+  mkdirSync(dataDir, { recursive: true });
+  const tmp = seenTxPath(dataDir) + '.tmp';
+  writeFileSync(tmp, JSON.stringify(ids), { mode: 0o600 });
+  renameSync(tmp, seenTxPath(dataDir));
+  try {
+    chmodSync(seenTxPath(dataDir), 0o600);
   } catch {
     /* 只读介质/无权限：尽力而为 */
   }

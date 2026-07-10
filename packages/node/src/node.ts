@@ -22,6 +22,8 @@ import {
   loadOrCreateWallet,
   loadChain,
   saveChain,
+  loadSeenTx,
+  saveSeenTx,
   parseMarket,
   parseMessages,
   parseNames,
@@ -113,6 +115,8 @@ export class V0idNode {
     this.opts = opts;
     this.wallet = loadOrCreateWallet(opts.dataDir);
     this.bc = loadChain(opts.dataDir);
+    // 重启后恢复已见交易集，避免刚起来那一刻把 mempool 里还没上链的交易当"新的"再广播一轮
+    for (const id of loadSeenTx(opts.dataDir).slice(-V0idNode.MAX_SEEN)) this.seenTx.add(id);
     // 启动时把现有链里的地址全部记为“已知”，并把扫描指针对齐链顶 —— 之后只对新涌现的地址报“新人”，不刷屏历史
     this.knownAddresses = collectAddresses(this.bc.chain);
     this.lastScanHeight = this.bc.height;
@@ -585,23 +589,43 @@ export class V0idNode {
     this.persist();
   }
 
+  private static readonly PERSIST_DEBOUNCE_MS = 500;
+  private persistTimer: NodeJS.Timeout | null = null;
+
+  /** 排队落盘：短时间内连续调用只触发一次实际写盘，合并突发场景（连续转账/连续收块）下的重复整链序列化+写盘。 */
   private persist(): void {
+    if (this.persistTimer) return; // 已排队，到点会带着彼时最新状态一起写
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.flushPersist();
+    }, V0idNode.PERSIST_DEBOUNCE_MS);
+  }
+
+  /** 立即同步落盘，跳过防抖窗口。进程退出前必须调用一次，否则窗口内的变化不会写进磁盘（见 CLI 的 SIGTERM/SIGINT 处理）。 */
+  flushPersist(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
     saveChain(this.opts.dataDir, this.bc);
+    saveSeenTx(this.opts.dataDir, [...this.seenTx]);
   }
 
   info() {
+    // 余额/burned 共用同一次 computeState（全链 walk），别各调一次 balanceOf 重复扫两遍。
+    const st = this.bc.computeState();
     return {
       address: this.wallet.address,
       symbol: SYMBOL,
       height: this.bc.height,
       blocks: this.bc.chain.length,
-      balance: this.bc.balanceOf(this.wallet.address),
+      balance: st.balances.get(this.wallet.address) ?? 0,
       mempool: this.bc.mempool.length,
       difficulty: this.bc.tipDifficulty(),
       minFee: MIN_FEE, // 最低手续费（gas），供 CLI/仪表盘提示与表单默认值
       feeRateBps: FEE_RATE_BPS, // 比例手续费率（基点），供客户端动态计算推荐手续费
       messageBurn: MESSAGE_BURN, // 发消息默认销毁额，供表单默认值
-      burned: this.bc.balanceOf(NULL_ADDRESS), // 🔥 全网已烧进虚空的 $V0ID 总额
+      burned: st.balances.get(NULL_ADDRESS) ?? 0, // 🔥 全网已烧进虚空的 $V0ID 总额
       peers: this.p2p.peerCount(),
       peerList: this.p2p.peerList(),
       newcomers: this.newcomers.length, // 本次会话发现的新成员数

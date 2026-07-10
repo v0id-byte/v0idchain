@@ -10,13 +10,32 @@ async function nodeGet<T>(path: string): Promise<T> {
 }
 
 let chainCache: { at: number; chain: Block[] } | null = null;
+let chainInflight: Promise<Block[]> | null = null;
 const CHAIN_TTL_MS = 2000; // 链缓存 2s，挡住整链反复拉取（出块 8s 一个，2s 足够新鲜）
 
-export async function getChain(force = false): Promise<Block[]> {
-  if (!force && chainCache && Date.now() - chainCache.at < CHAIN_TTL_MS) return chainCache.chain;
-  const chain = await nodeGet<Block[]>('/chain');
-  chainCache = { at: Date.now(), chain };
-  return chain;
+/** 真正去节点拉整链；并发调用共享同一次请求，避免缓存过期瞬间多个请求同时打节点、各自传一遍整条链（274MB@100k）。 */
+function fetchChain(): Promise<Block[]> {
+  if (!chainInflight) {
+    chainInflight = nodeGet<Block[]>('/chain')
+      .then((chain) => {
+        chainCache = { at: Date.now(), chain };
+        return chain;
+      })
+      .finally(() => {
+        chainInflight = null;
+      });
+  }
+  return chainInflight;
+}
+
+export async function getChain(): Promise<Block[]> {
+  if (chainCache) {
+    if (Date.now() - chainCache.at < CHAIN_TTL_MS) return chainCache.chain;
+    // 陈旧：先把旧值给这次调用（不阻塞），后台刷新一次；刷新失败就留到下次调用再试，不影响这次响应。
+    void fetchChain().catch(() => {});
+    return chainCache.chain;
+  }
+  return fetchChain(); // 冷启动，没有缓存可用，只能等这一次
 }
 
 export function getInfo(): Promise<unknown> {
@@ -42,15 +61,21 @@ export function getTxStatus(txid: string): Promise<unknown> {
 }
 
 /** 用最新链重建 Blockchain（只读：nonceOf/balanceOf/petsOf 等都只依赖 chain 数组）。 */
-export async function snapshot(force = false): Promise<Blockchain> {
+export async function snapshot(): Promise<Blockchain> {
   const bc = new Blockchain();
-  bc.chain = await getChain(force);
+  bc.chain = await getChain();
   return bc;
 }
 
-/** 某地址的下一个 nonce（= 链上已发交易数）。客户端构造交易前取它。 */
+/** 某地址的下一个 nonce（= 链上已发交易数）。客户端构造交易前取它。走节点 /nonce 直答，不必拉整条链本地重算。 */
 export async function getNonce(address: string): Promise<number> {
-  return (await snapshot(true)).nonceOf(address);
+  const r = await nodeGet<{ nonce: number }>(`/nonce?address=${encodeURIComponent(address)}`);
+  return r.nonce;
+}
+
+/** nonce+balance 一次取（同一次节点侧 computeState，两值保证来自同一链高）。需要两者都要时用这个，别分别调 getNonce+getBalance。 */
+export async function getAccount(address: string): Promise<{ nonce: number; balance: number }> {
+  return nodeGet<{ nonce: number; balance: number }>(`/account?address=${encodeURIComponent(address)}`);
 }
 
 /** 某地址链上最新的房间版本 hash（memo `ROOM|<hash>` 自转,后者覆盖前者）。供串门校验用。 */
