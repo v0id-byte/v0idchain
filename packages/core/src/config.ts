@@ -23,11 +23,11 @@ export const POW_V2_HEIGHT = 15_000;
 
 /**
  * 目标出块时间（毫秒）。难度重定向把平均出块压向此值。
- * 历史曾为 8s；社交「挖够再发」需多块 coinbase，8s×多块体感过慢。
- * 现默认 1s：连续挖时无额外间歇（--mine-interval 0），节奏主要由 PoW 难度决定。
- * ⚠️ 改此值是**软分叉**——所有校验/挖矿节点须同步升级，否则重定向点难度预期分叉。
+ * **不可在已运行主网上改此值**：`validateChain` 会按此常数重放历史重定向点；
+ * 改动会导致整链校验失败（节点会把 chain.json 标 corrupt 并空创世）。
+ * 连续挖的「块间额外间歇」由 `--mine-interval` 控制，默认 **0 = 不限制**（挖完立刻下一块）。
  */
-export const TARGET_BLOCK_TIME_MS = 1_000;
+export const TARGET_BLOCK_TIME_MS = 8_000;
 /** v1 重定向窗口（历史兼容）。 */
 export const RETARGET_INTERVAL = 8;
 /** v2 BTC 风格重定向窗口：60 块约 8 分钟，适合当前小算力网络。 */
