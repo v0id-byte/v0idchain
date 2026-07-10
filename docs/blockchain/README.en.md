@@ -103,7 +103,7 @@ calcBlockHash = sha256Hex(JSON.stringify([index, timestamp, prevHash, merkleRoot
 ### Consensus: PoW + most-work chain
 
 - **Adaptive difficulty, two generations** (`packages/core/src/blockchain.ts: expectedDifficulty`):
-  - **v1** (height `< POW_V2_HEIGHT=15000`): `difficulty` = number of leading-zero **bits** (not hex digits → each ±1 bit halves/doubles difficulty, smoothly tunable); retargets every `RETARGET_INTERVAL` blocks toward `TARGET_BLOCK_TIME_MS` (8 s) by the window's actual elapsed time.
+  - **v1** (height `< POW_V2_HEIGHT=15000`): `difficulty` = number of leading-zero **bits** (not hex digits → each ±1 bit halves/doubles difficulty, smoothly tunable); retargets every `RETARGET_INTERVAL` blocks toward `TARGET_BLOCK_TIME_MS` (1 s) by the window's actual elapsed time.
   - **v2** (height `≥ 15000`, with an upgrade window reserved for nodes/wallets): the `difficulty` field instead carries a **Bitcoin-style compact target (nBits)**; retargets every `POW_V2_RETARGET_INTERVAL` blocks proportionally, clamped to ×/÷4 per step — for exact cumulative work. **The block JSON shape is unchanged.**
   - Like Bitcoin, **no artificial cap** (bounded only by the 256-bit hash width), with a `MIN_DIFFICULTY` floor so it can always drop back to mineable. Difficulty is written into the header and **deterministically recomputed + verified** by every node from chain history — a miner can't set it.
 - **Most-work valid chain** (`replaceChain` / `chainWork`): pick the chain by **cumulative PoW** (v1 `Σ 2^difficulty`, v2 Bitcoin-style target proof), **not by length**; strictly-greater work wins (first-seen otherwise).

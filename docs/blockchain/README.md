@@ -103,7 +103,7 @@ calcBlockHash = sha256Hex(JSON.stringify([index, timestamp, prevHash, merkleRoot
 ### 共识：PoW + 最大工作量链
 
 - **自适应难度，两代并存**（`packages/core/src/blockchain.ts: expectedDifficulty`）：
-  - **v1**（高度 `< POW_V2_HEIGHT=15000`）：`difficulty` = 前导 0 **比特**数（非 hex 位 → 每 ±1 bit = 难度 ×/÷2，平滑可调），每 `RETARGET_INTERVAL` 块按窗口实际耗时向 `TARGET_BLOCK_TIME_MS`（8 秒）重定向。
+  - **v1**（高度 `< POW_V2_HEIGHT=15000`）：`difficulty` = 前导 0 **比特**数（非 hex 位 → 每 ±1 bit = 难度 ×/÷2，平滑可调），每 `RETARGET_INTERVAL` 块按窗口实际耗时向 `TARGET_BLOCK_TIME_MS`（1 秒）重定向。
   - **v2**（高度 `≥ 15000`，已为节点/钱包预留升级窗口）：`difficulty` 字段改承载 **BTC 风格 compact target（nBits）**，每 `POW_V2_RETARGET_INTERVAL` 块按比例重定向、单次限幅 ×/÷4 —— 给精确累计工作量。**区块 JSON 结构不变**。
   - 像 BTC 一样**无人为上限**（仅受 256-bit 物理天花板约束），有 `MIN_DIFFICULTY` 地板保证总能降回可挖。难度写进区块头、由各节点用链历史**确定性重算并校验**，矿工无法私设。
 - **最大工作量合法链**（`replaceChain` / `chainWork`）：按**累计 PoW 工作量**（v1 `Σ 2^difficulty`，v2 BTC 风格 target proof）选链，**而非链长**；严格更大才替换（先到先得）。

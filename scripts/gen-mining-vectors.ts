@@ -30,14 +30,14 @@ type Stub = { index: number; timestamp: number; difficulty: number };
 function buildChain(baseDiff: number, ts8: number, ts15: number): Stub[] {
   const c: Stub[] = [];
   for (let i = 0; i < 16; i++) {
-    let t = i * 8000; // 线性占位（只有 8 与 15 真正参与 index=16 的计算）
+    let t = i * TARGET_BLOCK_TIME_MS; // 线性占位（只有 8 与 15 真正参与 index=16 的计算）
     if (i === 8) t = ts8;
     if (i === 15) t = ts15;
     c.push({ index: i, timestamp: t, difficulty: baseDiff });
   }
   return c;
 }
-const expected = (RETARGET_INTERVAL - 1) * TARGET_BLOCK_TIME_MS; // 56000
+const expected = (RETARGET_INTERVAL - 1) * TARGET_BLOCK_TIME_MS;
 console.log('# expectedDifficulty (call index=16, prev=chain[15], windowStart=chain[8])');
 const cases: { name: string; base: number; actual: number }[] = [
   { name: 'on-target', base: 20, actual: expected },          // ratio 1 → 0
