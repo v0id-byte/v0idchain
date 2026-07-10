@@ -426,10 +426,14 @@ export class V0idNode {
   }
 
   // ---- 挖矿 ----
-  /** 挖一个块：成功则上链、持久化、广播 */
-  async mineOnce(): Promise<Block | null> {
+  /**
+   * 挖一个块：成功则上链、持久化、广播。
+   * @param minerAddress 可选；默认本节点钱包。社交站「挖够发帖」可指定用户地址收 coinbase。
+   */
+  async mineOnce(minerAddress?: string): Promise<Block | null> {
     const startEpoch = this.epoch;
-    const block = await this.bc.mine(this.wallet.address, () => this.epoch !== startEpoch);
+    const miner = minerAddress && minerAddress.length > 0 ? minerAddress : this.wallet.address;
+    const block = await this.bc.mine(miner, () => this.epoch !== startEpoch);
     if (block) {
       this.onChainChanged();
       this.p2p.broadcast({ type: 'BLOCKS', blocks: [block] });

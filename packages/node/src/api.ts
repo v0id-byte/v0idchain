@@ -245,9 +245,16 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
           case '/mine': {
             const n = Number(body.blocks ?? 1);
             if (!Number.isInteger(n) || n < 1) return json(400, { error: 'blocks 必须是正整数' });
+            // 可选 miner：coinbase 打给该地址（社交「挖够再发」）；默认本节点钱包
+            let miner: string | undefined;
+            if (body.miner !== undefined && body.miner !== null && body.miner !== '') {
+              const m = String(body.miner);
+              if (!isValidAddress(m)) return json(400, { error: 'miner 地址非法' });
+              miner = m;
+            }
             const mined: string[] = [];
             for (let i = 0; i < n; i++) {
-              const b = await node.mineOnce();
+              const b = await node.mineOnce(miner);
               if (b) mined.push(b.hash);
             }
             return json(200, { mined });
