@@ -26,3 +26,4 @@ export * from './fishing.js';
 export * from './farm.js';
 export * from './mining.js';
 export * from './feed.js';
+export * from './social.js';

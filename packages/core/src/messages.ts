@@ -7,6 +7,7 @@ import { PET_PREFIX, PETX_PREFIX, PETBREED_PREFIX, PETEVO_PREFIX, PETFARM_PREFIX
 import { FISH_PREFIX } from './fishing.js';
 import { LAND_PREFIX, ZONE_PREFIX, PLANT_PREFIX, HARVEST_PREFIX, CROPX_PREFIX } from './farm.js';
 import { MINE_PREFIX } from './mining.js';
+import { isSocialProtocolMemo } from './social.js';
 
 export interface ChainMessage {
   txid: string;
@@ -51,7 +52,8 @@ export function isProtocolMemo(memo: string): boolean {
     memo.startsWith(PLANT_PREFIX) ||
     memo.startsWith(HARVEST_PREFIX) ||
     memo.startsWith(CROPX_PREFIX) ||
-    memo.startsWith(MINE_PREFIX)
+    memo.startsWith(MINE_PREFIX) ||
+    isSocialProtocolMemo(memo)
   );
 }
 
