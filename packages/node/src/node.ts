@@ -427,18 +427,33 @@ export class V0idNode {
 
   // ---- 挖矿 ----
   /**
+   * 挖矿串行锁：后台 --mine 循环与 HTTP /mine（含社交站指定 miner）共用。
+   * 并发会抢同一 tip → 败者 shouldStop 白算；串行保证「挖够发帖」每请求尽量出块。
+   */
+  private mineTail: Promise<unknown> = Promise.resolve();
+
+  /**
    * 挖一个块：成功则上链、持久化、广播。
    * @param minerAddress 可选；默认本节点钱包。社交站「挖够发帖」可指定用户地址收 coinbase。
    */
   async mineOnce(minerAddress?: string): Promise<Block | null> {
-    const startEpoch = this.epoch;
-    const miner = minerAddress && minerAddress.length > 0 ? minerAddress : this.wallet.address;
-    const block = await this.bc.mine(miner, () => this.epoch !== startEpoch);
-    if (block) {
-      this.onChainChanged();
-      this.p2p.broadcast({ type: 'BLOCKS', blocks: [block] });
-    }
-    return block;
+    const run = async (): Promise<Block | null> => {
+      const startEpoch = this.epoch;
+      const miner = minerAddress && minerAddress.length > 0 ? minerAddress : this.wallet.address;
+      const block = await this.bc.mine(miner, () => this.epoch !== startEpoch);
+      if (block) {
+        this.onChainChanged();
+        this.p2p.broadcast({ type: 'BLOCKS', blocks: [block] });
+      }
+      return block;
+    };
+    // 串到队尾；前序失败也不阻断后续
+    const p = this.mineTail.then(run, run);
+    this.mineTail = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    return p;
   }
 
   /**
@@ -468,8 +483,18 @@ export class V0idNode {
     return false;
   }
 
+  /**
+   * 持续挖矿。
+   * @param intervalMs 两块之间的额外间歇；**0 = 不限制间隔**（挖完立刻挖下一块，节奏仅由 PoW 难度决定）。默认 CLI 即 0。
+   */
   startMining(intervalMs: number): void {
     this.mining = true;
+    const gap = Number.isFinite(intervalMs) && intervalMs > 0 ? Math.floor(intervalMs) : 0;
+    const scheduleNext = () => {
+      if (!this.mining) return;
+      if (gap > 0) setTimeout(loop, gap);
+      else setImmediate(loop); // 0 = 连续挖，不人为限速
+    };
     const loop = async () => {
       if (!this.mining) return;
       if (!this.canMine()) {
@@ -479,9 +504,9 @@ export class V0idNode {
       }
       this.syncing = false;
       await this.mineOnce(); // 等这块挖完（PoW 真用时间）再排下一块
-      if (this.mining) setTimeout(loop, intervalMs);
+      scheduleNext();
     };
-    setTimeout(loop, intervalMs);
+    scheduleNext();
   }
 
   stopMining(): void {
