@@ -431,15 +431,27 @@ export class V0idNode {
    * 并发会抢同一 tip → 败者 shouldStop 白算；串行保证「挖够发帖」每请求尽量出块。
    */
   private mineTail: Promise<unknown> = Promise.resolve();
+  /**
+   * >0 时后台连续挖让路：HTTP /mine 批量（社交挖够）整段期间 background 不插队。
+   */
+  private mineDemandDepth = 0;
+
+  /** 社交站等「指定收款矿工」批量挖矿前调用；与 endMineDemand 成对。 */
+  beginMineDemand(): void {
+    this.mineDemandDepth++;
+  }
+  endMineDemand(): void {
+    this.mineDemandDepth = Math.max(0, this.mineDemandDepth - 1);
+  }
 
   /**
    * 挖一个块：成功则上链、持久化、广播。
    * @param minerAddress 可选；默认本节点钱包。社交站「挖够发帖」可指定用户地址收 coinbase。
    */
   async mineOnce(minerAddress?: string): Promise<Block | null> {
+    const miner = minerAddress && minerAddress.length > 0 ? minerAddress : this.wallet.address;
     const run = async (): Promise<Block | null> => {
       const startEpoch = this.epoch;
-      const miner = minerAddress && minerAddress.length > 0 ? minerAddress : this.wallet.address;
       const block = await this.bc.mine(miner, () => this.epoch !== startEpoch);
       if (block) {
         this.onChainChanged();
@@ -497,6 +509,11 @@ export class V0idNode {
     };
     const loop = async () => {
       if (!this.mining) return;
+      if (this.mineDemandDepth > 0) {
+        // 社交站批量 /mine 让路，50ms 后再看
+        setTimeout(loop, 50);
+        return;
+      }
       if (!this.canMine()) {
         this.syncing = true; // 没连上/没追平 → 等，不挖（避免分叉）
         setTimeout(loop, 1000);

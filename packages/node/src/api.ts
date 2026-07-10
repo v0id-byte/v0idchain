@@ -252,12 +252,19 @@ export function startHttpApi(node: V0idNode, port: number, token: string, roles?
               if (!isValidAddress(m)) return json(400, { error: 'miner 地址非法' });
               miner = m;
             }
-            const mined: string[] = [];
-            for (let i = 0; i < n; i++) {
-              const b = await node.mineOnce(miner);
-              if (b) mined.push(b.hash);
+            // 指定外部 miner 时让后台 --mine 整段让路，避免插花把体感拖成 2×
+            const demand = !!miner && miner !== node.wallet.address;
+            if (demand) node.beginMineDemand();
+            try {
+              const mined: string[] = [];
+              for (let i = 0; i < n; i++) {
+                const b = await node.mineOnce(miner);
+                if (b) mined.push(b.hash);
+              }
+              return json(200, { mined });
+            } finally {
+              if (demand) node.endMineDemand();
             }
-            return json(200, { mined });
           }
           case '/connect': {
             node.p2p.connect(String(body.url), true); // 本地运营者显式连接：trusted
