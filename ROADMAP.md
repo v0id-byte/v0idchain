@@ -1,9 +1,12 @@
 # v0idChain Roadmap
 
-> **Thesis** — **$V0ID is the economic layer that lets an open anonymity network resist abuse, Sybils, and censorship *without surveillance*.**
-> Normal networks fight spam and fake identities with phone verification, CAPTCHAs, IP bans, and tracking — all of which quietly kill anonymity. v0idChain fights them with *cost* instead: you burn or stake the token to act. The coin's value is not "money" — it is the scarce resource that keeps the network open and private at the same time.
+> **Ecosystem thesis** — **$V0ID is the shared economic layer of a multi-product chain OS**: gas, burn, escrow, and settlement across **privacy (v0idnet), on-chain game, social, and payments (mint)** — not a single-app coin.
 >
-> **一句话主线** —— **$V0ID 是让一个开放匿名网络能在「不依赖监控」的前提下,抵御滥用、女巫攻击与审查的经济层。** 普通网络靠手机验证 / 验证码 / 封 IP / 追踪来防垃圾和假身份,而这些恰恰在杀死匿名性;v0idChain 改用「成本」——想行动就烧币或质押。代币的价值不是「钱」,而是「让网络同时保持开放和私密」的稀缺资源。
+> **生态总纲** —— **$V0ID 是多产品链上操作系统的共享经济层**：在 **隐私网 · 链上游戏 · 社交 · 支付（Mint）** 之间统一承担 gas / 燃烧 / 托管 / 结算，而不是「只能解释匿名」的单用途币。
+>
+> **Privacy track (still core)** — On the anonymity branch, $V0ID is still the layer that resists abuse, Sybils, and censorship *without surveillance* (cost instead of identity). That track is **旗舰分支，不是唯一叙事**.
+>
+> **隐私主线（仍是旗舰）** —— 在匿名分支上，$V0ID 仍是不靠监控、用成本抵御滥用/女巫/审查的经济层。这是旗舰能力，**并列于**游戏与社交，而非生态的唯一故事。
 
 This document is the source of truth for where the project is going. It is intentionally opinionated. Nothing here is a promise of delivery dates — it's a direction and a menu of work. Contributions against any item are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -11,11 +14,27 @@ This document is the source of truth for where the project is going. It is inten
 
 ---
 
+## Product pillars / 产品支柱
+
+| Pillar | Role | Docs |
+|---|---|---|
+| ⛓ Chain + $V0ID | Shared ledger, memo conventions, wallets | `docs/blockchain/` |
+| 🧅 v0idnet | Flagship anonymity network + browser | `docs/v0idnet/` |
+| 🎮 On-chain game | Fun surface, collectibles, onboarding | `docs/game/` |
+| 💬 Social (mini-X) | Public timeline, follows, DMs (off-chain) | **[v0id-social](https://github.com/v0id-byte/v0id-social)** (private product repo) |
+| 💳 Mint / pay | E-cash tickets, future paywall | `docs/v0idnet/MINT-PROTOCOL.md` |
+
+---
+
 ## Why the token isn't "single-purpose" — and why that's not the point
 
-$V0ID already has real sinks today: burning to post on-chain messages, hatching/breeding pets, buying farmland, catching fish, claiming nicknames, red packets, relay staking, and mint redemption fees. The gap was never *features* — it was a **narrative** that ties them together and answers "why hold or use this coin". The three tracks below are that narrative, and they are all things **only a blockchain fused with an anonymity network can do** — you can't build them on Ethereum alone, and you can't build them on Tor alone.
+$V0ID already has real sinks today: burning to post on-chain messages, hatching/breeding pets, buying farmland, catching fish, claiming nicknames, red packets, relay staking, and mint redemption fees. Upcoming **social posts/follows** add another public-square sink. The gap was never only *features* — it was a **narrative** that ties pillars together: one coin, four roles (gas / burn / escrow / settlement).
 
-$V0ID 今天已经有一串真实的消耗场景(发链上消息、宠物孵化/繁殖、买地、钓鱼、抢注昵称、红包、中继质押、mint 赎回抽成)。缺的从来不是「功能」,而是把它们串起来、回答「为什么要持有/使用这枚币」的**叙事**。下面三条主线就是这个叙事,而且它们都是**只有「区块链 × 匿名网络」的融合才能做到**的事——单靠以太坊做不了,单靠 Tor 也做不了。
+$V0ID 今天已有一串消耗场景(消息、宠物、买地、钓鱼、昵称、红包、中继质押、mint 抽成)；规划中的**社交发帖/关注**再加公域 sink。缺的不只是功能清单,而是把多支柱串起来的叙事:**一个币,四种用法**。
+
+The L1–L3 tracks below remain the **privacy-branch** value design (what only chain × anonymity does well). They do **not** demote game or social — those pillars have their own burn/UX loops documented in their modules.
+
+下列 L1–L3 仍是**隐私分支**的价值设计(链×匿名才做得好的事)。它们**不**压过游戏或社交——后两者在各自模块里有独立的 burn/体验闭环。
 
 ---
 
@@ -72,6 +91,21 @@ Emission today is 1 coin/block forever, no halving, no cap — purely inflationa
 ### 🎮 On-chain game
 - The token's social/collectible economy as a low-risk, fun surface that showcases memo-convention design.
 - Pixel-art assets and content (great for non-protocol contributors — see good first issues).
+- Keep **game activity feed** separate from the public social timeline (see social pillar).
+
+### 💬 Social (mini-X) — design phase
+> **Authority (product + design):** **[v0id-byte/v0id-social](https://github.com/v0id-byte/v0id-social)** (private) · local `~/Documents/v0id-social`  
+> **Pointer only in this repo:** [docs/social/README.md](docs/social/README.md)
+
+- **Phase A (docs):** moved to v0id-social — protocol, storage, security, performance, S1–S5 roadmap; open-source policy note (default private product).
+- **Phase B (after review):** app code in v0id-social; thin memo parser (`VPOST|` …) lands here via PR to `packages/core`.
+- Independent of game `deriveFeed`; reuses `NAME|`; burn on public actions; off-chain DMs by default.
+
+### 💬 社交（迷你 X）— 设计阶段
+> **权威文档 / 产品仓：** [v0id-social](https://github.com/v0id-byte/v0id-social)（私有）
+
+- Phase A 文档已迁至社仓；本仓只留指针。链上 memo 实现仍以 PR 进本仓 `core`。
+- 产品默认**不必开源**（先私有，稳定后再决定）；见社仓 `docs/OPEN-SOURCE.md`。
 
 ---
 
