@@ -14,11 +14,13 @@ import {
   isProtocolMemo,
   isMessageTx,
   parseMessages,
+  computeSocialBurnMin,
   POST_BURN,
   REPLY_BURN,
   MIN_FEE,
   minFeeFor,
   GENESIS_PREMINE,
+  GENESIS_DIFFICULTY,
   BLOCK_REWARD,
   type SocialBody,
 } from '../packages/core/src/index.js';
@@ -95,6 +97,43 @@ async function main() {
     supply(bc) === GENESIS_PREMINE + bc.height * BLOCK_REWARD,
   );
   check('MIN_FEE 仍付', post.tx.fee >= MIN_FEE);
+
+  console.log('\n— 动态 burn（方案 2：越难越少 + 地板）—');
+  check('创世难度 = 基准 POST_BURN', computeSocialBurnMin('post', GENESIS_DIFFICULTY) === POST_BURN);
+  check('创世难度 = 基准 REPLY_BURN', computeSocialBurnMin('reply', GENESIS_DIFFICULTY) === REPLY_BURN);
+  check('难度翻倍 burn 下降', computeSocialBurnMin('post', GENESIS_DIFFICULTY * 2) < POST_BURN);
+  check('极高难度贴地板 post≥2', computeSocialBurnMin('post', 256) === 2);
+  check('极高难度贴地板 reply≥1', computeSocialBurnMin('reply', 256) === 1);
+  check('低难度 burn 上升', computeSocialBurnMin('post', Math.max(1, Math.floor(GENESIS_DIFFICULTY / 2))) > POST_BURN);
+  // 动态门槛：按 tip 难度算出 min burn 发帖，应被解析收录
+  for (let i = 0; i < 10; i++) await bc.mine(miner.address);
+  const tipDiff = bc.latest.difficulty;
+  const dynBurn = computeSocialBurnMin('post', tipDiff);
+  const author2 = Wallet.generate();
+  const fundAmt2 = dynBurn + MIN_FEE + 5;
+  const fund2 = createTransaction(miner, author2.address, fundAmt2, bc.nonceOf(miner.address), '', minFeeFor(fundAmt2));
+  check('fund2', bc.addTransaction(fund2).ok);
+  await bc.mine(miner.address);
+  const lowBurnPost = createVPostTx(author2, hashSocialBody({ v: 1, text: 'dynamic burn post' }), bc.nonceOf(author2.address), {
+    burn: dynBurn,
+    difficulty: tipDiff,
+  });
+  check('动态 burn create ok', lowBurnPost.ok);
+  if (lowBurnPost.ok) {
+    check('动态 burn 进池', bc.addTransaction(lowBurnPost.tx).ok);
+    await bc.mine(miner.address);
+    const incl = bc.chain.find((b) => b.transactions.some((t) => t.txid === lowBurnPost.tx.txid));
+    const minAtIncl = incl ? computeSocialBurnMin('post', incl.difficulty) : Infinity;
+    const found = parseSocialPosts(bc.chain).some((x) => x.txid === lowBurnPost.tx.txid);
+    check(
+      '动态门槛下可解析（burn≥入块 min）',
+      found || (incl !== undefined && (lowBurnPost.tx.burn ?? 0) < minAtIncl),
+    );
+    // 若 retarget 抬高了 min 导致不进索引，至少说明公式在跑；创世附近通常 found=true
+    if (!found && incl) {
+      check('入块 burn 低于新 min 时静默忽略（预期）', (lowBurnPost.tx.burn ?? 0) < minAtIncl);
+    }
+  }
 
   console.log(failed ? `\n❌ ${failed} failed` : '\n✅ social-selftest all passed');
   process.exit(failed ? 1 : 0);

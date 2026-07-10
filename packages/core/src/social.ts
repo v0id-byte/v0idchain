@@ -1,10 +1,11 @@
 // 公域社交帖（迷你 X）：memo 约定层，不改共识。
-// 发帖 = amount 0 + burn≥POST_BURN + 自转 + memo `VPOST|1|0|<contentHash>[|<parentTxid>]`
+// 发帖 = amount 0 + burn≥门槛 + 自转 + memo `VPOST|1|0|<contentHash>[|<parentTxid>]`
+// 门槛随**入块时** difficulty 动态调整（方案 2：越难挖要求币越少，硬地板防免费刷）。
 // 正文不在链上：contentHash = sha256(canonical JSON body)；blob 由社交服务器按 hash 提供。
 // 任何节点扫链即可还原帖索引（作者/时间/hash/回复指针）→ 可回溯、与 $V0ID 经济绑定。
-import type { Block } from './block.js';
+import { approxDifficultyBits, type Block } from './block.js';
 import { sha256Hex } from './crypto.js';
-import { MAX_MEMO, MIN_FEE } from './config.js';
+import { GENESIS_DIFFICULTY, MAX_MEMO, MIN_FEE } from './config.js';
 import { createMessage, type Transaction } from './transaction.js';
 import type { Wallet } from './wallet.js';
 
@@ -15,12 +16,63 @@ export const VFOL_PREFIX = 'VFOL|';
 export const VUNFOL_PREFIX = 'VUNFOL|';
 export const VPROF_PREFIX = 'VPROF|';
 
-/** 发帖默认销毁额（进虚空）；另付 MIN_FEE 给矿工。 */
+/**
+ * 创世难度（GENESIS_DIFFICULTY bit）下的基准销毁额；另付 MIN_FEE 给矿工。
+ * 实际门槛见 computeSocialBurnMin（难度越高 → 币数越少，不低于 FLOOR）。
+ */
 export const POST_BURN = 5;
 export const REPLY_BURN = 3;
 export const REPOST_BURN = 2;
 export const LIKE_BURN = 0; // 仅 gas；解析仍要求 amount=0 自转 + 合法 memo
 export const FOLLOW_BURN = 1;
+export const PROFILE_BURN = 2;
+
+/** 社交动作种类（动态 burn 用）。 */
+export type SocialBurnKind = 'post' | 'reply' | 'repost' | 'follow' | 'profile' | 'like';
+
+/** 创世难度下的基准 burn。 */
+export const SOCIAL_BURN_BASE: Readonly<Record<SocialBurnKind, number>> = {
+  post: POST_BURN,
+  reply: REPLY_BURN,
+  repost: REPOST_BURN,
+  follow: FOLLOW_BURN,
+  profile: PROFILE_BURN,
+  like: LIKE_BURN,
+};
+
+/**
+ * 硬地板：难度再高也不低于此，防止接近 0 刷屏。
+ * post≥2 / reply≥1（产品约定）。
+ */
+export const SOCIAL_BURN_FLOOR: Readonly<Record<SocialBurnKind, number>> = {
+  post: 2,
+  reply: 1,
+  repost: 1,
+  follow: 1,
+  profile: 1,
+  like: 0,
+};
+
+/**
+ * 动态最低 burn（方案 2）：难度越高 → 要求代币越少。
+ *
+ *   raw = round(base × GENESIS_DIFFICULTY / bits)
+ *   min = max(floor, raw)
+ *
+ * - bits = approxDifficultyBits(difficulty)，v1 bit / v2 nBits 统一。
+ * - 创世难度下 = base（发帖 5、评论 3）。
+ * - 解析侧用**该帖入块时**的 block.difficulty；发帖 UX 用 tip 锁定 need 后不再改。
+ * 与质押 computeStakeMin 方向相反（质押越难越高门槛；社交越难越少币数、稳住挖矿负担）。
+ */
+export function computeSocialBurnMin(kind: SocialBurnKind, difficulty: number): number {
+  const base = SOCIAL_BURN_BASE[kind];
+  const floor = SOCIAL_BURN_FLOOR[kind];
+  if (base <= 0) return 0;
+  const bits = approxDifficultyBits(difficulty);
+  const safeBits = Math.max(1, bits);
+  const raw = Math.round((base * GENESIS_DIFFICULTY) / safeBits);
+  return Math.max(floor, raw);
+}
 
 /**
  * 社交 memo 解析激活高度。该高度前 VPOST|… 不当作社交帖（防历史误伤）。
@@ -132,16 +184,19 @@ export function parseVPostMemo(memo: string): {
   return { ver, flags, contentHash, parentTxid };
 }
 
-/** 签名一笔发帖交易：自转、amount 0、烧 POST_BURN（回复用 REPLY_BURN）。 */
+/** 签名一笔发帖交易：自转、amount 0、烧动态门槛（默认按 difficulty 或创世基准）。 */
 export function createVPostTx(
   wallet: Wallet,
   contentHash: string,
   nonce: number,
-  opts?: { parentTxid?: string; burn?: number; fee?: number },
+  opts?: { parentTxid?: string; burn?: number; fee?: number; difficulty?: number },
 ): { ok: true; tx: Transaction } | { ok: false; error: string } {
   const made = makeVPost(contentHash, { parentTxid: opts?.parentTxid });
   if (!made.ok || !made.memo) return { ok: false, error: made.error ?? 'memo' };
-  const burn = opts?.burn ?? (opts?.parentTxid ? REPLY_BURN : POST_BURN);
+  const kind: SocialBurnKind = opts?.parentTxid ? 'reply' : 'post';
+  const burn =
+    opts?.burn ??
+    computeSocialBurnMin(kind, opts?.difficulty ?? GENESIS_DIFFICULTY);
   if (burn < 0) return { ok: false, error: 'burn 非法' };
   // 点赞式 0 burn 不允许走发帖；发帖至少 1（与消息同形态 amount0+burn>0）
   if (burn <= 0) return { ok: false, error: '发帖 burn 须 > 0' };
@@ -152,7 +207,7 @@ export function createVPostTx(
 
 /**
  * 扫链还原公域帖（最新不排序；调用方可 sort）。
- * 条件：高度 ≥ 激活 · amount 0 · burn≥门槛 · 自转 · 合法 VPOST memo。
+ * 条件：高度 ≥ 激活 · amount 0 · burn≥**该块 difficulty 下动态门槛** · 自转 · 合法 VPOST memo。
  */
 export function parseSocialPosts(chain: Block[]): SocialPost[] {
   const out: SocialPost[] = [];
@@ -164,7 +219,8 @@ export function parseSocialPosts(chain: Block[]): SocialPost[] {
       if (tx.from !== tx.to) continue;
       const parsed = parseVPostMemo(tx.memo);
       if (!parsed) continue;
-      const minBurn = parsed.parentTxid ? REPLY_BURN : POST_BURN;
+      const kind: SocialBurnKind = parsed.parentTxid ? 'reply' : 'post';
+      const minBurn = computeSocialBurnMin(kind, b.difficulty);
       if (burn < minBurn) continue;
       out.push({
         txid: tx.txid,
