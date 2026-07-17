@@ -21,6 +21,12 @@
 - **Run a relay**: contribute bandwidth (entry guards pin the entry + DoS hardening); **Mixnet** (opt-in) adds per-hop delay for stronger traffic-analysis resistance.
 - **Incentives** (built, activates at height 16000): staking (anti-Sybil) + trusted measurement + treasury rewards (built but not emitted in v1) + downtime slashing.
 
+### Transport boundary: TCP-only, there is no UDP proxy
+
+Onion transport carries **TCP only**. The local SOCKS5 frontend implements **CONNECT** and nothing else (RFC 1928, no-auth); **UDP ASSOCIATE and BIND are rejected** with `0x07` (Command not supported) — see `packages/node/src/relay/socks.ts`. Each CONNECT gets its own 3-hop circuit and bridges the byte stream both ways.
+
+This is a **design choice, not a gap**: fixed-length cells and per-hop unwrapping need an ordered, reliable stream — and UDP is the single worst leak surface for anonymity, since WebRTC's ICE/STUN bypasses the proxy and exposes your real IP. The v0id browser therefore kills it outright with `disable_non_proxied_udp` (see `clients/desktop/src/main.js`). To carry a UDP protocol (QUIC / DNS / WebRTC) over this network, tunnel it inside TCP yourself.
+
 ---
 
 ## Quick start · desktop app (easiest)

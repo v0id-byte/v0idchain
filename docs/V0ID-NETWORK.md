@@ -20,6 +20,12 @@
 - **Mixnet**(opt-in):逐跳指数延迟 + cover 流量,更抗流量分析(默认关、零回归)。
 - **激励层**(已建,height **16000** 激活):质押抗女巫 + 可信测量在线率 + 国库奖励(v1 建好但**暂不发**)+ 掉线罚没。
 
+### 传输边界:TCP-only,没有 UDP 代理
+
+洋葱传输**只走 TCP**。本地 SOCKS5 前端仅实现 **CONNECT**(RFC 1928, no-auth);**UDP ASSOCIATE 与 BIND 一律拒绝**,回 `0x07`(Command not supported)——见 `packages/node/src/relay/socks.ts`。每个 CONNECT 对应一条 3 跳电路,双向桥接字节流。
+
+这是**设计选择,不是缺口**:定长 cell + 逐跳剥层依赖有序可靠的字节流;而 UDP 恰恰是匿名性最大的泄露面——WebRTC 的 ICE/STUN 会绕过代理直接暴露本机/公网 IP,所以 v0id 浏览器还额外用 `disable_non_proxied_udp` 把它**主动禁死**(见 `clients/desktop/src/main.js`)。想经本网络跑 UDP 协议(QUIC / DNS / WebRTC),得先自己把它封进 TCP。
+
 **桌面 app:** 标签页浏览 `.v0id` · 4 个角色板块(浏览客户端 / 中继 / 托管站点 / 链·挖矿,运行时一键开关)· 钱包(收发 / 质押)。
 
 ## 线上网络(已部署)
